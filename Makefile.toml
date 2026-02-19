@@ -1,0 +1,59 @@
+[config]
+# default_task = "start"
+
+[env]
+VM_NAME = "netsim-vm"
+VM_DIR = "~/.lima/${VM_NAME}"
+VM_BIN_DIR = "/home/linux/netsim"
+
+[tasks.setup]
+script = ["""
+  if limactl list netsim-vm 2>/dev/null | grep -q 'Stopped'; then
+    echo "Starting stopped Lima VM..."
+    limactl start netsim-vm
+  elif ! limactl list | grep -q 'netsim-vm'; then
+    echo "Creating new Lima VM..."
+    limactl start --name netsim-vm lima.yaml
+  else
+    echo "Lima VM 'netsim-vm' already running."
+  fi
+  """]
+
+[tasks.build]
+command = "cargo"
+args = ["build", "--release", "--target", "x86_64-unknown-linux-musl"]
+
+[tasks.copy]
+dependencies = ["build"]
+script = ['''
+  BIN_PATH=target/x86_64-unknown-linux-musl/release/${CARGO_MAKE_CRATE_NAME}
+
+  limactl shell ${VM_NAME} mkdir -p ${VM_BIN_DIR}
+  limactl shell ${VM_NAME} rm -f ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME}
+  limactl copy ${BIN_PATH} ${VM_NAME}:${VM_BIN_DIR}/
+
+  if [ ! -z "${ARGS}" ]; then
+    for bin in ${ARGS}; do
+      which $bin > /dev/null || { echo "Missing binary: $bin"; exit 1; }
+      limactl copy $(which $bin) ${VM_NAME}:${VM_BIN_DIR}/
+    done
+  fi
+  ''']
+
+[tasks.run]
+script = [
+    '''
+  limactl shell ${VM_NAME} chmod +x ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME}
+  limactl shell ${VM_NAME} sudo sysctl -w net.ipv4.ip_forward=1
+  # limactl shell ${VM_NAME} sudo ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME} test --config ${VM_BIN_DIR}/${TOPO_FILE} --cleanup
+  ''',
+]
+
+[tasks.shutdown]
+script = ['''
+  echo "Shutting down Lima VM..."
+  limactl stop ${VM_NAME}
+  ''']
+
+[tasks.start]
+dependencies = ["setup", "copy", "run"]

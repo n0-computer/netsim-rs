@@ -1,0 +1,63 @@
+   Compiling netsim v0.1.0 (/home/bit/Code/rust/netsim-rs)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.48s
+     Running unittests src/lib.rs (/home/bit/rust_target/debug/deps/netsim-8db58bde8d993994)
+
+running 16 tests
+test tests::manual_impair_deserialize ... ok
+test tests::load_from_toml ... ok
+test tests::latency_inter_region_dc_to_dc ... ok
+test tests::latency_device_impair_adds_delay ... ok
+test tests::cgnat_hides_behind_isp_public_ip ... ok
+test tests::latency_directional_between_regions ... ok
+test tests::nat_dest_independent_keeps_port ... ok
+PING 10.0.1.1 (10.0.1.1) 56(84) Bytes an Daten.
+64 Bytes von 10.0.1.1: icmp_seq=1 ttl=64 Zeit=0.065 ms
+
+--- 10.0.1.1 Ping-Statistiken ---
+1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.065/0.065/0.065/0.000 ms
+test tests::smoke_ping_gateway ... ok
+test tests::latency_manual_impair_applies ... ok
+PING 203.0.113.1 (203.0.113.1) 56(84) Bytes an Daten.
+64 Bytes von 203.0.113.1: icmp_seq=1 ttl=64 Zeit=0.062 ms
+
+--- 203.0.113.1 Ping-Statistiken ---
+1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.062/0.062/0.062/0.000 ms
+PING 203.0.113.250 (203.0.113.250) 56(84) Bytes an Daten.
+64 Bytes von 203.0.113.250: icmp_seq=1 ttl=64 Zeit=0.033 ms
+
+--- 203.0.113.250 Ping-Statistiken ---
+1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.033/0.033/0.033/0.000 ms
+test tests::smoke_ping_isp_to_ix_and_dc ... ok
+PING 10.0.1.3 (10.0.1.3) 56(84) Bytes an Daten.
+64 Bytes von 10.0.1.3: icmp_seq=1 ttl=64 Zeit=0.041 ms
+
+--- 10.0.1.3 Ping-Statistiken ---
+1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.041/0.041/0.041/0.000 ms
+test tests::smoke_device_to_device_same_lan ... ok
+PING 203.0.1.1 (203.0.1.1) 56(84) Bytes an Daten.
+64 Bytes von 203.0.1.1: icmp_seq=1 ttl=64 Zeit=0.052 ms
+
+--- 203.0.1.1 Ping-Statistiken ---
+1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 0.052/0.052/0.052/0.000 ms
+test tests::smoke_ping_home_to_isp ... ok
+test tests::nat_dest_dependent_changes_port ... ok
+test tests::smoke_tcp_dc_roundtrip ... ok
+test tests::smoke_udp_dc_roundtrip ... ok
+test tests::isp_home_wan_pool_selection ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.87s
+
+   Doc-tests netsim
+
+running 3 tests
+test src/lib.rs - Lab::run_on (line 430) - compile ... ok
+test src/lib.rs - (line 4) - compile ... ok
+test src/lib.rs - (line 18) - compile ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+

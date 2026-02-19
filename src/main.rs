@@ -8,6 +8,7 @@ use netsim::{udp_rtt_in_ns, Gateway, Impair, Lab};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
     require_root();
     let mut lab = Lab::new();
     let dc_eu = lab.add_dc("dc-eu", "eu")?;
