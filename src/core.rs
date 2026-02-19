@@ -2,18 +2,22 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::TryStreamExt;
 use ipnet::Ipv4Net;
 use nix::sched::{setns, CloneFlags};
-use rtnetlink::{new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, NetworkNamespace, RouteMessageBuilder};
-use std::collections::HashMap;
+use rtnetlink::{
+    new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, NetworkNamespace, RouteMessageBuilder,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::io::Write as IoWrite;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::process::ExitStatus;
 use std::sync::mpsc;
+use std::sync::{Mutex, Once, OnceLock};
 use std::thread;
 use tracing::debug;
 
 use crate::{Impair, NatMode};
+use nix::libc;
 
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
@@ -86,6 +90,8 @@ pub struct LabCore {
     next_id: u64,
     next_private_subnet: u16,
     next_public_subnet: u16,
+    next_ix_low: u8,
+    next_ix_high: u8,
     ix_sw: SwitchId,
     devices: HashMap<DeviceId, Device>,
     routers: HashMap<RouterId, Router>,
@@ -93,6 +99,130 @@ pub struct LabCore {
     nodes_by_name: HashMap<String, NodeId>,
 }
 
+// ─────────────────────────────────────────────
+// Global resource tracking / cleanup
+// ─────────────────────────────────────────────
+
+#[derive(Default)]
+struct ResourceState {
+    links: HashSet<String>,
+    netns: HashSet<String>,
+    prefixes: HashSet<String>,
+}
+
+#[derive(Default)]
+pub struct ResourceList {
+    state: Mutex<ResourceState>,
+}
+
+static RESOURCES: OnceLock<ResourceList> = OnceLock::new();
+static INIT_HOOKS: Once = Once::new();
+
+pub fn resources() -> &'static ResourceList {
+    RESOURCES.get_or_init(|| {
+        INIT_HOOKS.call_once(|| {
+            unsafe {
+                libc::atexit(cleanup_at_exit);
+            }
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                resources().cleanup_all();
+                prev(info);
+            }));
+        });
+        ResourceList::default()
+    })
+}
+
+extern "C" fn cleanup_at_exit() {
+    resources().cleanup_all();
+}
+
+impl ResourceList {
+    pub fn register_link(&self, name: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.links.insert(name.to_string());
+    }
+
+    pub fn register_netns(&self, name: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.netns.insert(name.to_string());
+    }
+
+    pub fn register_prefix(&self, prefix: &str) {
+        let mut st = self.state.lock().unwrap();
+        st.prefixes.insert(prefix.to_string());
+    }
+
+    pub fn cleanup_all(&self) {
+        let (links, netns) = {
+            let st = self.state.lock().unwrap();
+            (st.links.clone(), st.netns.clone())
+        };
+        for link in links {
+            let _ = std::process::Command::new("ip")
+                .args(["link", "del", &link])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        for ns in netns {
+            let _ = std::process::Command::new("ip")
+                .args(["netns", "del", &ns])
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+
+    pub fn cleanup_everything_with_prefix(&self, prefix: &str) {
+        let output = std::process::Command::new("ip")
+            .args(["-o", "link", "show"])
+            .output();
+        if let Ok(out) = output {
+            if let Ok(text) = String::from_utf8(out.stdout) {
+                for line in text.lines() {
+                    let mut parts = line.split_whitespace();
+                    let _ = parts.next();
+                    if let Some(name) = parts.next() {
+                        let name = name.trim_end_matches(':');
+                        if name.starts_with(prefix) {
+                            let _ = std::process::Command::new("ip")
+                                .args(["link", "del", name])
+                                .stderr(std::process::Stdio::null())
+                                .status();
+                        }
+                    }
+                }
+            }
+        }
+
+        let output = std::process::Command::new("ip")
+            .args(["netns", "list"])
+            .output();
+        if let Ok(out) = output {
+            if let Ok(text) = String::from_utf8(out.stdout) {
+                for line in text.lines() {
+                    let name = line.split_whitespace().next().unwrap_or_default();
+                    if name.starts_with(prefix) {
+                        let _ = std::process::Command::new("ip")
+                            .args(["netns", "del", name])
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn cleanup_everything(&self) {
+        let prefixes = {
+            let st = self.state.lock().unwrap();
+            st.prefixes.clone()
+        };
+        for prefix in prefixes {
+            self.cleanup_everything_with_prefix(&prefix);
+        }
+    }
+}
 impl LabCore {
     pub fn new(cfg: CoreConfig) -> Self {
         let mut core = Self {
@@ -100,6 +230,8 @@ impl LabCore {
             next_id: 1,
             next_private_subnet: 1,
             next_public_subnet: 1,
+            next_ix_low: 10,
+            next_ix_high: 250,
             ix_sw: NodeId(0),
             devices: HashMap::new(),
             routers: HashMap::new(),
@@ -117,6 +249,20 @@ impl LabCore {
 
     pub fn ix_br(&self) -> &str {
         &self.cfg.ix_br
+    }
+
+    pub fn alloc_ix_ip_low(&mut self) -> Ipv4Addr {
+        let o = self.cfg.ix_gw.octets();
+        let ip = Ipv4Addr::new(o[0], o[1], o[2], self.next_ix_low);
+        self.next_ix_low = self.next_ix_low.saturating_add(1);
+        ip
+    }
+
+    pub fn alloc_ix_ip_high(&mut self) -> Ipv4Addr {
+        let o = self.cfg.ix_gw.octets();
+        let ip = Ipv4Addr::new(o[0], o[1], o[2], self.next_ix_high);
+        self.next_ix_high = self.next_ix_high.saturating_sub(1);
+        ip
     }
 
     pub fn ix_sw(&self) -> SwitchId {
@@ -257,7 +403,9 @@ impl LabCore {
                 .ok_or_else(|| anyhow!("unknown switch id"))?;
             if sw_entry.cidr.is_some() {
                 let cidr = sw_entry.cidr.unwrap();
-                let gw = sw_entry.gw.ok_or_else(|| anyhow!("switch '{}' missing gw", sw_entry.name))?;
+                let gw = sw_entry
+                    .gw
+                    .ok_or_else(|| anyhow!("switch '{}' missing gw", sw_entry.name))?;
                 (cidr, gw)
             } else {
                 let cidr = match pool {
@@ -340,10 +488,10 @@ impl LabCore {
         let ix_cidr = format!("{}/{}", self.cfg.ix_gw, self.cfg.ix_cidr.prefix_len());
         with_root_netlink(async |h| {
             debug!(bridge = %ix_br, "build: ensure root IX bridge");
-            ensure_link_deleted(h, &ix_br).await.ok();
-            add_bridge(h, &ix_br).await?;
-            set_link_up(h, &ix_br).await?;
-            add_addr4(h, &ix_br, &ix_cidr).await?;
+            h.ensure_link_deleted(&ix_br).await.ok();
+            h.add_bridge(&ix_br).await?;
+            h.set_link_up(&ix_br).await?;
+            h.add_addr4(&ix_br, &ix_cidr).await?;
             Ok(())
         })
         .await?;
@@ -362,22 +510,27 @@ impl LabCore {
             let ns_if2 = ns_if.clone();
             let root_if2 = root_if.clone();
             with_root_netlink(async |h| {
-                ensure_link_deleted(h, &root_if2).await.ok();
-                ensure_link_deleted(h, &ns_if2).await.ok();
-                add_veth(h, &root_if2, &ns_if2).await?;
-                set_master(h, &root_if2, &ix_br).await?;
-                set_link_up(h, &root_if2).await?;
-                move_link_to_netns(h, &ns_if2, &open_netns_fd(&router_ns)?).await?;
+                h.ensure_link_deleted(&root_if2).await.ok();
+                h.ensure_link_deleted(&ns_if2).await.ok();
+                h.add_veth(&root_if2, &ns_if2).await?;
+                h.set_master(&root_if2, &ix_br).await?;
+                h.set_link_up(&root_if2).await?;
+                h.move_link_to_netns(&ns_if2, &open_netns_fd(&router_ns)?)
+                    .await?;
                 Ok(())
             })
             .await?;
 
-            let ix_cidr = format!("{}/{}", router.upstream_ip.unwrap(), self.cfg.ix_cidr.prefix_len());
+            let ix_cidr = format!(
+                "{}/{}",
+                router.upstream_ip.unwrap(),
+                self.cfg.ix_cidr.prefix_len()
+            );
             with_netns(&router.ns, async |h| {
-                set_link_up(h, "lo").await?;
-                set_link_up(h, &ns_if).await?;
-                add_addr4(h, &ns_if, &ix_cidr).await?;
-                add_default_route_v4(h, ix_gw).await?;
+                h.set_link_up("lo").await?;
+                h.set_link_up(&ns_if).await?;
+                h.add_addr4(&ns_if, &ix_cidr).await?;
+                h.add_default_route_v4(ix_gw).await?;
                 Ok(())
             })
             .await?;
@@ -395,7 +548,9 @@ impl LabCore {
                 if router.uplink != Some(self.ix_sw) {
                     continue;
                 }
-                let Some(region) = router.region.as_ref() else { continue };
+                let Some(region) = router.region.as_ref() else {
+                    continue;
+                };
                 if let Some(ix_ip) = router.upstream_ip {
                     if let Ok(cidr) = Ipv4Net::new(ix_ip, 32) {
                         region_targets.entry(region.clone()).or_default().push(cidr);
@@ -412,7 +567,9 @@ impl LabCore {
                 if router.uplink != Some(self.ix_sw) {
                     continue;
                 }
-                let Some(region) = router.region.as_ref() else { continue };
+                let Some(region) = router.region.as_ref() else {
+                    continue;
+                };
                 let mut filters = Vec::new();
                 for (from, to, latency) in region_latencies {
                     if from != region {
@@ -443,10 +600,10 @@ impl LabCore {
                 let br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
                 let lan_cidr = format!("{}/{}", sw.gw.unwrap(), sw.cidr.unwrap().prefix_len());
                 with_netns(&router.ns, async |h| {
-                    set_link_up(h, "lo").await?;
-                    add_bridge(h, &br).await?;
-                    set_link_up(h, &br).await?;
-                    add_addr4(h, &br, &lan_cidr).await?;
+                    h.set_link_up("lo").await?;
+                    h.add_bridge(&br).await?;
+                    h.set_link_up(&br).await?;
+                    h.add_addr4(&br, &lan_cidr).await?;
                     Ok(())
                 })
                 .await?;
@@ -455,7 +612,9 @@ impl LabCore {
 
         // Routers attached to another router (subscriber links).
         for (id, router) in self.routers.clone() {
-            let Some(uplink) = router.uplink else { continue };
+            let Some(uplink) = router.uplink else {
+                continue;
+            };
             if uplink == self.ix_sw {
                 continue;
             }
@@ -463,7 +622,9 @@ impl LabCore {
                 .switches
                 .get(&uplink)
                 .ok_or_else(|| anyhow!("router uplink switch missing"))?;
-            let owner = sw.owner_router.ok_or_else(|| anyhow!("uplink switch missing owner"))?;
+            let owner = sw
+                .owner_router
+                .ok_or_else(|| anyhow!("uplink switch missing owner"))?;
             let owner_ns = self.routers.get(&owner).unwrap().ns.clone();
             let bridge = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
             let gw_ip = sw.gw.ok_or_else(|| anyhow!("uplink switch missing gw"))?;
@@ -473,39 +634,52 @@ impl LabCore {
             let owner_ns2 = owner_ns.clone();
             let router_ns2 = router.ns.clone();
             with_root_netlink(async |h| {
-                ensure_link_deleted(h, &root_a).await.ok();
-                ensure_link_deleted(h, &root_b).await.ok();
-                add_veth(h, &root_a, &root_b).await?;
-                move_link_to_netns(h, &root_a, &open_netns_fd(&owner_ns2)?).await?;
-                move_link_to_netns(h, &root_b, &open_netns_fd(&router_ns2)?).await?;
+                h.ensure_link_deleted(&root_a).await.ok();
+                h.ensure_link_deleted(&root_b).await.ok();
+                h.add_veth(&root_a, &root_b).await?;
+                h.move_link_to_netns(&root_a, &open_netns_fd(&owner_ns2)?)
+                    .await?;
+                h.move_link_to_netns(&root_b, &open_netns_fd(&router_ns2)?)
+                    .await?;
                 Ok(())
             })
             .await?;
 
             let owner_if = format!("h{}", id.0);
             with_netns(&owner_ns, async |h| {
-                rename_link(h, &root_a, &owner_if).await?;
-                set_link_up(h, &owner_if).await?;
-                set_master(h, &owner_if, &bridge).await?;
+                h.rename_link(&root_a, &owner_if).await?;
+                h.set_link_up(&owner_if).await?;
+                h.set_master(&owner_if, &bridge).await?;
                 Ok(())
             })
             .await?;
 
             let wan_if = "wan".to_string();
-            let wan_cidr = format!("{}/{}", router.upstream_ip.unwrap(), sw.cidr.unwrap().prefix_len());
+            let wan_cidr = format!(
+                "{}/{}",
+                router.upstream_ip.unwrap(),
+                sw.cidr.unwrap().prefix_len()
+            );
             with_netns(&router.ns, async |h| {
-                set_link_up(h, "lo").await?;
-                rename_link(h, &root_b, &wan_if).await?;
-                set_link_up(h, &wan_if).await?;
-                add_addr4(h, &wan_if, &wan_cidr).await?;
-                add_default_route_v4(h, gw_ip).await?;
+                h.set_link_up("lo").await?;
+                h.rename_link(&root_b, &wan_if).await?;
+                h.set_link_up(&wan_if).await?;
+                h.add_addr4(&wan_if, &wan_cidr).await?;
+                h.add_default_route_v4(gw_ip).await?;
                 Ok(())
             })
             .await?;
             set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
 
             if let Some(nat) = router.cfg.nat {
-                apply_home_nat(&router.ns, nat, "br-lan", &wan_if, router.upstream_ip.unwrap()).await?;
+                apply_home_nat(
+                    &router.ns,
+                    nat,
+                    &router.cfg.downlink_bridge,
+                    &wan_if,
+                    router.upstream_ip.unwrap(),
+                )
+                .await?;
             }
         }
 
@@ -513,8 +687,13 @@ impl LabCore {
         let mut dev_data = Vec::new();
         for dev in self.devices.values() {
             let sw_id = dev.uplink.ok_or_else(|| anyhow!("device missing uplink"))?;
-            let sw = self.switches.get(&sw_id).ok_or_else(|| anyhow!("device switch missing"))?;
-            let gw_router = sw.owner_router.ok_or_else(|| anyhow!("device switch missing owner"))?;
+            let sw = self
+                .switches
+                .get(&sw_id)
+                .ok_or_else(|| anyhow!("device switch missing"))?;
+            let gw_router = sw
+                .owner_router
+                .ok_or_else(|| anyhow!("device switch missing owner"))?;
             let gw = sw.gw.ok_or_else(|| anyhow!("device switch missing gw"))?;
             let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
             let gw_ns = self.routers.get(&gw_router).unwrap().ns.clone();
@@ -543,38 +722,33 @@ impl LabCore {
             let root_gw = self.root_if("g", dev.idx as u64);
             let root_dev = self.root_if("e", dev.idx as u64);
 
-            let gw_ns2 = dev.gw_ns.clone();
-            let dev_ns2 = dev.dev_ns.clone();
-            let root_gw2 = root_gw.clone();
-            let root_dev2 = root_dev.clone();
             with_root_netlink(async |h| {
-                ensure_link_deleted(h, &root_gw2).await.ok();
-                ensure_link_deleted(h, &root_dev2).await.ok();
-                add_veth(h, &root_gw2, &root_dev2).await?;
-                move_link_to_netns(h, &root_gw2, &open_netns_fd(&gw_ns2)?).await?;
-                move_link_to_netns(h, &root_dev2, &open_netns_fd(&dev_ns2)?).await?;
+                h.ensure_link_deleted(&root_gw).await.ok();
+                h.ensure_link_deleted(&root_dev).await.ok();
+                h.add_veth(&root_gw, &root_dev).await?;
+                h.move_link_to_netns(&root_gw, &open_netns_fd(&dev.gw_ns)?)
+                    .await?;
+                h.move_link_to_netns(&root_dev, &open_netns_fd(&dev.dev_ns)?)
+                    .await?;
                 Ok(())
             })
             .await?;
 
             let ip_cidr = format!("{}/{}", dev.dev_ip, dev.prefix_len);
-            let root_dev3 = root_dev.clone();
             with_netns(&dev.dev_ns, async |h| {
-                set_link_up(h, "lo").await?;
-                rename_link(h, &root_dev3, "eth0").await?;
-                set_link_up(h, "eth0").await?;
-                add_addr4(h, "eth0", &ip_cidr).await?;
-                add_default_route_v4(h, dev.gw_ip).await?;
+                h.set_link_up("lo").await?;
+                h.rename_link(&root_dev, "eth0").await?;
+                h.set_link_up("eth0").await?;
+                h.add_addr4("eth0", &ip_cidr).await?;
+                h.add_default_route_v4(dev.gw_ip).await?;
                 Ok(())
             })
             .await?;
 
-            let root_gw3 = root_gw.clone();
-            let gw_br2 = dev.gw_br.clone();
             with_netns(&dev.gw_ns, async |h| {
-                rename_link(h, &root_gw3, &format!("v{}", dev.idx)).await?;
-                set_link_up(h, &format!("v{}", dev.idx)).await?;
-                set_master(h, &format!("v{}", dev.idx), &gw_br2).await?;
+                h.rename_link(&root_gw, &format!("v{}", dev.idx)).await?;
+                h.set_link_up(&format!("v{}", dev.idx)).await?;
+                h.set_master(&format!("v{}", dev.idx), &dev.gw_br).await?;
                 Ok(())
             })
             .await?;
@@ -600,9 +774,12 @@ impl LabCore {
                         via = %router.upstream_ip.unwrap(),
                         "build: add root return route"
                     );
-                    add_route_v4(h, &format!("{}/{}", net, cidr.prefix_len()), router.upstream_ip.unwrap())
-                        .await
-                        .ok();
+                    h.add_route_v4(
+                        &format!("{}/{}", net, cidr.prefix_len()),
+                        router.upstream_ip.unwrap(),
+                    )
+                    .await
+                    .ok();
                 }
             }
             Ok(())
@@ -696,8 +873,18 @@ pub fn ensure_netns_dir() -> Result<()> {
 
 pub fn open_netns_fd(name: &str) -> Result<File> {
     debug!(ns = %name, "netns: open namespace fd");
-    File::open(format!("/var/run/netns/{}", name))
-        .with_context(|| format!("open netns fd for '{}'", name))
+    let path = format!("/var/run/netns/{}", name);
+    match File::open(&path) {
+        Ok(f) => Ok(f),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let _ = std::process::Command::new("ip")
+                .args(["netns", "add", name])
+                .stderr(std::process::Stdio::null())
+                .status();
+            File::open(&path).with_context(|| format!("open netns fd for '{}'", name))
+        }
+        Err(e) => Err(e).with_context(|| format!("open netns fd for '{}'", name)),
+    }
 }
 
 pub fn cleanup_netns(name: &str) {
@@ -716,7 +903,12 @@ pub fn cleanup_netns(name: &str) {
 pub async fn create_named_netns(name: &str) -> Result<()> {
     debug!(ns = %name, "netns: create named namespace");
     let _ = NetworkNamespace::del(name.to_string()).await;
-    NetworkNamespace::add(name.to_string()).await?;
+    let _ = std::process::Command::new("ip")
+        .args(["netns", "add", name])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = open_netns_fd(name)?;
+    resources().register_netns(name);
     Ok(())
 }
 
@@ -810,17 +1002,10 @@ pub async fn apply_home_nat(
 ) -> Result<()> {
     let snat_rule = match mode {
         NatMode::DestinationIndependent => {
-            format!(
-                "oif \"{wan}\" snat to {ip}",
-                wan = wan_if,
-                ip = wan_ip
-            )
+            format!("oif \"{wan}\" snat to {ip}", wan = wan_if, ip = wan_ip)
         }
         NatMode::DestinationDependent => {
-            format!(
-                "oif \"{wan}\" masquerade random",
-                wan = wan_if
-            )
+            format!("oif \"{wan}\" masquerade random", wan = wan_if)
         }
     };
 
@@ -870,21 +1055,13 @@ pub fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, u32)]) 
         cmd
     });
 
-    let base_args = ["class", "add", "dev", ifname, "parent", "1:", "classid", "1:1", "htb", "rate", "1000mbit"];
+    let base_args = [
+        "class", "add", "dev", ifname, "parent", "1:", "classid", "1:1", "htb", "rate", "1000mbit",
+    ];
     let status = run_in_netns(ns, {
         let mut cmd = std::process::Command::new("tc");
         cmd.args([
-            "qdisc",
-            "add",
-            "dev",
-            ifname,
-            "root",
-            "handle",
-            "1:",
-            "htb",
-            "default",
-            "1",
-            "r2q",
+            "qdisc", "add", "dev", ifname, "root", "handle", "1:", "htb", "default", "1", "r2q",
             "1",
         ]);
         cmd
@@ -909,19 +1086,8 @@ pub fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, u32)]) 
         let status = run_in_netns(ns, {
             let mut cmd = std::process::Command::new("tc");
             cmd.args([
-                "class",
-                "add",
-                "dev",
-                ifname,
-                "parent",
-                "1:",
-                "classid",
-                &class_id,
-                "htb",
-                "rate",
+                "class", "add", "dev", ifname, "parent", "1:", "classid", &class_id, "htb", "rate",
                 "1000mbit",
-                "r2q",
-                "1",
             ]);
             cmd
         })?;
@@ -932,7 +1098,17 @@ pub fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, u32)]) 
         let status = run_in_netns(ns, {
             let mut cmd = std::process::Command::new("tc");
             cmd.args([
-                "qdisc", "add", "dev", ifname, "parent", &class_id, "handle", &handle, "netem", "delay", &format!("{}ms", latency),
+                "qdisc",
+                "add",
+                "dev",
+                ifname,
+                "parent",
+                &class_id,
+                "handle",
+                &handle,
+                "netem",
+                "delay",
+                &format!("{}ms", latency),
             ]);
             cmd
         })?;
@@ -961,6 +1137,7 @@ pub fn apply_impair_in(ns: &str, ifname: &str, impair: Impair) {
     let _ = run_in_netns(ns, {
         let mut cmd = std::process::Command::new("tc");
         cmd.args(["qdisc", "del", "dev", ifname, "root"]);
+        cmd.stderr(std::process::Stdio::null());
         cmd
     });
 
@@ -987,13 +1164,18 @@ pub fn apply_impair_in(ns: &str, ifname: &str, impair: Impair) {
         Impair::Mobile => {
             let mut cmd = std::process::Command::new("tc");
             cmd.args([
-                "qdisc", "add", "dev", ifname, "root", "netem", "delay", "50ms", "20ms", "loss", "1%",
+                "qdisc", "add", "dev", ifname, "root", "netem", "delay", "50ms", "20ms", "loss",
+                "1%",
             ]);
             if let Err(e) = run_in_netns(ns, cmd) {
                 eprintln!("warn: apply_impair_in({}): {}", ifname, e);
             }
         }
-        Impair::Manual { rate, loss, latency } => {
+        Impair::Manual {
+            rate,
+            loss,
+            latency,
+        } => {
             let mut cmd = std::process::Command::new("tc");
             cmd.args([
                 "qdisc",
@@ -1060,19 +1242,158 @@ impl TaskHandle {
 // rtnetlink helpers
 // ─────────────────────────────────────────────
 
+struct Netlink {
+    handle: Handle,
+    ops: u64,
+}
+
+impl Netlink {
+    fn new(handle: Handle) -> Self {
+        Self { handle, ops: 0 }
+    }
+
+    fn bump(&mut self) {
+        self.ops = self.ops.wrapping_add(1);
+    }
+
+    async fn link_index(&mut self, ifname: &str) -> Result<u32> {
+        self.bump();
+        debug!(ifname = %ifname, "netlink: lookup link index");
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(ifname.to_string())
+            .execute();
+        links
+            .try_next()
+            .await?
+            .map(|msg| msg.header.index)
+            .ok_or_else(|| anyhow!("link not found: {}", ifname))
+    }
+
+    async fn ensure_link_deleted(&mut self, ifname: &str) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, "netlink: ensure link deleted");
+        if let Ok(idx) = self.link_index(ifname).await {
+            debug!(ifname = %ifname, idx, "netlink: delete link");
+            self.handle.link().del(idx).execute().await?;
+        }
+        Ok(())
+    }
+
+    async fn add_bridge(&mut self, name: &str) -> Result<()> {
+        self.bump();
+        debug!(bridge = %name, "netlink: add bridge");
+        self.handle
+            .link()
+            .add(LinkBridge::new(name).build())
+            .execute()
+            .await?;
+        resources().register_link(name);
+        Ok(())
+    }
+
+    async fn add_veth(&mut self, a: &str, b: &str) -> Result<()> {
+        self.bump();
+        debug!(a = %a, b = %b, "netlink: add veth pair");
+        self.handle
+            .link()
+            .add(LinkVeth::new(a, b).build())
+            .execute()
+            .await?;
+        resources().register_link(a);
+        resources().register_link(b);
+        Ok(())
+    }
+
+    async fn set_link_up(&mut self, ifname: &str) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, "netlink: set link up");
+        let idx = self.link_index(ifname).await?;
+        let msg = LinkUnspec::new_with_index(idx).up().build();
+        self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
+    async fn rename_link(&mut self, from: &str, to: &str) -> Result<()> {
+        self.bump();
+        debug!(from = %from, to = %to, "netlink: rename link");
+        let idx = self.link_index(from).await?;
+        let msg = LinkUnspec::new_with_index(idx).name(to.to_string()).build();
+        self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
+    async fn set_master(&mut self, ifname: &str, master: &str) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, master = %master, "netlink: set master");
+        let idx = self.link_index(ifname).await?;
+        let midx = self.link_index(master).await?;
+        let msg = LinkUnspec::new_with_index(idx).controller(midx).build();
+        self.handle.link().set(msg).execute().await?;
+        Ok(())
+    }
+
+    async fn move_link_to_netns(&mut self, ifname: &str, ns_fd: &File) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, "netlink: move link to netns");
+        let idx = self.link_index(ifname).await?;
+        let msg = LinkUnspec::new_with_index(idx)
+            .setns_by_fd(ns_fd.as_raw_fd())
+            .build();
+        self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
+    async fn add_addr4(&mut self, ifname: &str, cidr: &str) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, cidr = %cidr, "netlink: add IPv4 address");
+        let idx = self.link_index(ifname).await?;
+        let (ip, prefix) = parse_cidr_v4(cidr)?;
+        self.handle
+            .address()
+            .add(idx, ip.into(), prefix)
+            .execute()
+            .await?;
+        Ok(())
+    }
+
+    async fn add_default_route_v4(&mut self, via: Ipv4Addr) -> Result<()> {
+        self.bump();
+        debug!(via = %via, "netlink: add default route");
+        let msg = RouteMessageBuilder::<Ipv4Addr>::new().gateway(via).build();
+        self.handle.route().add(msg).execute().await?;
+        Ok(())
+    }
+
+    async fn add_route_v4(&mut self, dst_cidr: &str, via: Ipv4Addr) -> Result<()> {
+        self.bump();
+        debug!(dst = %dst_cidr, via = %via, "netlink: add route");
+        let (dst, prefix) = parse_cidr_v4(dst_cidr)?;
+        let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(dst, prefix)
+            .gateway(via)
+            .build();
+        self.handle.route().add(msg).execute().await?;
+        Ok(())
+    }
+}
+
 async fn with_root_netlink<F>(f: F) -> Result<()>
 where
-    F: AsyncFnOnce(&Handle) -> Result<()>,
+    F: AsyncFnOnce(&mut Netlink) -> Result<()>,
 {
     debug!("netlink: open root rtnetlink connection");
     let (conn, handle, _) = new_connection().context("rtnetlink new_connection")?;
     tokio::spawn(conn);
-    f(&handle).await
+    let mut nl = Netlink::new(handle);
+    f(&mut nl).await
 }
 
 async fn with_netns<F>(ns: &str, f: F) -> Result<()>
 where
-    F: AsyncFnOnce(&Handle) -> Result<()>,
+    F: AsyncFnOnce(&mut Netlink) -> Result<()>,
 {
     debug!(ns = %ns, "netlink: enter namespace");
     let orig = File::open("/proc/self/ns/net").context("open self netns")?;
@@ -1082,117 +1403,14 @@ where
     let res = async {
         let (conn, handle, _) = new_connection().context("rtnetlink new_connection in netns")?;
         tokio::spawn(conn);
-        f(&handle).await
+        let mut nl = Netlink::new(handle);
+        f(&mut nl).await
     }
     .await;
 
     debug!(ns = %ns, "netlink: exit namespace");
     setns(&orig, CloneFlags::CLONE_NEWNET).context("restore setns")?;
     res
-}
-
-async fn link_index(handle: &Handle, ifname: &str) -> Result<u32> {
-    debug!(ifname = %ifname, "netlink: lookup link index");
-    let mut links = handle.link().get().match_name(ifname.to_string()).execute();
-    links
-        .try_next()
-        .await?
-        .map(|msg| msg.header.index)
-        .ok_or_else(|| anyhow!("link not found: {}", ifname))
-}
-
-async fn ensure_link_deleted(handle: &Handle, ifname: &str) -> Result<()> {
-    debug!(ifname = %ifname, "netlink: ensure link deleted");
-    if let Ok(idx) = link_index(handle, ifname).await {
-        debug!(ifname = %ifname, idx, "netlink: delete link");
-        handle.link().del(idx).execute().await?;
-    }
-    Ok(())
-}
-
-async fn add_bridge(handle: &Handle, name: &str) -> Result<()> {
-    debug!(bridge = %name, "netlink: add bridge");
-    handle
-        .link()
-        .add(LinkBridge::new(name).build())
-        .execute()
-        .await?;
-    Ok(())
-}
-
-async fn add_veth(handle: &Handle, a: &str, b: &str) -> Result<()> {
-    debug!(a = %a, b = %b, "netlink: add veth pair");
-    handle
-        .link()
-        .add(LinkVeth::new(a, b).build())
-        .execute()
-        .await?;
-    Ok(())
-}
-
-async fn set_link_up(handle: &Handle, ifname: &str) -> Result<()> {
-    debug!(ifname = %ifname, "netlink: set link up");
-    let idx = link_index(handle, ifname).await?;
-    let msg = LinkUnspec::new_with_index(idx).up().build();
-    handle.link().change(msg).execute().await?;
-    Ok(())
-}
-
-async fn rename_link(handle: &Handle, from: &str, to: &str) -> Result<()> {
-    debug!(from = %from, to = %to, "netlink: rename link");
-    let idx = link_index(handle, from).await?;
-    let msg = LinkUnspec::new_with_index(idx).name(to.to_string()).build();
-    handle.link().change(msg).execute().await?;
-    Ok(())
-}
-
-async fn set_master(handle: &Handle, ifname: &str, master: &str) -> Result<()> {
-    debug!(ifname = %ifname, master = %master, "netlink: set master");
-    let idx = link_index(handle, ifname).await?;
-    let midx = link_index(handle, master).await?;
-    let msg = LinkUnspec::new_with_index(idx).controller(midx).build();
-    handle.link().set(msg).execute().await?;
-    Ok(())
-}
-
-async fn move_link_to_netns(handle: &Handle, ifname: &str, ns_fd: &File) -> Result<()> {
-    debug!(ifname = %ifname, "netlink: move link to netns");
-    let idx = link_index(handle, ifname).await?;
-    let msg = LinkUnspec::new_with_index(idx)
-        .setns_by_fd(ns_fd.as_raw_fd())
-        .build();
-    handle.link().change(msg).execute().await?;
-    Ok(())
-}
-
-async fn add_addr4(handle: &Handle, ifname: &str, cidr: &str) -> Result<()> {
-    debug!(ifname = %ifname, cidr = %cidr, "netlink: add IPv4 address");
-    let idx = link_index(handle, ifname).await?;
-    let (ip, prefix) = parse_cidr_v4(cidr)?;
-    handle
-        .address()
-        .add(idx, ip.into(), prefix)
-        .execute()
-        .await?;
-    Ok(())
-}
-
-async fn add_default_route_v4(handle: &Handle, via: Ipv4Addr) -> Result<()> {
-    debug!(via = %via, "netlink: add default route");
-    let msg = RouteMessageBuilder::<Ipv4Addr>::new().gateway(via).build();
-    handle.route().add(msg).execute().await?;
-    Ok(())
-}
-
-async fn add_route_v4(handle: &Handle, dst_cidr: &str, via: Ipv4Addr) -> Result<()> {
-    debug!(dst = %dst_cidr, via = %via, "netlink: add route");
-    let (dst, prefix) = parse_cidr_v4(dst_cidr)?;
-    let msg = RouteMessageBuilder::<Ipv4Addr>::new()
-        .destination_prefix(dst, prefix)
-        .gateway(via)
-        .build();
-    handle.route().add(msg).execute().await?;
-    Ok(())
 }
 
 fn parse_cidr_v4(cidr: &str) -> Result<(Ipv4Addr, u8)> {

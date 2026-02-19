@@ -34,14 +34,10 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, bail, Context, Result};
-use nix::{
-    sched::{setns, CloneFlags},
-    unistd::Pid,
-};
+use nix::unistd::Pid;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    fs::File,
     io::ErrorKind,
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::Path,
@@ -53,10 +49,11 @@ use tracing::debug;
 
 pub mod core;
 use crate::core::{
-    cleanup_netns, open_netns_fd, run_in_netns, spawn_in_netns, spawn_in_netns_thread,
+    cleanup_netns, resources, run_in_netns, spawn_in_netns, spawn_in_netns_thread,
     with_netns_thread, CoreConfig, DownstreamPool, LabCore, RouterConfig, TaskHandle,
 };
 
+/// Stable identifier for devices/routers/switches in the lab.
 pub use crate::core::NodeId;
 
 // ─────────────────────────────────────────────
@@ -136,6 +133,7 @@ pub enum Gateway {
 /// Observed external address as reported by a STUN-like reflector.
 #[derive(Clone, Debug)]
 pub struct ObservedAddr {
+    /// External socket address observed by the reflector.
     pub observed: SocketAddr,
 }
 
@@ -143,11 +141,15 @@ pub struct ObservedAddr {
 // Lab
 // ─────────────────────────────────────────────
 
+/// High-level lab API built on top of `LabCore`.
+///
+/// The `dc/home/isp` notions are convenience shorthands for tests and configs.
 pub struct Lab {
     /// Short process-unique prefix used on root-namespace interface names.
     prefix: String,
-    next_isp_ix: u8,
-    next_dc_ix: u8,
+    bridge_tag: String,
+    bridge_counter: u32,
+    ns_counter: u32,
     isp_by_name: HashMap<String, NodeId>,
     dc_by_name: HashMap<String, NodeId>,
     home_by_name: HashMap<String, NodeId>,
@@ -166,29 +168,35 @@ enum ChildTask {
     Process(std::process::Child),
     Thread {
         handle: TaskHandle,
-        join: thread::JoinHandle<()>,
+        join: thread::JoinHandle<Result<()>>,
     },
 }
 
 impl Lab {
     // ── Constructors ────────────────────────────────────────────────────
 
+    /// Create a new lab with default address ranges and IX settings.
     pub fn new() -> Self {
         let pid = std::process::id();
-        let prefix = format!("p{}", pid % 9999 + 1); // e.g. "p1234" (5 chars)
+        let pid_tag = pid % 9999 + 1;
+        let prefix = format!("lab-p{}", pid_tag); // e.g. "lab-p1234"
+        let bridge_tag = format!("p{}", pid_tag);
         let ix_gw = Ipv4Addr::new(203, 0, 113, 1);
+        resources().register_prefix(&prefix);
         let core = LabCore::new(CoreConfig {
             prefix: prefix.clone(),
-            ix_br: format!("br{}", pid % 9999 + 1),
+            ix_br: format!("br-{}-1", bridge_tag),
             ix_gw,
             ix_cidr: "203.0.113.0/24".parse().expect("valid ix cidr"),
             private_cidr: "10.0.0.0/16".parse().expect("valid private cidr"),
             public_cidr: "203.0.113.0/24".parse().expect("valid public cidr"),
         });
+        resources().register_prefix(&format!("br-{}-", bridge_tag));
         Self {
             prefix,
-            next_isp_ix: 10,
-            next_dc_ix: 250,
+            bridge_tag,
+            bridge_counter: 2,
+            ns_counter: 1,
             isp_by_name: HashMap::new(),
             dc_by_name: HashMap::new(),
             home_by_name: HashMap::new(),
@@ -199,8 +207,17 @@ impl Lab {
         }
     }
 
+    fn next_bridge_name(&mut self) -> String {
+        let name = format!("br-{}-{}", self.bridge_tag, self.bridge_counter);
+        self.bridge_counter = self.bridge_counter.saturating_add(1);
+        name
+    }
+
     /// Initialize tracing for this crate (idempotent). Honors `RUST_LOG`;
     /// defaults to `netsim=debug` if unset.
+    /// Initialize tracing for this crate (idempotent).
+    ///
+    /// Honors `RUST_LOG`; defaults to `netsim=debug` if unset.
     pub fn init_tracing() {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("netsim=debug"));
@@ -209,6 +226,9 @@ impl Lab {
 
     /// Parse `lab.toml`, instantiate the lab, run `build()`, and return the
     /// ready-to-use lab.  Must be called on a `current_thread` Tokio runtime.
+    /// Parse `lab.toml`, build the network, and return a ready-to-use lab.
+    ///
+    /// Must be called on a `current_thread` Tokio runtime.
     pub async fn load(path: impl AsRef<Path>) -> Result<Self> {
         let text = std::fs::read_to_string(path).context("read lab config")?;
         let cfg: config::LabConfig = toml::from_str(&text).context("parse lab config")?;
@@ -261,6 +281,9 @@ impl Lab {
 
     // ── Builder methods (sync — just populate data structures) ──────────
 
+    /// Add an ISP router.
+    ///
+    /// If `cgnat` is true the ISP uses CGNAT and assigns private downstream IPs.
     pub fn add_isp(
         &mut self,
         name: &str,
@@ -271,16 +294,17 @@ impl Lab {
         if self.isp_by_name.contains_key(name) {
             bail!("isp '{}' already exists", name);
         }
-        let ns = self.ns_name(name);
+        let ns = self.ns_name();
         let downstream_pool = if cgnat {
             DownstreamPool::Private
         } else {
             DownstreamPool::Public
         };
+        let downlink_bridge = self.next_bridge_name();
         let cfg = RouterConfig {
             nat: None,
             cgnat,
-            downlink_bridge: "br-sub".to_string(),
+            downlink_bridge,
             downstream_pool,
         };
         let id = self
@@ -288,9 +312,7 @@ impl Lab {
             .add_router(name, ns, cfg, Some(region.to_string()));
         let sub_switch = self.core.add_switch(&format!("{name}-sub"), None, None);
         let _ = self.core.connect_router_downlink(id, sub_switch)?;
-        let o = self.core.ix_gw().octets();
-        let ix_ip = Ipv4Addr::new(o[0], o[1], o[2], self.next_isp_ix);
-        self.next_isp_ix = self.next_isp_ix.saturating_add(1);
+        let ix_ip = self.core.alloc_ix_ip_low();
         let _ = self
             .core
             .connect_router_uplink(id, self.core.ix_sw(), Some(ix_ip))?;
@@ -300,15 +322,17 @@ impl Lab {
         Ok(id)
     }
 
+    /// Add a DC router with public downstream addressing.
     pub fn add_dc(&mut self, name: &str, region: &str) -> Result<NodeId> {
         if self.dc_by_name.contains_key(name) {
             bail!("dc '{}' already exists", name);
         }
-        let ns = self.ns_name(name);
+        let ns = self.ns_name();
+        let downlink_bridge = self.next_bridge_name();
         let cfg = RouterConfig {
             nat: None,
             cgnat: false,
-            downlink_bridge: "br-lan".to_string(),
+            downlink_bridge,
             downstream_pool: DownstreamPool::Public,
         };
         let id = self
@@ -316,9 +340,7 @@ impl Lab {
             .add_router(name, ns, cfg, Some(region.to_string()));
         let lan_switch = self.core.add_switch(&format!("{name}-lan"), None, None);
         let _ = self.core.connect_router_downlink(id, lan_switch)?;
-        let o = self.core.ix_gw().octets();
-        let ix_ip = Ipv4Addr::new(o[0], o[1], o[2], self.next_dc_ix);
-        self.next_dc_ix = self.next_dc_ix.saturating_sub(1);
+        let ix_ip = self.core.alloc_ix_ip_high();
         let _ = self
             .core
             .connect_router_uplink(id, self.core.ix_sw(), Some(ix_ip))?;
@@ -327,15 +349,17 @@ impl Lab {
         Ok(id)
     }
 
+    /// Add a home router connected to an ISP.
     pub fn add_home(&mut self, name: &str, isp: NodeId, nat: NatMode) -> Result<NodeId> {
         if self.home_by_name.contains_key(name) {
             bail!("home '{}' already exists", name);
         }
-        let ns = self.ns_name(name);
+        let ns = self.ns_name();
+        let downlink_bridge = self.next_bridge_name();
         let cfg = RouterConfig {
             nat: Some(nat),
             cgnat: false,
-            downlink_bridge: "br-lan".to_string(),
+            downlink_bridge,
             downstream_pool: DownstreamPool::Private,
         };
         let id = self.core.add_router(name, ns, cfg, None);
@@ -352,6 +376,7 @@ impl Lab {
         Ok(id)
     }
 
+    /// Add a device and attach it to a gateway router.
     pub fn add_device(
         &mut self,
         name: &str,
@@ -361,7 +386,7 @@ impl Lab {
         if self.device_by_name.contains_key(name) {
             bail!("device '{}' already exists", name);
         }
-        let ns = self.ns_name(name);
+        let ns = self.ns_name();
         let id = self.core.add_device(name, ns, impair);
         let gw_router = match gateway {
             Gateway::Lan(id) | Gateway::Dc(id) | Gateway::Isp(id) => id,
@@ -381,12 +406,18 @@ impl Lab {
     /// Must be called on a `current_thread` Tokio runtime because `setns(2)`
     /// is thread-local and we must ensure all netlink operations happen in the
     /// correct namespace on the same OS thread.
+    /// Create all namespaces, links, addresses, routes, and NAT rules.
+    ///
+    /// Must be called on a `current_thread` Tokio runtime because `setns(2)`
+    /// is thread-local and we must ensure all netlink operations happen in the
+    /// correct namespace on the same OS thread.
     pub async fn build(&mut self) -> Result<()> {
         self.core.build(&self.region_latencies).await
     }
 
     // ── User-facing API ─────────────────────────────────────────────────
 
+    /// Add a one-way inter-region latency in milliseconds.
     /// Add a one-way inter-region latency in milliseconds.
     pub fn add_region_latency(&mut self, from: &str, to: &str, latency_ms: u32) {
         self.region_latencies
@@ -398,11 +429,15 @@ impl Lab {
     /// ```no_run
     /// # use netsim::Lab;
     /// # use std::process::Command;
+    /// # fn main() -> anyhow::Result<()> {
     /// # let lab = Lab::new();
     /// let mut cmd = Command::new("ping");
     /// cmd.args(["-c1", "1.1.1.1"]);
     /// lab.run_on("home-eu1", cmd)?;
+    /// # Ok(())
+    /// # }
     /// ```
+    /// Run a command inside a device namespace (blocks until it exits).
     pub fn run_on(&self, name: &str, cmd: std::process::Command) -> Result<ExitStatus> {
         let id = self
             .device_by_name
@@ -413,11 +448,17 @@ impl Lab {
         run_in_netns(ns, cmd)
     }
 
-    /// Run a closure inside a named network namespace. The closure runs on
-    /// a dedicated OS thread so you can coordinate with channels, runtimes, etc.
+    /// Run a closure inside a named network namespace.
+    ///
+    /// The closure runs on a dedicated OS thread so you can coordinate with
+    /// channels or build a current-thread runtime inside it.
     ///
     /// Note: `ns_name` is the namespace name (e.g. from `lab.node_ns(id)`).
-    pub fn run_in<F, R>(&self, ns_name: &str, f: F) -> Result<R>
+    /// Run a closure inside a named network namespace.
+    ///
+    /// The closure runs on a dedicated OS thread so you can coordinate with
+    /// channels or build a current-thread runtime inside it.
+    pub fn run_in<F, R>(ns_name: &str, f: F) -> Result<R>
     where
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
@@ -427,7 +468,9 @@ impl Lab {
 
     /// Spawn a thread that enters `ns_name`, runs `f`, restores the namespace,
     /// and returns its result via the join handle.
-    pub fn run_in_thread<F, R>(&self, ns_name: &str, f: F) -> thread::JoinHandle<Result<R>>
+    /// Spawn a thread that enters `ns_name`, runs `f`, restores the namespace,
+    /// and returns its result via the join handle.
+    pub fn run_in_thread<F, R>(ns_name: &str, f: F) -> thread::JoinHandle<Result<R>>
     where
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
@@ -435,6 +478,8 @@ impl Lab {
         spawn_in_netns_thread(ns_name.to_string(), f)
     }
 
+    /// Spawn a long-running process inside a device namespace and return its PID.
+    /// The process is killed when the `Lab` is dropped.
     /// Spawn a long-running process inside a device namespace and return its PID.
     /// The process is killed when the `Lab` is dropped.
     pub fn spawn_on(&mut self, name: &str, cmd: std::process::Command) -> Result<Pid> {
@@ -455,6 +500,9 @@ impl Lab {
     /// Spawn a UDP reflector in a named device/DC/ISP namespace.
     ///
     /// Use `dc_ix_ip(dc)` or `isp_public_ip(isp)` to pick a bind address.
+    /// Spawn a UDP reflector in a named device/DC/ISP namespace.
+    ///
+    /// Use `dc_ix_ip(dc)` or `isp_public_ip(isp)` to pick a bind address.
     pub fn spawn_reflector(&mut self, ns_name: &str, bind: SocketAddr) -> Result<TaskHandle> {
         let (handle, join) = spawn_reflector_in(Some(ns_name), bind)?;
         self.children.push(ChildTask::Thread {
@@ -465,6 +513,7 @@ impl Lab {
     }
 
     /// Spawn a UDP reflector in the root namespace (IX bridge side).
+    /// Spawn a UDP reflector in the root namespace (IX bridge side).
     pub fn spawn_reflector_on_ix(&mut self, bind: SocketAddr) -> Result<TaskHandle> {
         let (handle, join) = spawn_reflector_in(None, bind)?;
         self.children.push(ChildTask::Thread {
@@ -474,6 +523,7 @@ impl Lab {
         Ok(handle)
     }
 
+    /// Probe the NAT mapping seen by a reflector from a named device.
     /// Probe the NAT mapping seen by a reflector from a named device.
     pub fn probe_udp_mapping(&self, device: &str, reflector: SocketAddr) -> Result<ObservedAddr> {
         let id = self
@@ -489,16 +539,19 @@ impl Lab {
 
     // ── Lookup helpers ───────────────────────────────────────────────────
 
+    /// Return the ISP's public IX address.
     pub fn isp_public_ip(&self, isp: NodeId) -> Result<IpAddr> {
         let r = self.core.router(isp).context("unknown isp id")?;
         Ok(IpAddr::V4(r.upstream_ip.context("missing ix ip")?))
     }
 
+    /// Return the DC's IX address.
     pub fn dc_ix_ip(&self, dc: NodeId) -> Result<Ipv4Addr> {
         let r = self.core.router(dc).context("unknown dc id")?;
         Ok(r.upstream_ip.context("missing ix ip")?)
     }
 
+    /// Return the network namespace name for a node.
     pub fn node_ns(&self, id: NodeId) -> Result<&str> {
         if let Some(r) = self.core.router(id) {
             return Ok(&r.ns);
@@ -509,6 +562,7 @@ impl Lab {
         Err(anyhow!("unknown node id"))
     }
 
+    /// Return the router's downstream gateway IP.
     pub fn router_downlink_gw(&self, id: NodeId) -> Result<Ipv4Addr> {
         self.core
             .router(id)
@@ -516,6 +570,7 @@ impl Lab {
             .ok_or_else(|| anyhow!("router missing downstream gw"))
     }
 
+    /// Return the router's uplink IP.
     pub fn router_uplink_ip(&self, id: NodeId) -> Result<Ipv4Addr> {
         self.core
             .router(id)
@@ -523,6 +578,7 @@ impl Lab {
             .ok_or_else(|| anyhow!("router missing upstream ip"))
     }
 
+    /// Return the device's assigned IP.
     pub fn device_ip(&self, id: NodeId) -> Result<Ipv4Addr> {
         self.core
             .device(id)
@@ -530,28 +586,47 @@ impl Lab {
             .ok_or_else(|| anyhow!("device missing ip"))
     }
 
+    /// Resolve an ISP name to its `NodeId`.
     pub fn isp_id(&self, name: &str) -> Option<NodeId> {
         self.isp_by_name.get(name).copied()
     }
+    /// Resolve a DC name to its `NodeId`.
     pub fn dc_id(&self, name: &str) -> Option<NodeId> {
         self.dc_by_name.get(name).copied()
     }
+    /// Resolve a home name to its `NodeId`.
     pub fn home_id(&self, name: &str) -> Option<NodeId> {
         self.home_by_name.get(name).copied()
     }
+    /// Resolve a device name to its `NodeId`.
     pub fn device_id(&self, name: &str) -> Option<NodeId> {
         self.device_by_name.get(name).copied()
     }
 
     /// The IX gateway IP (203.0.113.1) — useful for binding a root-ns reflector.
+    /// Return the IX gateway IP (203.0.113.1).
     pub fn ix_gw(&self) -> Ipv4Addr {
         self.core.ix_gw()
     }
 
+    /// Remove any known lab resources created by this process.
+    pub fn cleanup(&self) {
+        resources().cleanup_all();
+    }
+
+    /// Aggressively remove any resources whose names match the lab prefix.
+    ///
+    /// This is useful if a previous run crashed before it could clean up.
+    pub fn cleanup_everything() {
+        resources().cleanup_everything();
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
-    fn ns_name(&self, name: &str) -> String {
-        format!("{}-{}", self.prefix, name)
+    fn ns_name(&mut self) -> String {
+        let id = self.ns_counter;
+        self.ns_counter = self.ns_counter.saturating_add(1);
+        format!("{}-{}", self.prefix, id)
     }
 
     fn gateway_from_name(&self, name: &str) -> Result<Gateway> {
@@ -576,6 +651,7 @@ impl Default for Lab {
 
 impl Drop for Lab {
     fn drop(&mut self) {
+        resources().cleanup_all();
         for child in self.children.drain(..) {
             match child {
                 ChildTask::Process(mut proc) => {
@@ -591,10 +667,6 @@ impl Drop for Lab {
         for ns_name in self.core.all_ns_names() {
             cleanup_netns(&ns_name);
         }
-        // Best-effort IX bridge removal.
-        let _ = std::process::Command::new("ip")
-            .args(["link", "del", self.core.ix_br()])
-            .status();
     }
 }
 
@@ -608,19 +680,26 @@ mod config {
     use std::collections::HashMap;
 
     #[derive(Deserialize)]
+    /// Parsed lab configuration from TOML.
     pub struct LabConfig {
+        /// Optional region-latency map.
         pub region: Option<HashMap<String, RegionConfig>>,
+        /// ISP entries.
         #[serde(default)]
         pub isp: Vec<IspConfig>,
+        /// DC entries.
         #[serde(default)]
         pub dc: Vec<DcConfig>,
+        /// LAN entries (homes).
         #[serde(default)]
         pub lan: Vec<LanConfig>,
+        /// Device entries.
         #[serde(default)]
         pub device: Vec<DeviceConfig>,
     }
 
     #[derive(Deserialize)]
+    /// Per-region latency configuration.
     pub struct RegionConfig {
         /// Map of target-region name → one-way latency in ms.
         #[serde(default)]
@@ -630,32 +709,44 @@ mod config {
     /// `nat = "cgnat"` on an ISP entry.
     #[derive(Deserialize, PartialEq)]
     #[serde(rename_all = "lowercase")]
+    /// ISP NAT mode.
     pub enum IspNat {
         Cgnat,
     }
 
     #[derive(Deserialize)]
+    /// ISP configuration entry.
     pub struct IspConfig {
+        /// ISP name.
         pub name: String,
+        /// ISP region.
         pub region: String,
         /// Set to `"cgnat"` to enable CGNAT on this ISP.
         pub nat: Option<IspNat>,
+        /// Optional impairment applied to downstream links.
         pub impair_downstream: Option<ImpairCfg>,
     }
 
     #[derive(Deserialize)]
+    /// Impairment configuration.
     pub struct ImpairCfg {
+        /// One-way latency in milliseconds.
         pub latency: u32, // milliseconds added to downstream links
     }
 
     #[derive(Deserialize)]
+    /// Data center configuration entry.
     pub struct DcConfig {
+        /// DC name.
         pub name: String,
+        /// DC region.
         pub region: String,
     }
 
     #[derive(Deserialize)]
+    /// Home/LAN configuration entry.
     pub struct LanConfig {
+        /// LAN name.
         pub name: String,
         /// Name of an `[[isp]]` entry.
         pub isp: String,
@@ -664,7 +755,9 @@ mod config {
     }
 
     #[derive(Deserialize)]
+    /// Device configuration entry.
     pub struct DeviceConfig {
+        /// Device name.
         pub name: String,
         /// Name of a `[[lan]]`, `[[dc]]`, or `[[isp]]` entry.
         pub gateway: String,
@@ -683,43 +776,12 @@ mod config {
 fn spawn_reflector_in(
     ns: Option<&str>,
     bind: SocketAddr,
-) -> Result<(TaskHandle, thread::JoinHandle<()>)> {
+) -> Result<(TaskHandle, thread::JoinHandle<Result<()>>)> {
     let ns = ns.map(|s| s.to_string());
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    let join = thread::spawn(move || {
-        if let Some(ns) = ns {
-            if let Ok(orig) = File::open("/proc/self/ns/net") {
-                if let Ok(target) = open_netns_fd(&ns) {
-                    let _ = setns(&target, CloneFlags::CLONE_NEWNET);
-                    let sock = UdpSocket::bind(bind).expect("reflector bind");
-                    let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
-                    let mut buf = [0u8; 512];
-                    loop {
-                        if stop_rx.try_recv().is_ok() {
-                            break;
-                        }
-                        match sock.recv_from(&mut buf) {
-                            Ok((_, peer)) => {
-                                let msg = format!("OBSERVED {}", peer);
-                                let _ = sock.send_to(msg.as_bytes(), peer);
-                            }
-                            Err(e)
-                                if matches!(
-                                    e.kind(),
-                                    ErrorKind::WouldBlock | ErrorKind::TimedOut
-                                ) =>
-                            {
-                                continue;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    let _ = setns(&orig, CloneFlags::CLONE_NEWNET);
-                    return;
-                }
-            }
-        } else {
-            let sock = UdpSocket::bind(bind).expect("reflector bind");
+    let join = match ns {
+        Some(ns) => spawn_in_netns_thread(ns, move || {
+            let sock = UdpSocket::bind(bind).context("reflector bind")?;
             let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
             let mut buf = [0u8; 512];
             loop {
@@ -737,8 +799,30 @@ fn spawn_reflector_in(
                     Err(_) => break,
                 }
             }
-        }
-    });
+            Ok(())
+        }),
+        None => thread::spawn(move || {
+            let sock = UdpSocket::bind(bind).context("reflector bind")?;
+            let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
+            let mut buf = [0u8; 512];
+            loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                match sock.recv_from(&mut buf) {
+                    Ok((_, peer)) => {
+                        let msg = format!("OBSERVED {}", peer);
+                        let _ = sock.send_to(msg.as_bytes(), peer);
+                    }
+                    Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+            Ok(())
+        }),
+    };
     Ok((TaskHandle::new(stop_tx), join))
 }
 
@@ -750,11 +834,9 @@ fn probe_in_ns(
     timeout: Duration,
     bind_port: Option<u16>,
 ) -> Result<ObservedAddr> {
-    let ns_fd = open_netns_fd(ns)?;
-    let orig = File::open("/proc/self/ns/net")?;
-    setns(&ns_fd, CloneFlags::CLONE_NEWNET)?;
-
-    let res = (|| -> Result<ObservedAddr> {
+    let ns_name = ns.to_string();
+    let ns_for_log = ns_name.clone();
+    with_netns_thread(&ns_name, move || {
         let bind_addr = match bind_port {
             Some(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
             None => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -776,7 +858,7 @@ fn probe_in_ns(
                 }
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                     debug!(
-                        ns = %ns,
+                        ns = %ns_for_log,
                         attempt,
                         "probe timeout waiting for reflector reply"
                     );
@@ -786,10 +868,7 @@ fn probe_in_ns(
             }
         }
         Err(anyhow!("probe timed out after 3 attempts"))
-    })();
-
-    setns(&orig, CloneFlags::CLONE_NEWNET)?;
-    res
+    })
 }
 
 // ─────────────────────────────────────────────
@@ -831,8 +910,8 @@ mod tests {
             Ok(start.elapsed())
         })
     }
-    fn spawn_tcp_echo_in(lab: &Lab, ns: &str, bind: SocketAddr) -> thread::JoinHandle<Result<()>> {
-        lab.run_in_thread(ns, move || {
+    fn spawn_tcp_echo_in(ns: &str, bind: SocketAddr) -> thread::JoinHandle<Result<()>> {
+        Lab::run_in_thread(ns, move || {
             let listener = std::net::TcpListener::bind(bind).context("tcp echo bind")?;
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 64];
@@ -844,11 +923,7 @@ mod tests {
     }
 
     fn tcp_roundtrip_in_ns(ns: &str, target: SocketAddr) -> Result<()> {
-        let ns_fd = open_netns_fd(ns)?;
-        let orig = File::open("/proc/self/ns/net")?;
-        setns(&ns_fd, CloneFlags::CLONE_NEWNET)?;
-
-        let res = (|| -> Result<()> {
+        with_netns_thread(ns, move || {
             let timeout = Duration::from_millis(500);
             let mut stream = std::net::TcpStream::connect_timeout(&target, timeout)?;
             stream.set_read_timeout(Some(timeout))?;
@@ -861,10 +936,7 @@ mod tests {
                 bail!("tcp echo mismatch: {:?}", buf);
             }
             Ok(())
-        })();
-
-        setns(&orig, CloneFlags::CLONE_NEWNET)?;
-        res
+        })
     }
 
     // ── Builder-API NAT tests ────────────────────────────────────────────
@@ -1064,7 +1136,7 @@ gateway = "lan1"
         let dc_ip = lab.dc_ix_ip(dc)?;
         let bind = SocketAddr::new(IpAddr::V4(dc_ip), 9000);
         let dc_ns = lab.node_ns(dc)?.to_string();
-        let join = spawn_tcp_echo_in(&lab, &dc_ns, bind);
+        let join = spawn_tcp_echo_in(&dc_ns, bind);
 
         tokio::time::sleep(Duration::from_millis(250)).await;
 
