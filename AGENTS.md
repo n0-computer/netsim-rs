@@ -112,6 +112,11 @@ when a task is ready run the checks then ask to commit, don't commit without ask
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
 
 ## Recent Changes
+- Added standalone workspace binary crate `crates/netsim-vm` with CLI commands: `up`, `down`, `status`, `cleanup`, `ssh`, `run`, and `test`.
+- `netsim-vm run` now supports `--netsim-version` sources: `latest`, release tags (e.g. `0.10.0`), and git refs via `git:<ref>` (e.g. `git:feat/foo`), staging guest runner binary under `/work/.netsim-bin/netsim`.
+- Implemented artifact strategy A staging in `netsim-vm`: `--binary` overrides (`path|build|fetch`) are resolved on host and rewritten to staged guest paths under `/work/binaries/*`.
+- Added `netsim-vm test` VM test flow: host `cargo test --no-run --target ... --message-format json` artifact discovery, staging to `/work/binaries/tests`, guest execution, and pass/fail summary.
+- Updated `Makefile.toml` VM tasks to invoke `cargo run -p netsim-vm -- ...` (`run-vm`, `test-vm`, `setup-vm`, `vm-status`, `vm-down`) instead of `qemu-vm.sh`.
 - Added optional Chuck-compatible reporting output for sim runs:
   - New `[sim] chuck_compat = true` emits `report/<sim>__transfer.json` and `report/integration_<sim>__transfer.json` alongside standard netsim reports (`src/sim/mod.rs`, `src/sim/report.rs`, `src/sim/runner.rs`).
 - Ported legacy iroh/chuck JSON suites from `resources/iroh-sims` into current TOML format under `iroh-integration/sims-ported/` (63 case files) with conversion notes in `iroh-integration/sims-ported/PORTED_FROM_RESOURCES.md`.

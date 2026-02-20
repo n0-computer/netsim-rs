@@ -1,18 +1,10 @@
 [config]
-
-[env]
-VM_NAME = "netsim-vm"
-MUSL_TARGET = "x86_64-unknown-linux-musl"
-QEMU_WRAPPER = "./qemu-vm.sh"
+default_to_workspace = false
 
 [tasks.setup-vm]
 script = ["""
   set -euo pipefail
-  TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
-  WORK_BASE="${PWD}/.netsim-work"
-  mkdir -p "${TARGET_BASE}"
-  mkdir -p "${WORK_BASE}"
-  QEMU_VM_NAME="${VM_NAME}" QEMU_VM_TARGET_DIR="${TARGET_BASE}" QEMU_VM_WORK_DIR="${WORK_BASE}" ${QEMU_WRAPPER} up
+  cargo run -p netsim-vm -- up
   """]
 
 [tasks.target-dir]
@@ -30,20 +22,6 @@ script = ['''
 [tasks.setcap]
 command = "./setcap.sh"
 
-[tasks.build-vm]
-command = "cargo"
-args = ["build", "--release", "--target", "${MUSL_TARGET}"]
-
-[tasks.build-test-vm]
-script = ['''
-  set -euo pipefail
-  TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
-  DEPS_DIR="${TARGET_BASE}/${MUSL_TARGET}/debug/deps"
-  mkdir -p "${DEPS_DIR}"
-  find "${DEPS_DIR}" -maxdepth 1 -type f -name "${CARGO_MAKE_CRATE_NAME}-*" -perm -111 -delete || true
-  cargo test --no-run --target "${MUSL_TARGET}"
-  ''']
-
 [tasks.run-local]
 dependencies = ["setcap"]
 command = "cargo"
@@ -54,56 +32,28 @@ dependencies = ["setcap"]
 command = "cargo"
 args = ["test", "${@}"]
 
-[tasks.prepare-vm]
-dependencies = ["setup-vm"]
+[tasks.run-vm]
 script = ['''
-  QEMU_VM_NAME="${VM_NAME}" ${QEMU_WRAPPER} ssh -- "sudo bash -s" <<'EOF'
   set -euo pipefail
-  export DEBIAN_FRONTEND=noninteractive
-
-  if ! command -v ip >/dev/null 2>&1 || \
-     ! command -v tc >/dev/null 2>&1 || \
-     ! command -v nft >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y \
-      bridge-utils iproute2 iputils-ping iptables nftables \
-      net-tools curl iperf3 jq
-  fi
-
-  modprobe sch_netem || true
-  sysctl -w net.ipv4.ip_forward=1
-EOF
+  TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+  cargo run -p netsim-vm -- run --netsim-version "path:${TARGET_BASE}/debug/netsim" ${@}
   ''']
 
-[tasks.run-vm]
-command = "cargo"
-args = ["run", "--", "run-vm", "${@}"]
-
 [tasks.test-vm]
-dependencies = ["setup-vm", "build-test-vm", "prepare-vm"]
 script = ['''
-  QEMU_VM_NAME="${VM_NAME}" ${QEMU_WRAPPER} ssh -- "sudo bash -s" <<EOF
   set -euo pipefail
-  for t in /target/${MUSL_TARGET}/debug/deps/${CARGO_MAKE_CRATE_NAME}-*; do
-    case "\$t" in
-      *.d) continue ;;
-    esac
-    if [ -x "\$t" ]; then
-      "\$t" ${@}
-    fi
-  done
-EOF
+  cargo run -p netsim-vm -- test --target "x86_64-unknown-linux-musl" -- ${@}
   ''']
 
 [tasks.vm-status]
 script = ['''
-  QEMU_VM_NAME="${VM_NAME}" ${QEMU_WRAPPER} status
+  cargo run -p netsim-vm -- status
   ''']
 
 [tasks.vm-down]
 script = ['''
   echo "Shutting down QEMU VM..."
-  QEMU_VM_NAME="${VM_NAME}" ${QEMU_WRAPPER} down
+  cargo run -p netsim-vm -- down
   ''']
 
 [tasks.start]

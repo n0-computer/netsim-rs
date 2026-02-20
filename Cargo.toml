@@ -3,6 +3,10 @@ name = "netsim"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = [".", "crates/netsim-vm"]
+resolver = "2"
+
 [dependencies]
 anyhow  = "1"
 tokio   = { version = "1", features = ["full"] }
