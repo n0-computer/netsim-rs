@@ -20,6 +20,11 @@ if [[ "$EUID" -ne 0 ]]; then
     echo "setcap.sh: sudo not found; run as root."
     exit 1
   fi
+  if ! sudo -n true >/dev/null 2>&1; then
+    echo "setcap.sh: sudo is unavailable in this session (likely no_new_privs/container policy)."
+    echo "setcap.sh: run this script as root, or use a VM task."
+    exit 1
+  fi
 fi
 
 maybe_sudo=()
@@ -35,6 +40,29 @@ if [[ -z "${crate_name}" ]]; then
   exit 1
 fi
 
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  md_target="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+  if [[ -n "${md_target}" && "${md_target}" != "null" ]]; then
+    if [[ -d "${md_target}" ]]; then
+      if [[ -w "${md_target}" ]]; then
+        export CARGO_TARGET_DIR="${md_target}"
+      else
+        export CARGO_TARGET_DIR="${PWD}/target"
+      fi
+    else
+      parent_dir="$(dirname "${md_target}")"
+      if [[ -w "${parent_dir}" ]]; then
+        export CARGO_TARGET_DIR="${md_target}"
+      else
+        export CARGO_TARGET_DIR="${PWD}/target"
+      fi
+    fi
+  else
+    export CARGO_TARGET_DIR="${PWD}/target"
+  fi
+fi
+echo "Using CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
+
 echo "Granting capabilities to system tools (ip/tc/nft) if present..."
 for bin in /usr/sbin/ip /sbin/ip /usr/bin/ip /usr/sbin/tc /sbin/tc /usr/bin/tc /usr/sbin/nft /sbin/nft /usr/bin/nft; do
   if [[ -x "$bin" ]]; then
@@ -48,7 +76,7 @@ cargo build
 cargo test --no-run
 
 host_target="$(rustc -vV | awk '/^host:/{print $2}')"
-base_target_dir="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+base_target_dir="${CARGO_TARGET_DIR}"
 if [[ -z "${base_target_dir}" || "${base_target_dir}" == "null" ]]; then
   echo "setcap.sh: failed to determine target dir via cargo metadata."
   exit 1

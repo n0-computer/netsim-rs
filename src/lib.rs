@@ -42,17 +42,21 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::Path,
     process::ExitStatus,
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, Instant},
 };
 use tracing::debug;
 
 pub mod core;
+mod netns;
 mod qdisc;
 use crate::core::{
-    cleanup_netns, resources, run_in_netns, spawn_in_netns, spawn_in_netns_thread,
+    apply_impair_in, cleanup_netns, resources, run_in_netns, spawn_in_netns, spawn_in_netns_thread,
     with_netns_thread, CoreConfig, DownstreamPool, LabCore, RouterConfig, TaskHandle,
 };
+
+static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Stable identifier for devices/routers/switches in the lab.
 pub use crate::core::NodeId;
@@ -201,9 +205,11 @@ impl Lab {
     pub fn new() -> Self {
         let pid = std::process::id();
         let pid_tag = pid % 9999 + 1;
-        let prefix = format!("lab-p{}", pid_tag); // e.g. "lab-p1234"
+        let lab_seq = LAB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let uniq = format!("{lab_seq:x}");
+        let prefix = format!("lab-p{}{}", pid_tag, uniq); // e.g. "lab-p12340"
         let root_ns = format!("{prefix}-root");
-        let bridge_tag = format!("p{}", pid_tag);
+        let bridge_tag = format!("p{}{}", pid_tag, uniq);
         let ix_gw = Ipv4Addr::new(203, 0, 113, 1);
         resources().register_prefix(&prefix);
         let core = LabCore::new(CoreConfig {
@@ -256,7 +262,7 @@ impl Lab {
     }
 
     /// Build a `Lab` from a parsed config without building the network yet.
-    fn from_config(cfg: config::LabConfig) -> Result<Self> {
+    pub fn from_config(cfg: config::LabConfig) -> Result<Self> {
         let mut lab = Self::new();
 
         // Region latency pairs.
@@ -295,22 +301,84 @@ impl Lab {
             bail!("unresolvable router upstreams: {}", names.join(", "));
         }
 
-        // Devices — pre-resolve router IDs before taking the mutable borrow via add_device.
-        for dev_cfg in &cfg.device {
-            let router_id = lab
-                .router_by_name
-                .get(&dev_cfg.router)
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' references unknown router '{}'",
-                        dev_cfg.name,
-                        dev_cfg.router
-                    )
-                })?;
-            lab.add_device(&dev_cfg.name)
-                .iface("eth0", router_id, dev_cfg.impair)
-                .build()?;
+        // Devices — parse raw TOML, pre-resolve router IDs, then build.
+        struct ParsedDev {
+            name: String,
+            default_via: Option<String>,
+            ifaces: Vec<(String, NodeId, Option<Impair>)>,
+        }
+
+        let dev_data: Vec<ParsedDev> = {
+            let mut dev_names: Vec<&String> = cfg.device.keys().collect();
+            dev_names.sort();
+            let mut result = Vec::new();
+            for dev_name in dev_names {
+                let dev_val = &cfg.device[dev_name];
+                let dev_table = dev_val
+                    .as_table()
+                    .ok_or_else(|| anyhow!("device '{}' must be a TOML table", dev_name))?;
+                let default_via = dev_table
+                    .get("default_via")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                // Interface sub-tables: table-valued keys, excluding scalar device-level keys.
+                let mut iface_keys: Vec<&String> = dev_table
+                    .keys()
+                    .filter(|k| dev_table[*k].is_table())
+                    .collect();
+                iface_keys.sort();
+                if iface_keys.is_empty() {
+                    bail!("device '{}' has no interface sub-tables", dev_name);
+                }
+                let mut ifaces = Vec::new();
+                for ifname in iface_keys {
+                    let iface_table = dev_table[ifname].as_table().ok_or_else(|| {
+                        anyhow!("device '{}' iface '{}' must be a table", dev_name, ifname)
+                    })?;
+                    let gw_name = iface_table
+                        .get("gateway")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            anyhow!("device '{}' iface '{}' missing 'gateway'", dev_name, ifname)
+                        })?;
+                    let router_id = lab.router_by_name.get(gw_name).copied().ok_or_else(|| {
+                        anyhow!(
+                            "device '{}' iface '{}' references unknown router '{}'",
+                            dev_name,
+                            ifname,
+                            gw_name
+                        )
+                    })?;
+                    let impair: Option<Impair> = match iface_table.get("impair") {
+                        None => None,
+                        Some(v) => Some(v.clone().try_into().map_err(|e: toml::de::Error| {
+                            anyhow!(
+                                "device '{}' iface '{}' invalid impair: {}",
+                                dev_name,
+                                ifname,
+                                e
+                            )
+                        })?),
+                    };
+                    ifaces.push((ifname.clone(), router_id, impair));
+                }
+                result.push(ParsedDev {
+                    name: dev_name.clone(),
+                    default_via,
+                    ifaces,
+                });
+            }
+            result
+        };
+        for dev in dev_data {
+            let mut builder = lab.add_device(&dev.name);
+            for (ifname, router_id, impair) in dev.ifaces {
+                builder = builder.iface(&ifname, router_id, impair);
+            }
+            if let Some(via) = dev.default_via {
+                builder = builder.default_via(&via);
+            }
+            builder.build()?;
         }
 
         Ok(lab)
@@ -487,6 +555,70 @@ impl Lab {
         Ok(pid)
     }
 
+    /// Spawn a command in a device namespace and return the raw `Child`.
+    ///
+    /// Unlike [`spawn_on`], the returned child is **not** tracked for cleanup —
+    /// the caller owns it.
+    pub fn spawn_cmd_on(
+        &self,
+        device: &str,
+        cmd: std::process::Command,
+    ) -> Result<std::process::Child> {
+        let id = self
+            .device_by_name
+            .get(device)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown device '{}'", device))?;
+        let ns = self.core.device_ns(id)?.to_string();
+        spawn_in_netns(&ns, cmd)
+    }
+
+    /// Return the network namespace name for a device by name.
+    pub fn device_ns_name(&self, device: &str) -> Result<String> {
+        let id = self
+            .device_by_name
+            .get(device)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown device '{}'", device))?;
+        Ok(self.core.device_ns(id)?.to_string())
+    }
+
+    /// Return the network namespace name for a router by name.
+    pub fn router_ns_name(&self, router: &str) -> Result<String> {
+        let id = self
+            .router_by_name
+            .get(router)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown router '{}'", router))?;
+        Ok(self.core.router_ns(id)?.to_string())
+    }
+
+    /// Build a map of `NETSIM_*` environment variables from the current lab state.
+    ///
+    /// Keys use device/interface names normalised to uppercase with `-` → `_`.
+    pub fn env_vars(&self) -> std::collections::HashMap<String, String> {
+        let mut map = std::collections::HashMap::new();
+        for (name, &id) in &self.device_by_name {
+            let norm = normalize_env_name(name);
+            if let Some(dev) = self.core.device(id) {
+                // Default-via IP
+                if let Some(ip) = dev.default_iface().ip {
+                    map.insert(format!("NETSIM_IP_{}", norm), ip.to_string());
+                }
+                // Per-interface IPs
+                for iface in &dev.interfaces {
+                    if let Some(ip) = iface.ip {
+                        let ifnorm = normalize_env_name(&iface.ifname);
+                        map.insert(format!("NETSIM_IP_{}_{}", norm, ifnorm), ip.to_string());
+                    }
+                }
+                // Namespace name
+                map.insert(format!("NETSIM_NS_{}", norm), dev.ns.clone());
+            }
+        }
+        map
+    }
+
     // ── Reflector / probe helpers (mainly for tests) ─────────────────────
 
     /// Spawn a UDP reflector in a named device/router namespace.
@@ -594,6 +726,130 @@ impl Lab {
         self.ns_counter = self.ns_counter.saturating_add(1);
         format!("{}-{}", self.prefix, id)
     }
+
+    fn dev_ns(&self, device: &str) -> Result<String> {
+        let id = self
+            .device_by_name
+            .get(device)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown device '{}'", device))?;
+        Ok(self.core.device_ns(id)?.to_string())
+    }
+
+    // ── Dynamic operations ────────────────────────────────────────────────
+
+    /// Apply or remove a link-layer impairment on a device interface.
+    ///
+    /// `ifname = None` targets the `default_via` interface.
+    /// `impair = None` removes any existing qdisc.
+    pub fn set_impair(
+        &mut self,
+        device: &str,
+        ifname: Option<&str>,
+        impair: Option<Impair>,
+    ) -> Result<()> {
+        let id = self
+            .device_by_name
+            .get(device)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown device '{}'", device))?;
+        let (ns, resolved_ifname) = {
+            let dev = self
+                .core
+                .device(id)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            let iname = ifname.unwrap_or(&dev.default_via).to_string();
+            if dev.iface(&iname).is_none() {
+                bail!("interface '{}' not found on device '{}'", iname, device);
+            }
+            (dev.ns.clone(), iname)
+        };
+        match impair {
+            Some(imp) => apply_impair_in(&ns, &resolved_ifname, imp),
+            None => qdisc::remove_qdisc(&ns, &resolved_ifname),
+        }
+        // Update stored impair so switch_route can re-apply it correctly.
+        if let Some(dev) = self.core.device_mut(id) {
+            if let Some(iface) = dev.iface_mut(&resolved_ifname) {
+                iface.impair = impair;
+            }
+        }
+        Ok(())
+    }
+
+    /// Bring a device interface administratively down.
+    pub fn link_down(&mut self, device: &str, ifname: &str) -> Result<()> {
+        let ns = self.dev_ns(device)?;
+        let if_owned = ifname.to_string();
+        run_in_netns(&ns, {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args(["link", "set", &if_owned, "down"]);
+            cmd
+        })?;
+        Ok(())
+    }
+
+    /// Bring a device interface administratively up.
+    pub fn link_up(&mut self, device: &str, ifname: &str) -> Result<()> {
+        let ns = self.dev_ns(device)?;
+        let if_owned = ifname.to_string();
+        run_in_netns(&ns, {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args(["link", "set", &if_owned, "up"]);
+            cmd
+        })?;
+        Ok(())
+    }
+
+    /// Switch the active default route to a different interface.
+    ///
+    /// `to` is the interface name (e.g. `"eth1"`).  The impairment configured
+    /// for the new interface is re-applied after the route change.
+    pub fn switch_route(&mut self, device: &str, to: &str) -> Result<()> {
+        let id = self
+            .device_by_name
+            .get(device)
+            .copied()
+            .ok_or_else(|| anyhow!("unknown device '{}'", device))?;
+        let (ns, uplink, impair) = {
+            let dev = self
+                .core
+                .device(id)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            let iface = dev
+                .iface(to)
+                .ok_or_else(|| anyhow!("interface '{}' not found on device '{}'", to, device))?;
+            (dev.ns.clone(), iface.uplink, iface.impair)
+        };
+        let gw_ip = self.core.router_downlink_gw_for_switch(uplink)?;
+        // Remove old default route (ignore failure — may already be absent).
+        let _ = run_in_netns(&ns, {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args(["route", "del", "default"]);
+            cmd.stderr(std::process::Stdio::null());
+            cmd
+        });
+        // Add new default via the gateway of the target interface.
+        run_in_netns(&ns, {
+            let mut cmd = std::process::Command::new("ip");
+            cmd.args([
+                "route",
+                "add",
+                "default",
+                "via",
+                &gw_ip.to_string(),
+                "dev",
+                to,
+            ]);
+            cmd
+        })?;
+        match impair {
+            Some(imp) => apply_impair_in(&ns, to, imp),
+            None => qdisc::remove_qdisc(&ns, to),
+        }
+        self.core.set_device_default_via(id, to)?;
+        Ok(())
+    }
 }
 
 impl Default for Lab {
@@ -675,26 +931,29 @@ impl<'lab> DeviceBuilder<'lab> {
 // TOML config types
 // ─────────────────────────────────────────────
 
-mod config {
-    use super::{Impair, NatMode};
+pub mod config {
+    use super::NatMode;
     use serde::Deserialize;
     use std::collections::HashMap;
 
     /// Parsed lab configuration from TOML.
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone, Default)]
     pub struct LabConfig {
         /// Optional region-latency map.
         pub region: Option<HashMap<String, RegionConfig>>,
         /// Router entries.
         #[serde(default)]
         pub router: Vec<RouterCfg>,
-        /// Device entries.
+        /// Raw device tables; post-processed by [`Lab::from_config`].
+        ///
+        /// Format: `[device.<name>.<ifname>]` with a `gateway` field.
+        /// Device-level settings (e.g. `default_via`) live in `[device.<name>]`.
         #[serde(default)]
-        pub device: Vec<DeviceCfg>,
+        pub device: HashMap<String, toml::Value>,
     }
 
     /// Per-region latency configuration.
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct RegionConfig {
         /// Map of target-region name → one-way latency in ms.
         #[serde(default)]
@@ -702,7 +961,7 @@ mod config {
     }
 
     /// Router configuration entry.
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Clone)]
     pub struct RouterCfg {
         /// Router name.
         pub name: String,
@@ -713,17 +972,6 @@ mod config {
         /// NAT mode.  Defaults to `"none"` (public downstream, no NAT).
         #[serde(default)]
         pub nat: NatMode,
-    }
-
-    /// Device configuration entry.
-    #[derive(Deserialize)]
-    pub struct DeviceCfg {
-        /// Device name.
-        pub name: String,
-        /// Name of the router to connect to (via `eth0`).
-        pub router: String,
-        /// Optional link impairment: `"wifi"`, `"mobile"`, or `{ rate, loss, latency }`.
-        pub impair: Option<Impair>,
     }
 }
 
@@ -812,6 +1060,12 @@ pub fn probe_in_ns(
 // Tests
 // ─────────────────────────────────────────────
 
+/// Normalise a device/interface name for use in an environment variable name.
+/// Converts to uppercase and replaces `-` with `_`.
+fn normalize_env_name(s: &str) -> String {
+    s.to_uppercase().replace('-', "_")
+}
+
 pub fn udp_roundtrip_in_ns(ns: &str, reflector: SocketAddr) -> Result<ObservedAddr> {
     probe_in_ns(ns, reflector, Duration::from_millis(500), None)
 }
@@ -833,13 +1087,18 @@ mod tests {
     use n0_tracing_test::traced_test;
     use serial_test::serial;
     use std::io::{Read, Write};
+    use tracing::debug;
 
     use super::*;
 
     fn ping_in_ns(ns: &str, addr: &str) -> Result<()> {
         let mut cmd = std::process::Command::new("ping");
         cmd.args(["-c", "1", "-W", "1", addr]);
-        run_in_netns(ns, cmd).map(|_| ())
+        let status = run_in_netns(ns, cmd)?;
+        if !status.success() {
+            bail!("ping {} failed with status {}", addr, status);
+        }
+        Ok(())
     }
 
     fn spawn_tcp_echo_in(ns: &str, bind: SocketAddr) -> thread::JoinHandle<Result<()>> {
@@ -871,7 +1130,113 @@ mod tests {
         })
     }
 
+    fn current_netns_inode() -> Result<String> {
+        let link = std::fs::read_link("/proc/self/ns/net").context("read host netns inode")?;
+        Ok(link.to_string_lossy().to_string())
+    }
+
+    fn netns_inode(ns: &str) -> Result<String> {
+        let ns = ns.to_string();
+        let ns_for_msg = ns.clone();
+        with_netns_thread(&ns, move || {
+            let link = std::fs::read_link("/proc/thread-self/ns/net")
+                .or_else(|_| std::fs::read_link("/proc/self/ns/net"))
+                .with_context(|| format!("read netns inode in '{ns_for_msg}'"))?;
+            Ok(link.to_string_lossy().to_string())
+        })
+    }
+
+    fn run_cmd_output_in_ns(
+        ns: &str,
+        program: &str,
+        args: &[&str],
+    ) -> Result<std::process::Output> {
+        let ns = ns.to_string();
+        let ns_for_msg = ns.clone();
+        let program = program.to_string();
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        with_netns_thread(&ns, move || {
+            let mut cmd = std::process::Command::new(&program);
+            cmd.args(&args);
+            cmd.output()
+                .with_context(|| format!("run '{program} {}' in ns '{ns_for_msg}'", args.join(" ")))
+        })
+    }
+
+    fn dump_ns_state(ns: &str, phase: &str) {
+        eprintln!("diag[{phase}] ns={ns}");
+        match netns_inode(ns) {
+            Ok(ino) => eprintln!("diag[{phase}] ns={ns} inode={ino}"),
+            Err(err) => eprintln!("diag[{phase}] ns={ns} inode_error={err:#}"),
+        }
+        for (label, args) in [
+            ("links", vec!["-o", "link", "show"]),
+            ("addrs", vec!["-4", "addr", "show"]),
+            ("routes", vec!["-4", "route", "show"]),
+        ] {
+            match run_cmd_output_in_ns(ns, "ip", &args) {
+                Ok(out) => {
+                    eprintln!("diag[{phase}] ns={ns} {label} status={}", out.status);
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    if !stdout.trim().is_empty() {
+                        eprintln!("diag[{phase}] ns={ns} {label} stdout:\n{stdout}");
+                    }
+                    if !stderr.trim().is_empty() {
+                        eprintln!("diag[{phase}] ns={ns} {label} stderr:\n{stderr}");
+                    }
+                }
+                Err(err) => eprintln!("diag[{phase}] ns={ns} {label} error={err:#}"),
+            }
+        }
+    }
+
     // ── Builder-API NAT tests ────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    #[traced_test]
+    async fn smoke_debug_netns_exit_trace() -> Result<()> {
+        check_caps()?;
+        let host_inode_before = current_netns_inode()?;
+        debug!(host_inode_before = %host_inode_before, "diag: host inode before build");
+
+        let mut lab = Lab::new();
+        let isp = lab.add_router("isp1", Some("eu"), None, NatMode::None)?;
+        let home = lab.add_router("home1", None, Some(isp), NatMode::DestinationIndependent)?;
+        lab.add_device("dev1").iface("eth0", home, None).build()?;
+
+        let ns_plan = lab.core.all_ns_names();
+        eprintln!("diag[pre-build] host_inode={}", current_netns_inode()?);
+        for ns in &ns_plan {
+            dump_ns_state(ns, "pre-build");
+        }
+
+        if let Err(err) = lab.build().await {
+            eprintln!("diag[build-error] host_inode={}", current_netns_inode()?);
+            eprintln!("diag[build-error] build_err={err:#}");
+            for ns in &ns_plan {
+                dump_ns_state(ns, "build-error");
+            }
+            return Err(err).context("smoke_debug_netns_exit_trace build failed");
+        }
+
+        let ns_after = lab.core.all_ns_names();
+        eprintln!("diag[post-build] host_inode={}", current_netns_inode()?);
+        for ns in &ns_after {
+            dump_ns_state(ns, "post-build");
+        }
+
+        let dev_id = lab.device_id("dev1").context("missing dev1")?;
+        let dev_ns = lab.node_ns(dev_id)?.to_string();
+        let lan_gw = lab.router_downlink_gw(home)?;
+        ping_in_ns(&dev_ns, &lan_gw.to_string())?;
+
+        let host_inode_after = current_netns_inode()?;
+        debug!(host_inode_after = %host_inode_after, "diag: host inode after smoke");
+        eprintln!("diag[done] host_inode_after={host_inode_after}");
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     #[serial]
@@ -996,9 +1361,8 @@ name     = "lan1"
 upstream = "isp1"
 nat      = "destination-independent"
 
-[[device]]
-name   = "dev1"
-router = "lan1"
+[device.dev1.eth0]
+gateway = "lan1"
 "#;
         let tmp = std::env::temp_dir().join("netsim_test_lab.toml");
         std::fs::write(&tmp, toml)?;
@@ -1329,6 +1693,110 @@ router = "lan1"
         Ok(())
     }
 
+    // ── Dynamic-ops tests ────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    #[traced_test]
+    async fn dynamic_set_impair_changes_rtt() -> Result<()> {
+        check_caps()?;
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc1", Some("eu"), None, NatMode::None)?;
+        let dev = lab.add_device("dev1").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 9100);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let base_rtt = udp_rtt_in_ns(&dev_ns, r)?;
+
+        // Apply Mobile impair (+50 ms one-way latency).
+        lab.set_impair("dev1", None, Some(Impair::Mobile))?;
+        let impaired_rtt = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            impaired_rtt >= base_rtt + Duration::from_millis(80),
+            "expected impaired RTT >= base + 80ms, base={base_rtt:?} impaired={impaired_rtt:?}"
+        );
+
+        // Remove impair — RTT should drop back near baseline.
+        lab.set_impair("dev1", None, None)?;
+        let recovered_rtt = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            recovered_rtt < base_rtt + Duration::from_millis(30),
+            "expected recovered RTT close to base, base={base_rtt:?} recovered={recovered_rtt:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    #[traced_test]
+    async fn dynamic_link_down_up_connectivity() -> Result<()> {
+        check_caps()?;
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc1", Some("eu"), None, NatMode::None)?;
+        let dev = lab.add_device("dev1").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let gw = lab.router_downlink_gw(dc)?;
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        // Connectivity should be OK initially.
+        ping_in_ns(&dev_ns, &gw.to_string())?;
+
+        // Bring interface down — ping must fail.
+        lab.link_down("dev1", "eth0")?;
+        let result = ping_in_ns(&dev_ns, &gw.to_string());
+        assert!(result.is_err(), "expected ping to fail after link_down");
+
+        // Bring interface back up — connectivity must be restored.
+        lab.link_up("dev1", "eth0")?;
+        ping_in_ns(&dev_ns, &gw.to_string())?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    #[traced_test]
+    async fn dynamic_switch_route_changes_path() -> Result<()> {
+        check_caps()?;
+        let mut lab = Lab::new();
+        // Two IX-attached public routers.
+        let dc = lab.add_router("dc1", Some("eu"), None, NatMode::None)?;
+        let isp = lab.add_router("isp1", Some("eu"), None, NatMode::None)?;
+        // Device: eth0 → dc (fast, no impair); eth1 → isp (slow, Mobile = +50 ms).
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc, None)
+            .iface("eth1", isp, Some(Impair::Mobile))
+            .default_via("eth0")
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 9200);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let fast_rtt = udp_rtt_in_ns(&dev_ns, r)?;
+
+        // Switch to the Mobile path (eth1 → isp → ix → dc).
+        lab.switch_route("dev1", "eth1")?;
+        let slow_rtt = udp_rtt_in_ns(&dev_ns, r)?;
+
+        assert!(
+            slow_rtt >= fast_rtt + Duration::from_millis(80),
+            "expected slow RTT >= fast + 80ms, fast={fast_rtt:?} slow={slow_rtt:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn manual_impair_deserialize() -> Result<()> {
         let cfg = r#"
@@ -1336,19 +1804,25 @@ router = "lan1"
 name = "dc1"
 region = "eu"
 
-[[device]]
-name = "dev1"
-router = "dc1"
+[device.dev1.eth0]
+gateway = "dc1"
 impair = { rate = 5000, loss = 1.5, latency = 40 }
 "#;
         let parsed: config::LabConfig = toml::from_str(cfg)?;
-        let dev = parsed.device.first().context("missing device")?;
-        match dev.impair {
-            Some(Impair::Manual {
+        let dev1 = parsed.device.get("dev1").context("missing dev1")?;
+        let eth0 = dev1.get("eth0").context("missing eth0")?;
+        let impair: Impair = eth0
+            .get("impair")
+            .context("missing impair")?
+            .clone()
+            .try_into()
+            .map_err(|e: toml::de::Error| anyhow!("{}", e))?;
+        match impair {
+            Impair::Manual {
                 rate,
                 loss,
                 latency,
-            }) => {
+            } => {
                 assert_eq!(rate, 5000);
                 assert!((loss - 1.5).abs() < f32::EPSILON);
                 assert_eq!(latency, 40);

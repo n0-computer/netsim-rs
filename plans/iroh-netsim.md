@@ -1,6 +1,6 @@
 # Plan: Iroh Netsims (v4)
 
-Goal: `cargo run -- sims/iroh-1to1.toml` builds a network, runs an iroh transfer
+Goal: `cargo run -- iroh-integration/sims/iroh-1to1-public.toml` builds a network, runs an iroh transfer
 sim, applies scheduled network events, and reports results.
 
 Reference: `resources/chuck/netsim/` — the Python/mininet implementation we're
@@ -14,8 +14,10 @@ porting. `resources/dogfood/` — Rust transfer logic to port.
 - Process log structure and result parsing added (were entirely missing)
 - `kind = "iroh-transfer"` sequence corrected: `PathStats` = end-of-connection on
   provider side (not a metric, not readiness); `connected_via` comes from
-  `ConnectionTypeChanged` events; `--output json --logs-path` flags documented
-- `[binary]` gains `url` source option; 
+  `ConnectionTypeChanged` events; `--output json --log-path` flags documented
+- Transfer runs always pass `--log-path` and generate `results.md` in addition to `results.json`
+- Added `strategy = "endpoint_id_with_direct_addrs"` for direct-address fetches
+- `[[binary]]` gains `url` source option; 
 - `wait-for` default timeout specified: 300 s
 - `count` restored (Phase 3, needed for 1→N sims)
 - Capture→substitution dependency ordering documented
@@ -174,6 +176,8 @@ Additionally, chuck-compatible variables set for every process:
 | `SSLKEYLOGFILE`| `<work_dir>/logs/keylog_<step_id>.txt`        |
 
 User can override any of these via `env = { KEY = "value" }` on the step.
+
+Do not set `IROH_DATA_DIR`; modern iroh no longer requires it.
 
 ---
 
@@ -369,34 +373,41 @@ Directory layout under `<work_dir>/`:
 ```
 <work_dir>/
   logs/
-    <step_id>.log          # stdout+stderr of the process
+    <step_id>.log          # stdout+stderr of the process (non-transfer)
     keylog_<step_id>.txt   # SSLKEYLOGFILE
   results.json             # written at end of sim
+  results.md               # table overview
 ```
 
 `step_id` is the `id` field on `spawn` steps, or `<action>_<device>` for
 unnamed `run` steps.
 
-For `kind = "iroh-transfer"`, both sub-processes get their own log files:
+For `kind = "iroh-transfer"`, the transfer binary writes NDJSON logs via
+`--log-path`. These files are the primary log source for parsing.
 
 ```
 logs/
-  xfer_provider.log
-  xfer_fetcher.log          # (or xfer_fetcher_0.log, xfer_fetcher_1.log for count > 1)
+  xfer_provider.ndjson
+  xfer_fetcher.ndjson          # (or xfer_fetcher_0.ndjson, xfer_fetcher_1.ndjson for count > 1)
   keylog_xfer_provider.txt
   keylog_xfer_fetcher.txt
 ```
+
+Stdout/stderr are only captured for readiness/captures and are not the source
+of truth for transfer stats.
 
 ---
 
 ## 9. Result Parsing and Reporting
 
-After all steps complete, the runner post-processes logs and writes
-`<work_dir>/results.json`.
+After all steps complete, the runner post-processes logs and writes:
+
+- `<work_dir>/results.json`
+- `<work_dir>/results.md` (table overview suitable for GH comment/preview)
 
 ### Transfer stats (iroh)
 
-Scan the fetcher log for the `DownloadComplete` NDJSON event:
+Scan the fetcher NDJSON log (from `--log-path`) for `DownloadComplete`:
 
 ```json
 {"kind": "DownloadComplete", "size": 1073741824, "duration": 12345678}
@@ -408,7 +419,7 @@ Scan the fetcher log for the `DownloadComplete` NDJSON event:
 
 ### Connection type (iroh)
 
-Scan the fetcher log for `ConnectionTypeChanged` events:
+Scan the fetcher NDJSON log for `ConnectionTypeChanged` events:
 
 ```json
 {"kind": "ConnectionTypeChanged", "status": "Selected", "addr": "Ip(...)"}
@@ -424,7 +435,7 @@ Scan the fetcher log for `ConnectionTypeChanged` events:
 
 ```json
 {
-  "sim": "iroh-1to1",
+  "sim": "iroh-1to1-public",
   "transfers": [
     {
       "id":               "xfer",
@@ -448,7 +459,7 @@ Scan the fetcher log for `ConnectionTypeChanged` events:
 action = "spawn"
 id     = "get"
 device = "fetcher"
-cmd    = ["${binary}", "--output", "json", "fetch", "${srv.endpoint_id}"]
+cmd    = ["${binary.transfer}", "--output", "json", "fetch", "${srv.endpoint_id}"]
 parser = "iroh_json"   # post-process log for DownloadComplete after step exits
 ```
 
@@ -460,24 +471,34 @@ Supported parsers for generic steps:
 | `iperf`     | iperf throughput lines                   |
 | none        | no post-processing                       |
 
+For iroh integration, only `iroh_json` is required initially.
+
+### `results.md` format
+
+```
+| sim | id | provider | fetcher | size_bytes | elapsed_s | mbps | final_conn_direct | conn_upgrade | conn_events |
+| --- | -- | -------- | ------- | ---------- | --------- | ---- | ----------------- | ------------ | ----------- |
+| iroh-1to1-public | xfer | provider | fetcher | 1073741824 | 12.345 | 695.4 | true | true | 2 |
+```
+
 ---
 
 ## 10. Sim File Format
 
 ```toml
 [sim]
-name     = "iroh-wifi-to-mobile"
-topology = "wifi-to-mobile"     # loads topos/wifi-to-mobile.toml
+name     = "iroh-switch-direct"
+topology = "switch-direct"     # loads topos/switch-direct.toml
 
 [[binary]]
-name = "transfer"
+name    = "transfer"
 repo    = "https://github.com/n0-computer/iroh"
 commit  = "main"
 example = "transfer"
 
 [[binary]]
-name = relay
-url = "https://github.com/n0-computer/iroh/releases/download/v0.96.1/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
+name = "relay"
+url  = "https://github.com/n0-computer/iroh/releases/download/v0.96.1/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
 ```
 
 Inline topology (no `topology` ref):
@@ -502,60 +523,46 @@ device = "client"
 cmd    = ["ping", "-c4", "$NETSIM_IP_server"]
 ```
 
-When `topology` is set, router/device tables are loaded from
-`topos/<topology>.toml` and must not appear inline.
+When `topology` is set, router/device tables are loaded from a `topos/`
+directory adjacent to the sim file (`../topos/<topology>.toml`). If not found,
+fall back to `topos/<topology>.toml` at repo root. Router/device tables must
+not appear inline when `topology` is set.
 
 ---
 
 ## 11. Binary Spec
 
-### `[binary]` — transfer binary
+### `[[binary]]` — named binaries
 
-Three mutually exclusive sources:
+Each binary has a unique `name` used for substitution in `cmd` or in built-in
+kinds like `iroh-transfer`. Three mutually exclusive sources:
 
 ```toml
-# Option A: build from git
-[binary]
+[[binary]]
+name    = "transfer"
 repo    = "https://github.com/n0-computer/iroh"
 commit  = "main"     # branch, tag, or full SHA
 example = "transfer" # cargo --example <name>
 
-# Option B: download from URL (tar.gz or bare binary)
-[binary]
-url = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-x86_64-unknown-linux-musl.tar.gz"
+[[binary]]
+name = "relay"
+url  = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
 
-# Option C: local prebuilt path
-[binary]
+[[binary]]
+name = "transfer"
 path = "/usr/local/bin/iroh-transfer"
 ```
 
-Build function (`src/sim/build.rs`):
+Build function (`src/sim/build.rs`) per binary:
 - **git**: clone if no `.git`; `git fetch + checkout`; `cargo build --example … --release`.
   Skip build if binary mtime > source mtime.
 - **url**: download + extract to `<work_dir>/bins/`; skip if already present.
 - **path**: use as-is.
 
-### `[relay_binary]` — relay binary (optional)
+Builder must pass through all `RUST_*` env vars to the `cargo` invocation.
+If `RUST_TARGET` is set, add `--target <RUST_TARGET>` so VM/cross builds work.
 
-Same three sources plus inference:
-
-```toml
-# Option A: GitHub releases download (recommended)
-[relay_binary]
-url = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
-
-# Option B: local path
-[relay_binary]
-path = "/usr/local/bin/iroh-relay"
-
-# Option C: build from same repo/commit as [binary] (no extra field needed)
-[relay_binary]
-binary = "iroh-relay"   # cargo --bin <name>; inherits repo/commit from [binary]
-
-# If [relay_binary] is omitted entirely: look for `iroh-relay` on $PATH.
-```
-
-Binary substitution variable available in steps: `${relay_binary}`.
+Binary substitution variable available in steps: `${binary.<name>}`.
 
 ---
 
@@ -602,43 +609,61 @@ fetcher    = "fetcher"           # single device  — or —
 # fetchers = ["f-0", "f-1"]     # multiple devices (count-expanded; Phase 3)
 relay_url  = "http://..."        # optional; passed as --relay-url to both sides
 fetch_args = ["--verify"]        # optional extra args for fetcher(s)
+strategy   = "endpoint_id_only"       # or "endpoint_id_with_direct_addrs"
 ```
+
+`strategy = "endpoint_id_only"` uses only the provider `endpoint_id`.
+`strategy = "endpoint_id_with_direct_addrs"` also uses the first `direct_addresses`
+entry from the provider `EndpointBound` event (if present) and passes it as
+`--remote-direct-address` to the fetcher. If no direct address is available,
+fall back to `endpoint_id` only.
+
+`kind = "iroh-transfer"` uses the binary named `transfer` from `[[binary]]`.
+Fail fast if no such binary is configured.
 
 #### Binary invocation
 
 ```
 # Provider (inside provider's netns):
-<binary> --output json --logs-path <log_dir>/xfer_provider provide
+${binary.transfer} --output json --log-path <log_dir>/xfer_provider.ndjson provide
 
 # Fetcher (inside fetcher's netns):
-<binary> --output json --logs-path <log_dir>/xfer_fetcher \
+${binary.transfer} --output json --log-path <log_dir>/xfer_fetcher.ndjson \
          fetch <endpoint_id> [--relay-url <url>] [fetch_args…]
+
+# If strategy == "endpoint_id_with_direct_addrs" and a direct address is available:
+${binary.transfer} --output json --log-path <log_dir>/xfer_fetcher.ndjson \
+         fetch --remote-direct-address <addr> <endpoint_id> [--relay-url <url>] [fetch_args…]
 ```
 
-`--output json` switches the binary to NDJSON stdout.  Without this flag the
-binary emits human-readable text that cannot be parsed.
+`--output json` switches the binary to NDJSON output (used by `--log-path`).
+Without this flag the binary emits human-readable text that cannot be parsed.
 
 #### Execution sequence
 
 1. Start provider subprocess in provider's netns.
-2. Stream provider stdout → write to `xfer_provider.log`.
-3. Block until `{"kind":"EndpointBound","endpoint_id":"…"}` — extract
-   `endpoint_id`.  Expose as `${xfer.endpoint_id}`.
-4. Start fetcher subprocess(es) in their netns(es) with `endpoint_id`.
-5. Stream fetcher stdout → write to `xfer_fetcher.log`.
-6. Block until fetcher emits its own `EndpointBound` (confirms it started).
+2. Stream provider stdout/stderr only for readiness/capture (not parsing).
+3. Tail provider `--log-path` file until `{"kind":"EndpointBound","endpoint_id":"…"}`:
+   extract `endpoint_id`. Expose as `${xfer.endpoint_id}`.
+4. If `strategy == "endpoint_id_with_direct_addrs"`, also collect `direct_addresses`
+   from the same event; pick the first address for `--remote-direct-address`
+   if present.
+5. Start fetcher subprocess(es) in their netns(es) with `endpoint_id` and
+   optional `--remote-direct-address`.
+6. Tail fetcher `--log-path` file until fetcher emits `EndpointBound`
+   (confirms it started).
 7. **Concurrently:**
    - Fetcher side: wait for fetcher process to exit naturally (exits after
      `DownloadComplete`).
-   - Provider side: stream remaining stdout until `{"kind":"PathStats"}` —
+   - Provider side: tail remaining NDJSON until `{"kind":"PathStats"}` —
      this is the provider's **end-of-connection** signal (emitted when the
      peer disconnects after the transfer).  Then SIGINT the provider and drain
-     its remaining stdout.
-8. Post-process `xfer_fetcher.log`:
+     its remaining stdout/stderr.
+8. Post-process `xfer_fetcher.ndjson`:
    - Extract `DownloadComplete` → size, duration → Mbps.
    - Collect `ConnectionTypeChanged` events → `final_conn_direct`,
      `conn_upgrade`, `conn_events`.
-9. Write results to `results.json`.
+9. Write results to `results.json` and `results.md`.
 
 Exposes for `assert`:
 - `xfer.mbps`, `xfer.elapsed_s`, `xfer.size_bytes`
@@ -650,8 +675,7 @@ Exposes for `assert`:
 - `$NETSIM_IP_<device>` — default-via IP
 - `$NETSIM_IP_<device>_<ifname>` — specific interface IP
 - `$NETSIM_NS_<device>` — netns name
-- `${binary}` — path to built/downloaded transfer binary
-- `${relay_binary}` — path to relay binary
+- `${binary.<name>}` — path to built/downloaded named binary
 - `${data}` — sim-specific data directory (`<work_dir>/data/`)
 - `${<id>.<capture>}` — value captured from a prior `spawn`
 
@@ -659,15 +683,16 @@ Exposes for `assert`:
 
 ## 13. Example Sim Files
 
-### `sims/iroh-1to1.toml` — both public, no NAT
+### `iroh-integration/sims/iroh-1to1-public.toml` — both public, no NAT
 
 ```toml
 [sim]
-name     = "iroh-1to1"
+name     = "iroh-1to1-public"
 topology = "1to1-public"
 
-[binary]
-url = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-transfer-x86_64-unknown-linux-musl.tar.gz"
+[[binary]]
+name = "transfer"
+url  = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-transfer-x86_64-unknown-linux-musl.tar.gz"
 
 [[step]]
 action   = "spawn"
@@ -675,6 +700,7 @@ kind     = "iroh-transfer"
 id       = "xfer"
 provider = "provider"
 fetcher  = "fetcher"
+fetch_args = ["--duration=20"]
 
 [[step]]
 action  = "wait-for"
@@ -685,24 +711,26 @@ action = "assert"
 check  = "xfer.final_conn_direct == true"
 ```
 
-### `sims/iroh-1to1-nat-both.toml` — both behind NAT + relay
+### `iroh-integration/sims/iroh-1to1-nat.toml` — both behind NAT + relay
 
 ```toml
 [sim]
-name     = "iroh-1to1-nat-both"
-topology = "1to1-nat-both"
+name     = "iroh-1to1-nat"
+topology = "1to1-nat"
 
-[binary]
-url = "..."
+[[binary]]
+name = "transfer"
+url  = "..."
 
-[relay_binary]
-url = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
+[[binary]]
+name = "relay"
+url  = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
 
 [[step]]
 action      = "spawn"
 id          = "relay"
 device      = "relay"
-cmd         = ["${relay_binary}", "--dev"]
+cmd         = ["${binary.relay}", "--dev"]
 ready_after = "2s"
 
 [[step]]
@@ -712,6 +740,7 @@ id        = "xfer"
 provider  = "provider"
 fetcher   = "fetcher"
 relay_url = "http://$NETSIM_IP_relay:3340"
+fetch_args = ["--duration=20"]
 
 [[step]]
 action = "wait-for"
@@ -722,15 +751,16 @@ action = "assert"
 check  = "xfer.final_conn_direct == true"
 ```
 
-### `sims/iroh-wifi-to-mobile.toml` — mid-transfer route switch
+### `iroh-integration/sims/iroh-switch-direct.toml` — mid-transfer route switch
 
 ```toml
 [sim]
-name     = "iroh-wifi-to-mobile"
-topology = "wifi-to-mobile"
+name     = "iroh-switch-direct"
+topology = "switch-direct"
 
-[binary]
-url = "..."
+[[binary]]
+name = "transfer"
+url  = "..."
 
 [[step]]
 action   = "spawn"
@@ -738,6 +768,7 @@ kind     = "iroh-transfer"
 id       = "xfer"
 provider = "provider"
 fetcher  = "fetcher"
+fetch_args = ["--duration=20"]
 
 [[step]]
 action   = "wait"
@@ -762,53 +793,41 @@ check  = "xfer.final_conn_direct == true"
 
 ## 14. Topology Files
 
-### `topos/1to1-public.toml`
+### `iroh-integration/topos/1to1-public.toml`
 
 ```toml
-[region.eu]
-latencies = { us = 80 }
-[region.us]
-latencies = { eu = 80 }
-
 [[router]]
-name   = "dc-eu"
-region = "eu"
-
-[[router]]
-name   = "dc-us"
-region = "us"
+name = "dc"
 
 [device.provider.eth0]
-gateway = "dc-eu"
+gateway = "dc"
 
 [device.fetcher.eth0]
-gateway = "dc-eu"
+gateway = "dc"
 ```
 
-### `topos/1to1-nat-both.toml`
+### `iroh-integration/topos/1to1-nat.toml`
 
 ```toml
 [[router]]
-name   = "dc-eu"
-region = "eu"
+name = "dc"
 
 [[router]]
-name   = "isp-eu"
-region = "eu"
-nat    = "cgnat"
+name = "isp"
+nat  = "cgnat"
 
 [[router]]
 name     = "lan-provider"
-upstream = "isp-eu"
+upstream = "isp"
 nat      = "destination-independent"
 
 [[router]]
 name     = "lan-fetcher"
-upstream = "isp-eu"
+upstream = "isp"
 nat      = "destination-dependent"
 
 [device.relay.eth0]
-gateway = "dc-eu"
+gateway = "dc"
 
 [device.provider.eth0]
 gateway = "lan-provider"
@@ -817,35 +836,49 @@ gateway = "lan-provider"
 gateway = "lan-fetcher"
 ```
 
-### `topos/wifi-to-mobile.toml`
+### `iroh-integration/topos/1to10-public.toml`
 
 ```toml
 [[router]]
-name   = "dc-eu"
-region = "eu"
+name = "dc"
+
+[device.provider.eth0]
+gateway = "dc"
+
+[device.fetcher]
+count = 10
+
+[device.fetcher.eth0]
+gateway = "dc"
+```
+
+### `iroh-integration/topos/switch-direct.toml`
+
+```toml
+[[router]]
+name = "dc"
 
 [[router]]
-name   = "isp-eu"
-region = "eu"
-nat    = "cgnat"
+name = "isp"
+nat  = "cgnat"
 
 [[router]]
-name     = "lan-eu"
-upstream = "isp-eu"
+name     = "lan"
+upstream = "isp"
 nat      = "destination-independent"
 
 [device.provider.eth0]
-gateway = "dc-eu"
+gateway = "dc"
 
 [device.fetcher]
-default_via = "eth1"      # start on wifi
+default_via = "eth1"
 
 [device.fetcher.eth0]
-gateway = "isp-eu"
+gateway = "isp"
 impair  = "mobile"
 
 [device.fetcher.eth1]
-gateway = "lan-eu"
+gateway = "lan"
 impair  = "wifi"
 ```
 
@@ -860,25 +893,25 @@ src/
   qdisc.rs        — tc helpers; add remove_qdisc_r
   sim/
     mod.rs        — SimConfig, run_sim
-    topology.rs   — TopoConfig (shared between standalone topos/ and inline)
+    topology.rs   — TopoConfig (sim-relative topos/ or inline)
     build.rs      — build_or_fetch_binary (git / url / path)
     transfer.rs   — iroh-transfer kind (ported from resources/dogfood/)
     runner.rs     — step executor
     env.rs        — env-var injection + ${} interpolation
-    report.rs     — result parsing (DownloadComplete, ConnectionTypeChanged) + results.json
+    report.rs     — result parsing (DownloadComplete, ConnectionTypeChanged) + results.json/results.md
   main.rs         — CLI entry point
 
-sims/
-  iroh-1to1.toml
-  iroh-1to1-nat.toml
-  iroh-1to1-nat-both.toml
-  iroh-wifi-to-mobile.toml
-
-topos/
-  1to1-public.toml
-  1to1-nat.toml
-  1to1-nat-both.toml
-  wifi-to-mobile.toml
+iroh-integration/
+  sims/
+    iroh-1to1-public.toml
+    iroh-1to1-nat.toml
+    iroh-1to10-public.toml
+    iroh-switch-direct.toml
+  topos/
+    1to1-public.toml
+    1to1-nat.toml
+    1to10-public.toml
+    switch-direct.toml
 ```
 
 ---
@@ -886,7 +919,7 @@ topos/
 ## 16. CLI
 
 ```
-cargo run -- sims/iroh-1to1.toml [--work-dir .netsim-work] [--set key=value …]
+cargo run -- iroh-integration/sims/iroh-1to1-public.toml [--work-dir .netsim-work] [--set key=value …]
 ```
 
 ```rust
@@ -947,23 +980,26 @@ tar         = "0.4"
 9. **`sim/env.rs`**: env var map from lab state; `${}` interpolation.
 10. **`sim/build.rs`**: `build_or_fetch_binary` — git / URL download / path.
     URL download: fetch, detect tar.gz vs bare binary, extract to `<work_dir>/bins/`.
+    Honor `RUST_*` env vars and `RUST_TARGET` for cargo builds.
 11. **`sim/transfer.rs`**: port `TransferCommand` / `LogReader` from
-    `resources/dogfood/`; adapt to run in namespaces via `spawn_in_netns`.
+    `resources/dogfood/`; adapt to run in namespaces via `spawn_in_netns`;
+    always pass `--log-path` and support `strategy = "endpoint_id_with_direct_addrs"`.
 12. **`sim/report.rs`**: `parse_iroh_log(path)` → `TransferResult`;
-    `write_results_json(work_dir, results)`.
+    `write_results_json(work_dir, results)`;
+    `write_results_md(work_dir, results)`.
 13. **`sim/runner.rs`**: step executor — all actions; `wait-for` default 300 s;
     `assert` evaluates simple `key == value` / `key != value` expressions.
 14. **`src/main.rs`**: `Cli` + wire everything.
-15. Write `topos/*.toml` and `sims/*.toml`.
-16. End-to-end: `cargo make run-vm -- sims/iroh-1to1.toml`.
+15. Write `iroh-integration/topos/*.toml` and `iroh-integration/sims/*.toml`.
+16. End-to-end: `cargo make run-vm -- iroh-integration/sims/iroh-1to1-public.toml`.
 
 ### Phase 4 — `count` expansion
 
 17. **`lib.rs` / `topology.rs`**: expand `count = N` into N devices;
     update env var naming (`$NETSIM_IP_fetcher_0`, etc.).
 18. **`runner.rs`**: handle `fetchers = [...]` in `kind = "iroh-transfer"`;
-    aggregate per-fetcher results in `results.json`.
-19. Write `sims/iroh-1toN.toml` family.
+    aggregate per-fetcher results in `results.json` and `results.md`.
+19. Write `iroh-integration/sims/iroh-1toN.toml` family.
 
 ---
 

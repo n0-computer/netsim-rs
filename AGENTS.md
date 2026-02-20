@@ -14,7 +14,8 @@ This file captures key context, conventions, and workflows learned while working
 - **LabCore**: low-level topology and build logic (routers/switches/devices).
 - **Lab**: convenience wrapper with dc/home/isp shorthands; maps to `LabCore`.
 - **Lab root namespace**: IX and transit links are built in a dedicated lab namespace (`<prefix>-root`), not host root.
-- **Namespaces**: created and managed via `ip netns add` (see `create_named_netns`).
+- **Netns backend**: `src/netns.rs` selects backend (`fd` default, `named`, `auto`) and provides create/open/cleanup.
+- **Namespaces**: `fd` backend uses in-memory namespace FD registry; `named` backend uses `ip netns add`.
 - **Netlink**: `Netlink` struct in `src/core.rs` wraps `rtnetlink::Handle` and provides helper methods.
 - **Qdisc**: all `tc`/`qdisc` command invocation is in `src/qdisc.rs`.
 - **Resource cleanup**: `ResourceList` tracks bridges + netns and tries to clean on exit/panic.
@@ -69,12 +70,15 @@ Namespaces use `lab-p####-N`.
 - **Netns creation**: prefer `ip netns add` for stable `/var/run/netns/*` entries.
 - **Host root leakage**: never run lab dataplane operations in host root netns; keep all IX/transit operations inside the dedicated lab root namespace.
 - **Capabilities**: running tests without caps will fail; use `check_caps()`.
+- **`no_new_privs`**: if launcher/container sets `no_new_privs=1`, file capabilities from `setcap` will not be granted at exec time.
+- **`ip netns add` limits**: named netns creation depends on mount operations (`--make-shared` + bind mounts under `/var/run/netns`) and can fail on mount-restricted hosts; keep FD-backend fallback available.
 - **TC warnings**: use `r2q 1000` in HTB root to avoid large quantum warnings.
 - **Makefile target dir**: do not assume `./target`, always use `cargo make target-dir`.
 
 ## File Map
 - `src/lib.rs`: public API, tests, `check_caps`.
 - `src/core.rs`: core topology + build, netlink helpers.
+- `src/netns.rs`: namespace backend selection + lifecycle helpers.
 - `src/qdisc.rs`: tc/qdisc abstraction, netem/tbf/htb.
 - `src/main.rs`: demo CLI; calls `check_caps()`.
 - `Makefile.toml`: local + VM tasks.
@@ -106,3 +110,14 @@ always document public items, strictly adhere to official rust doc conventions a
 run cargo check, cargo clippy --tests --examples --fix, cargo fmt before each commit (and require to be clean)
 when a task is ready run the checks then ask to commit, don't commit without asking, but stage files already.
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
+
+## Recent Changes
+- Fixed VM test runner stale-binary issue: `build-test-vm` now deletes old executable `deps/${crate}-*` test binaries before `cargo test --no-run`, so `test-vm` no longer executes outdated artifacts.
+- `Lab::new` now appends a process-local atomic counter suffix to prefixes/bridge tags (`lab-p<pid><n>`, `br-p<pid><n>-*`) so concurrent labs in one process do not collide on netns/link names.
+- Updated the iroh netsim plan to use `--log-path`, generate `results.json` and `results.md`, and add named binaries with `endpoint_id_only` / `endpoint_id_with_direct_addrs` strategies; `IROH_DATA_DIR` stays unset.
+- Drafted iroh integration workflow + example sims and topos under `iroh-integration/` with transfer duration set to 20s and topology files colocated in `iroh-integration/topos`.
+- Refactored namespace execution to a dedicated `NetnsManager` (`src/netns.rs`) that keeps one long-lived worker thread + single-thread Tokio runtime per namespace and executes async closures there, with panic forwarding through task join errors.
+- Updated `set_sysctl_in` / `spawn_in_netns_thread` (`src/core.rs`) to avoid restoring the original netns on helper-thread exit; helper threads now stay in target netns for their lifetime and then terminate.
+- Added `smoke_debug_netns_exit_trace` test (`src/lib.rs`) to emit deep namespace diagnostics (inode, links, IPv4 addrs, routes) pre-build, on build error, and post-build.
+- FD netns backend now keeps a per-namespace keeper thread alive (`src/netns.rs`) so unnamed namespaces stay anchored and distinct; cleanup sends stop and joins keeper threads.
+- Fixed FD netns capture to open thread-local namespace FDs (`/proc/thread-self/ns/net` with `/proc/self/task/<tid>/ns/net` fallback) instead of `/proc/self/ns/net`, which can resolve to thread-group leader ns in worker threads.

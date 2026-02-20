@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::TryStreamExt;
 use ipnet::Ipv4Net;
-use nix::sched::{setns, unshare, CloneFlags};
+use nix::sched::{setns, CloneFlags};
 use rtnetlink::{new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use tracing::debug;
 
+use crate::netns as netns_backend;
 use crate::{qdisc, Impair, NatMode};
 use nix::libc;
 
@@ -142,6 +143,7 @@ struct IfaceBuild {
 
 pub struct LabCore {
     cfg: CoreConfig,
+    netns: netns_backend::NetnsManager,
     next_id: u64,
     next_private_subnet: u16,
     next_public_subnet: u16,
@@ -295,7 +297,7 @@ impl ResourceList {
                 }
             }
         }
-        netns_registry().remove_prefix(prefix);
+        netns_backend::cleanup_registry_prefix(prefix);
     }
 
     pub fn cleanup_everything(&self) {
@@ -312,6 +314,7 @@ impl LabCore {
     pub fn new(cfg: CoreConfig) -> Self {
         let mut core = Self {
             cfg,
+            netns: netns_backend::NetnsManager::new(),
             next_id: 1,
             next_private_subnet: 1,
             next_public_subnet: 1,
@@ -326,6 +329,22 @@ impl LabCore {
         let ix_sw = core.add_switch("ix", Some(core.cfg.ix_cidr), Some(core.cfg.ix_gw));
         core.ix_sw = ix_sw;
         core
+    }
+
+    async fn with_netns<F>(&self, ns: &str, f: F) -> Result<()>
+    where
+        F: AsyncFnOnce(&mut Netlink) -> Result<()> + Send + 'static,
+    {
+        let ns_name = ns.to_string();
+        self.netns
+            .run_in(&ns_name, move || async move {
+                let (conn, handle, _) =
+                    new_connection().context("rtnetlink new_connection in netns")?;
+                tokio::spawn(conn);
+                let mut nl = Netlink::new(handle);
+                f(&mut nl).await
+            })
+            .await
     }
 
     pub fn ix_gw(&self) -> Ipv4Addr {
@@ -378,6 +397,10 @@ impl LabCore {
 
     pub fn device(&self, id: DeviceId) -> Option<&Device> {
         self.devices.get(&id)
+    }
+
+    pub fn device_mut(&mut self, id: DeviceId) -> Option<&mut Device> {
+        self.devices.get_mut(&id)
     }
 
     pub fn switch(&self, id: SwitchId) -> Option<&Switch> {
@@ -611,14 +634,19 @@ impl LabCore {
         // IX bridge in the lab root namespace.
         let ix_br = self.cfg.ix_br.clone();
         let ix_cidr = format!("{}/{}", self.cfg.ix_gw, self.cfg.ix_cidr.prefix_len());
-        with_netns(&root_ns, async |h| {
-            debug!(bridge = %ix_br, root_ns = %root_ns, "build: ensure lab-root IX bridge");
-            h.set_link_up("lo").await?;
-            h.ensure_link_deleted(&ix_br).await.ok();
-            h.add_bridge(&ix_br).await?;
-            h.set_link_up(&ix_br).await?;
-            h.add_addr4(&ix_br, &ix_cidr).await?;
-            Ok(())
+        self.with_netns(&root_ns, {
+            let root_ns = root_ns.clone();
+            let ix_br = ix_br.clone();
+            let ix_cidr = ix_cidr.clone();
+            async move |h| {
+                debug!(bridge = %ix_br, root_ns = %root_ns, "build: ensure lab-root IX bridge");
+                h.set_link_up("lo").await?;
+                h.ensure_link_deleted(&ix_br).await.ok();
+                h.add_bridge(&ix_br).await?;
+                h.set_link_up(&ix_br).await?;
+                h.add_addr4(&ix_br, &ix_cidr).await?;
+                Ok(())
+            }
         })
         .await?;
         set_sysctl_in(&root_ns, "net/ipv4/ip_forward", "1")?;
@@ -632,18 +660,21 @@ impl LabCore {
             let ns_if = "ix".to_string();
             let ix_br = self.cfg.ix_br.clone();
             let ix_gw = self.cfg.ix_gw;
-            let router_ns = router.ns.clone();
-            let ns_if2 = ns_if.clone();
-            let root_if2 = root_if.clone();
-            with_netns(&root_ns, async |h| {
-                h.ensure_link_deleted(&root_if2).await.ok();
-                h.ensure_link_deleted(&ns_if2).await.ok();
-                h.add_veth(&root_if2, &ns_if2).await?;
-                h.set_master(&root_if2, &ix_br).await?;
-                h.set_link_up(&root_if2).await?;
-                h.move_link_to_netns(&ns_if2, &open_netns_fd(&router_ns)?)
-                    .await?;
-                Ok(())
+            self.with_netns(&root_ns, {
+                let root_if = root_if.clone();
+                let ns_if = ns_if.clone();
+                let ix_br = ix_br.clone();
+                let router_ns = router.ns.clone();
+                async move |h| {
+                    h.ensure_link_deleted(&root_if).await.ok();
+                    h.ensure_link_deleted(&ns_if).await.ok();
+                    h.add_veth(&root_if, &ns_if).await?;
+                    h.set_master(&root_if, &ix_br).await?;
+                    h.set_link_up(&root_if).await?;
+                    h.move_link_to_netns(&ns_if, &open_netns_fd(&router_ns)?)
+                        .await?;
+                    Ok(())
+                }
             })
             .await?;
 
@@ -652,12 +683,16 @@ impl LabCore {
                 router.upstream_ip.unwrap(),
                 self.cfg.ix_cidr.prefix_len()
             );
-            with_netns(&router.ns, async |h| {
-                h.set_link_up("lo").await?;
-                h.set_link_up(&ns_if).await?;
-                h.add_addr4(&ns_if, &ix_cidr).await?;
-                h.add_default_route_v4(ix_gw).await?;
-                Ok(())
+            self.with_netns(&router.ns, {
+                let ns_if = ns_if.clone();
+                let ix_cidr = ix_cidr.clone();
+                async move |h| {
+                    h.set_link_up("lo").await?;
+                    h.set_link_up(&ns_if).await?;
+                    h.add_addr4(&ns_if, &ix_cidr).await?;
+                    h.add_default_route_v4(ix_gw).await?;
+                    Ok(())
+                }
             })
             .await?;
             set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
@@ -725,8 +760,9 @@ impl LabCore {
                 let sw = self.switches.get(&sw).unwrap();
                 let br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
                 let lan_cidr = format!("{}/{}", sw.gw.unwrap(), sw.cidr.unwrap().prefix_len());
-                with_netns(&router.ns, async |h| {
+                self.with_netns(&router.ns, async move |h| {
                     h.set_link_up("lo").await?;
+                    h.ensure_link_deleted(&br).await.ok();
                     h.add_bridge(&br).await?;
                     h.set_link_up(&br).await?;
                     h.add_addr4(&br, &lan_cidr).await?;
@@ -757,26 +793,35 @@ impl LabCore {
 
             let root_a = self.root_if("a", id.0);
             let root_b = self.root_if("b", id.0);
-            let owner_ns2 = owner_ns.clone();
-            let router_ns2 = router.ns.clone();
-            with_netns(&root_ns, async |h| {
-                h.ensure_link_deleted(&root_a).await.ok();
-                h.ensure_link_deleted(&root_b).await.ok();
-                h.add_veth(&root_a, &root_b).await?;
-                h.move_link_to_netns(&root_a, &open_netns_fd(&owner_ns2)?)
-                    .await?;
-                h.move_link_to_netns(&root_b, &open_netns_fd(&router_ns2)?)
-                    .await?;
-                Ok(())
+            self.with_netns(&root_ns, {
+                let root_a = root_a.clone();
+                let root_b = root_b.clone();
+                let owner_ns = owner_ns.clone();
+                let router_ns = router.ns.clone();
+                async move |h| {
+                    h.ensure_link_deleted(&root_a).await.ok();
+                    h.ensure_link_deleted(&root_b).await.ok();
+                    h.add_veth(&root_a, &root_b).await?;
+                    h.move_link_to_netns(&root_a, &open_netns_fd(&owner_ns)?)
+                        .await?;
+                    h.move_link_to_netns(&root_b, &open_netns_fd(&router_ns)?)
+                        .await?;
+                    Ok(())
+                }
             })
             .await?;
 
             let owner_if = format!("h{}", id.0);
-            with_netns(&owner_ns, async |h| {
-                h.rename_link(&root_a, &owner_if).await?;
-                h.set_link_up(&owner_if).await?;
-                h.set_master(&owner_if, &bridge).await?;
-                Ok(())
+            self.with_netns(&owner_ns, {
+                let root_a = root_a.clone();
+                let owner_if = owner_if.clone();
+                let bridge = bridge.clone();
+                async move |h| {
+                    h.rename_link(&root_a, &owner_if).await?;
+                    h.set_link_up(&owner_if).await?;
+                    h.set_master(&owner_if, &bridge).await?;
+                    Ok(())
+                }
             })
             .await?;
 
@@ -786,13 +831,18 @@ impl LabCore {
                 router.upstream_ip.unwrap(),
                 sw.cidr.unwrap().prefix_len()
             );
-            with_netns(&router.ns, async |h| {
-                h.set_link_up("lo").await?;
-                h.rename_link(&root_b, &wan_if).await?;
-                h.set_link_up(&wan_if).await?;
-                h.add_addr4(&wan_if, &wan_cidr).await?;
-                h.add_default_route_v4(gw_ip).await?;
-                Ok(())
+            self.with_netns(&router.ns, {
+                let root_b = root_b.clone();
+                let wan_if = wan_if.clone();
+                let wan_cidr = wan_cidr.clone();
+                async move |h| {
+                    h.set_link_up("lo").await?;
+                    h.rename_link(&root_b, &wan_if).await?;
+                    h.set_link_up(&wan_if).await?;
+                    h.add_addr4(&wan_if, &wan_cidr).await?;
+                    h.add_default_route_v4(gw_ip).await?;
+                    Ok(())
+                }
             })
             .await?;
             set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
@@ -850,28 +900,33 @@ impl LabCore {
         }
 
         // Lab-root return routes to public downstreams behind IX routers.
-        with_netns(&root_ns, async |h| {
-            for router in self.routers.values() {
-                if router.uplink != Some(self.ix_sw) {
-                    continue;
-                }
-                if router.cfg.downstream_pool != DownstreamPool::Public {
-                    continue;
-                }
-                if let Some(cidr) = router.downstream_cidr {
-                    let net = cidr.addr();
-                    debug!(
-                        dst = %format!("{}/{}", net, cidr.prefix_len()),
-                        via = %router.upstream_ip.unwrap(),
-                        "build: add lab-root return route"
-                    );
-                    h.add_route_v4(
-                        &format!("{}/{}", net, cidr.prefix_len()),
-                        router.upstream_ip.unwrap(),
-                    )
+        let return_routes: Vec<(Ipv4Addr, u8, Ipv4Addr)> = self
+            .routers
+            .values()
+            .filter(|router| {
+                router.uplink == Some(self.ix_sw)
+                    && router.cfg.downstream_pool == DownstreamPool::Public
+                    && router.downstream_cidr.is_some()
+            })
+            .map(|router| {
+                let cidr = router.downstream_cidr.expect("checked above");
+                (
+                    cidr.addr(),
+                    cidr.prefix_len(),
+                    router.upstream_ip.expect("ix uplink ip"),
+                )
+            })
+            .collect();
+        self.with_netns(&root_ns, async move |h| {
+            for (net, prefix_len, via) in return_routes {
+                debug!(
+                    dst = %format!("{}/{}", net, prefix_len),
+                    via = %via,
+                    "build: add lab-root return route"
+                );
+                h.add_route_v4(&format!("{}/{}", net, prefix_len), via)
                     .await
                     .ok();
-                }
             }
             Ok(())
         })
@@ -904,16 +959,21 @@ impl LabCore {
         let root_gw = self.root_if("g", dev.idx);
         let root_dev = self.root_if("e", dev.idx);
         let root_ns = self.cfg.root_ns.clone();
-
-        with_netns(&root_ns, async |h| {
-            h.ensure_link_deleted(&root_gw).await.ok();
-            h.ensure_link_deleted(&root_dev).await.ok();
-            h.add_veth(&root_gw, &root_dev).await?;
-            h.move_link_to_netns(&root_gw, &open_netns_fd(&dev.gw_ns)?)
-                .await?;
-            h.move_link_to_netns(&root_dev, &open_netns_fd(&dev.dev_ns)?)
-                .await?;
-            Ok(())
+        self.with_netns(&root_ns, {
+            let root_gw = root_gw.clone();
+            let root_dev = root_dev.clone();
+            let dev_ns = dev.dev_ns.clone();
+            let gw_ns = dev.gw_ns.clone();
+            async move |h| {
+                h.ensure_link_deleted(&root_gw).await.ok();
+                h.ensure_link_deleted(&root_dev).await.ok();
+                h.add_veth(&root_gw, &root_dev).await?;
+                h.move_link_to_netns(&root_gw, &open_netns_fd(&gw_ns)?)
+                    .await?;
+                h.move_link_to_netns(&root_dev, &open_netns_fd(&dev_ns)?)
+                    .await?;
+                Ok(())
+            }
         })
         .await?;
 
@@ -921,23 +981,33 @@ impl LabCore {
         let ifname = dev.ifname.clone();
         let is_default = dev.is_default;
         let gw_ip = dev.gw_ip;
-        with_netns(&dev.dev_ns, async |h| {
-            h.set_link_up("lo").await?;
-            h.rename_link(&root_dev, &ifname).await?;
-            h.set_link_up(&ifname).await?;
-            h.add_addr4(&ifname, &ip_cidr).await?;
-            if is_default {
-                h.add_default_route_v4(gw_ip).await?;
+        self.with_netns(&dev.dev_ns, {
+            let root_dev = root_dev.clone();
+            let ifname = ifname.clone();
+            let ip_cidr = ip_cidr.clone();
+            async move |h| {
+                h.set_link_up("lo").await?;
+                h.rename_link(&root_dev, &ifname).await?;
+                h.set_link_up(&ifname).await?;
+                h.add_addr4(&ifname, &ip_cidr).await?;
+                if is_default {
+                    h.add_default_route_v4(gw_ip).await?;
+                }
+                Ok(())
             }
-            Ok(())
         })
         .await?;
 
-        with_netns(&dev.gw_ns, async |h| {
-            h.rename_link(&root_gw, &format!("v{}", dev.idx)).await?;
-            h.set_link_up(&format!("v{}", dev.idx)).await?;
-            h.set_master(&format!("v{}", dev.idx), &dev.gw_br).await?;
-            Ok(())
+        self.with_netns(&dev.gw_ns, {
+            let root_gw = root_gw.clone();
+            let gw_if = format!("v{}", dev.idx);
+            let gw_br = dev.gw_br.clone();
+            async move |h| {
+                h.rename_link(&root_gw, &gw_if).await?;
+                h.set_link_up(&gw_if).await?;
+                h.set_master(&gw_if, &gw_br).await?;
+                Ok(())
+            }
         })
         .await?;
 
@@ -1017,60 +1087,21 @@ fn add_host(cidr: Ipv4Net, host: u8) -> Result<Ipv4Addr> {
 // ─────────────────────────────────────────────
 
 pub fn ensure_netns_dir() -> Result<()> {
-    debug!("netns: ensure /var/run/netns exists");
-    let _ = std::fs::create_dir_all("/var/run/netns");
-    Ok(())
+    netns_backend::ensure_netns_dir()
 }
 
 pub fn open_netns_fd(name: &str) -> Result<File> {
-    debug!(ns = %name, "netns: open namespace fd");
-    let path = format!("/var/run/netns/{name}");
-    if let Ok(fd) = File::open(&path) {
-        return Ok(fd);
-    }
-    let fd = netns_registry()
-        .get(name)
-        .ok_or_else(|| anyhow!("netns '{}' not found in registry", name))?;
-    fd.try_clone()
-        .with_context(|| format!("clone netns fd for '{}'", name))
+    netns_backend::open_netns_fd(name)
 }
 
 pub fn cleanup_netns(name: &str) {
-    let _ = std::process::Command::new("ip")
-        .args(["netns", "del", name])
-        .stderr(std::process::Stdio::null())
-        .status();
-    netns_registry().remove(name);
+    netns_backend::cleanup_netns(name);
 }
 
 pub async fn create_named_netns(name: &str) -> Result<()> {
-    debug!(ns = %name, "netns: create named namespace");
-    cleanup_netns(name);
-    let created_with_ip = std::process::Command::new("ip")
-        .args(["netns", "add", name])
-        .status()
-        .map(|st| st.success())
-        .unwrap_or(false);
-    if !created_with_ip {
-        debug!(ns = %name, "netns: falling back to in-memory namespace registry");
-        let fd = create_unshared_netns_fd().context("create unshared netns")?;
-        netns_registry().insert(name, fd);
-    }
-    let _ = open_netns_fd(name).with_context(|| format!("open netns fd for '{name}'"))?;
+    netns_backend::create_named_netns(name).await?;
     resources().register_netns(name);
     Ok(())
-}
-
-fn create_unshared_netns_fd() -> Result<File> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let res: Result<File> = (|| {
-            unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
-            File::open("/proc/self/ns/net").context("open /proc/self/ns/net in new ns")
-        })();
-        let _ = tx.send(res);
-    });
-    rx.recv().context("receive netns fd from helper thread")?
 }
 
 pub fn spawn_in_netns_thread<F, R>(ns: String, f: F) -> thread::JoinHandle<Result<R>>
@@ -1079,12 +1110,9 @@ where
     R: Send + 'static,
 {
     thread::spawn(move || {
-        let orig = File::open("/proc/self/ns/net").context("open self netns")?;
         let target = open_netns_fd(&ns)?;
         setns(&target, CloneFlags::CLONE_NEWNET).context("setns target")?;
-        let res = f();
-        setns(&orig, CloneFlags::CLONE_NEWNET).context("restore setns")?;
-        res
+        f()
     })
 }
 
@@ -1118,12 +1146,9 @@ pub fn set_sysctl_root(path: &str, val: &str) -> Result<()> {
 
 pub fn set_sysctl_in(ns: &str, path: &str, val: &str) -> Result<()> {
     debug!(ns = %ns, path = %path, val = %val, "sysctl: set in namespace");
-    let orig = File::open("/proc/self/ns/net")?;
-    let target = open_netns_fd(ns)?;
-    setns(&target, CloneFlags::CLONE_NEWNET)?;
-    let res = set_sysctl_root(path, val);
-    setns(&orig, CloneFlags::CLONE_NEWNET)?;
-    res
+    let path = path.to_string();
+    let val = val.to_string();
+    with_netns_thread(ns, move || set_sysctl_root(&path, &val))
 }
 
 pub async fn run_nft_in(ns: &str, rules: &str) -> Result<()> {
@@ -1305,11 +1330,19 @@ impl Netlink {
     async fn add_bridge(&mut self, name: &str) -> Result<()> {
         self.bump();
         debug!(bridge = %name, "netlink: add bridge");
-        self.handle
+        if let Err(err) = self
+            .handle
             .link()
             .add(LinkBridge::new(name).build())
             .execute()
-            .await?;
+            .await
+        {
+            if is_eexist(&err) {
+                debug!(bridge = %name, "netlink: bridge already exists");
+            } else {
+                return Err(err.into());
+            }
+        }
         resources().register_link(name);
         Ok(())
     }
@@ -1371,11 +1404,19 @@ impl Netlink {
         debug!(ifname = %ifname, cidr = %cidr, "netlink: add IPv4 address");
         let idx = self.link_index(ifname).await?;
         let (ip, prefix) = parse_cidr_v4(cidr)?;
-        self.handle
+        if let Err(err) = self
+            .handle
             .address()
             .add(idx, ip.into(), prefix)
             .execute()
-            .await?;
+            .await
+        {
+            if is_eexist(&err) {
+                debug!(ifname = %ifname, cidr = %cidr, "netlink: IPv4 address already exists");
+                return Ok(());
+            }
+            return Err(err.into());
+        }
         Ok(())
     }
 
@@ -1384,7 +1425,7 @@ impl Netlink {
         debug!(via = %via, "netlink: add default route");
         let msg = RouteMessageBuilder::<Ipv4Addr>::new().gateway(via).build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
-            if err.to_string().contains("File exists") {
+            if is_eexist(&err) {
                 debug!(via = %via, "netlink: default route already exists");
                 return Ok(());
             }
@@ -1401,31 +1442,25 @@ impl Netlink {
             .destination_prefix(dst, prefix)
             .gateway(via)
             .build();
-        self.handle.route().add(msg).execute().await?;
+        if let Err(err) = self.handle.route().add(msg).execute().await {
+            if is_eexist(&err) {
+                debug!(dst = %dst_cidr, via = %via, "netlink: route already exists");
+                return Ok(());
+            }
+            return Err(err.into());
+        }
         Ok(())
     }
 }
 
-async fn with_netns<F>(ns: &str, f: F) -> Result<()>
-where
-    F: AsyncFnOnce(&mut Netlink) -> Result<()>,
-{
-    debug!(ns = %ns, "netlink: enter namespace");
-    let orig = File::open("/proc/self/ns/net").context("open self netns")?;
-    let target = open_netns_fd(ns)?;
-    setns(&target, CloneFlags::CLONE_NEWNET).context("setns target")?;
-
-    let res = async {
-        let (conn, handle, _) = new_connection().context("rtnetlink new_connection in netns")?;
-        tokio::spawn(conn);
-        let mut nl = Netlink::new(handle);
-        f(&mut nl).await
+fn is_eexist(err: &rtnetlink::Error) -> bool {
+    match err {
+        rtnetlink::Error::NetlinkError(msg) => msg
+            .code
+            .map(|code| -code.get() == nix::libc::EEXIST)
+            .unwrap_or(false),
+        _ => false,
     }
-    .await;
-
-    debug!(ns = %ns, "netlink: exit namespace");
-    setns(&orig, CloneFlags::CLONE_NEWNET).context("restore setns")?;
-    res
 }
 
 fn parse_cidr_v4(cidr: &str) -> Result<(Ipv4Addr, u8)> {

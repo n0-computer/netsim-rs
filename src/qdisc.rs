@@ -21,7 +21,11 @@ pub(crate) fn apply_impair(ns: &str, ifname: &str, limits: ImpairLimits) -> Resu
     Ok(())
 }
 
-pub(crate) fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, u32)]) -> Result<()> {
+pub(crate) fn apply_region_latency(
+    ns: &str,
+    ifname: &str,
+    filters: &[(Ipv4Net, u32)],
+) -> Result<()> {
     if filters.is_empty() {
         return Ok(());
     }
@@ -47,6 +51,22 @@ pub(crate) fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, 
 pub(crate) fn remove_qdisc(ns: &str, ifname: &str) {
     let qdisc = Qdisc::new(ifname);
     qdisc.clear_root(ns);
+}
+
+/// Remove the root qdisc, returning an error if the command fails.
+///
+/// Exit code 2 from `tc` (ENOENT — no qdisc to remove) is treated as success.
+pub(crate) fn remove_qdisc_r(ns: &str, ifname: &str) -> Result<()> {
+    let status = run_in_netns(ns, {
+        let mut cmd = Command::new("tc");
+        cmd.args(["qdisc", "del", "dev", ifname, "root"]);
+        cmd.stderr(std::process::Stdio::null());
+        cmd
+    })?;
+    if !status.success() && status.code() != Some(2) {
+        bail!("tc qdisc del failed on {} in {}", ifname, ns);
+    }
+    Ok(())
 }
 
 struct Qdisc<'a> {
@@ -173,7 +193,13 @@ impl<'a> Qdisc<'a> {
         Ok(())
     }
 
-    fn add_netem_class(&self, ns: &str, class_id: &str, handle: &str, latency_ms: u32) -> Result<()> {
+    fn add_netem_class(
+        &self,
+        ns: &str,
+        class_id: &str,
+        handle: &str,
+        latency_ms: u32,
+    ) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "qdisc",

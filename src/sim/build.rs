@@ -1,0 +1,229 @@
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+
+use crate::sim::BinarySpec;
+
+/// Resolve a binary spec to a local path, building or downloading as needed.
+pub async fn build_or_fetch_binary(spec: &BinarySpec, work_dir: &Path) -> Result<PathBuf> {
+    if let Some(path) = &spec.path {
+        if !path.exists() {
+            bail!("binary path does not exist: {}", path.display());
+        }
+        return Ok(path.clone());
+    }
+
+    if let Some(url) = &spec.url {
+        return download_binary(url, work_dir).await;
+    }
+
+    if let Some(repo) = &spec.repo {
+        let commit = spec.commit.as_deref().unwrap_or("main");
+        return build_from_git(
+            repo,
+            commit,
+            spec.example.as_deref(),
+            spec.bin.as_deref(),
+            work_dir,
+        )
+        .await;
+    }
+
+    bail!("binary spec must have url, path, or repo");
+}
+
+async fn download_binary(url: &str, work_dir: &Path) -> Result<PathBuf> {
+    let bins_dir = work_dir.join("bins");
+    tokio::fs::create_dir_all(&bins_dir)
+        .await
+        .context("create bins dir")?;
+
+    // Derive a local filename from the URL.
+    let filename = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("binary")
+        .split('?')
+        .next()
+        .unwrap_or("binary");
+    let dest = bins_dir.join(filename);
+
+    if dest.exists() {
+        tracing::debug!(?dest, "binary already cached, skipping download");
+        // If it's an archive, find the actual binary inside.
+        if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+            return find_in_archive(&dest, &bins_dir).await;
+        }
+        return Ok(dest);
+    }
+
+    tracing::info!(url, dest = %dest.display(), "downloading binary");
+    let response = reqwest::get(url).await.context("GET binary url")?;
+    if !response.status().is_success() {
+        bail!("download failed: {} {}", url, response.status());
+    }
+    let bytes = response.bytes().await.context("read binary response")?;
+    tokio::fs::write(&dest, &bytes)
+        .await
+        .context("write binary")?;
+
+    if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+        find_in_archive(&dest, &bins_dir).await
+    } else {
+        // Mark as executable.
+        set_executable(&dest)?;
+        Ok(dest)
+    }
+}
+
+async fn find_in_archive(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {
+    let archive = archive.to_owned();
+    let extract_dir = extract_dir.to_owned();
+    tokio::task::spawn_blocking(move || extract_first_binary(&archive, &extract_dir))
+        .await
+        .context("join extract task")?
+}
+
+fn extract_first_binary(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    let file = std::fs::File::open(archive).context("open archive")?;
+    let gz = GzDecoder::new(file);
+    let mut tar = Archive::new(gz);
+
+    let mut found: Option<PathBuf> = None;
+    for entry in tar.entries().context("read tar entries")? {
+        let mut entry = entry.context("read tar entry")?;
+        let path = entry.path().context("entry path")?.into_owned();
+        // Skip directories and dotfiles
+        if path.components().count() == 0 {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') {
+            continue;
+        }
+        // Take the first regular file that looks like a binary (no extension
+        // or known extension list)
+        let ext = path.extension().unwrap_or_default().to_string_lossy();
+        if ext.is_empty() || ext == "bin" {
+            let dest = extract_dir.join(&*name);
+            entry.unpack(&dest).context("unpack entry")?;
+            set_executable(&dest)?;
+            found = Some(dest);
+            break;
+        }
+    }
+
+    found.ok_or_else(|| anyhow::anyhow!("no binary found in archive {}", archive.display()))
+}
+
+async fn build_from_git(
+    repo: &str,
+    commit: &str,
+    example: Option<&str>,
+    bin: Option<&str>,
+    work_dir: &Path,
+) -> Result<PathBuf> {
+    let src_dir = work_dir.join("src").join(
+        repo.rsplit('/')
+            .next()
+            .unwrap_or("repo")
+            .trim_end_matches(".git"),
+    );
+    tokio::fs::create_dir_all(&src_dir)
+        .await
+        .context("create src dir")?;
+
+    let src = src_dir.clone();
+    let repo = repo.to_owned();
+    let commit = commit.to_owned();
+    let example_owned = example.map(|s| s.to_owned());
+    let bin_owned = bin.map(|s| s.to_owned());
+
+    tokio::task::spawn_blocking(move || {
+        git_clone_or_update(&repo, &commit, &src)?;
+
+        let mut args = vec!["build", "--release"];
+        if let Some(ex) = example_owned.as_deref() {
+            args.extend(["--example", ex]);
+        }
+        if let Some(b) = bin_owned.as_deref() {
+            args.extend(["--bin", b]);
+        }
+        let status = std::process::Command::new("cargo")
+            .args(&args)
+            .current_dir(&src)
+            .status()
+            .context("spawn cargo build")?;
+        if !status.success() {
+            bail!("cargo build failed");
+        }
+
+        // Find the produced binary.
+        let meta = std::process::Command::new("cargo")
+            .args(["metadata", "--format-version", "1", "--no-deps"])
+            .current_dir(&src)
+            .output()
+            .context("cargo metadata")?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&meta.stdout).context("parse cargo metadata")?;
+        let target_dir = json["target_directory"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing target_directory"))?;
+
+        if let Some(ex) = example_owned.as_deref() {
+            Ok(PathBuf::from(target_dir).join("release/examples").join(ex))
+        } else if let Some(b) = bin_owned.as_deref() {
+            Ok(PathBuf::from(target_dir).join("release").join(b))
+        } else {
+            bail!("binary spec must specify example or bin for git source");
+        }
+    })
+    .await
+    .context("join build task")?
+}
+
+fn git_clone_or_update(repo: &str, commit: &str, dir: &Path) -> Result<()> {
+    if dir.join(".git").exists() {
+        let status = std::process::Command::new("git")
+            .args(["fetch", "origin"])
+            .current_dir(dir)
+            .status()
+            .context("git fetch")?;
+        if !status.success() {
+            bail!("git fetch failed");
+        }
+    } else {
+        let status = std::process::Command::new("git")
+            .args(["clone", repo, "."])
+            .current_dir(dir)
+            .status()
+            .context("git clone")?;
+        if !status.success() {
+            bail!("git clone failed");
+        }
+    }
+    let status = std::process::Command::new("git")
+        .args(["checkout", commit])
+        .current_dir(dir)
+        .status()
+        .context("git checkout")?;
+    if !status.success() {
+        bail!("git checkout '{}' failed", commit);
+    }
+    Ok(())
+}
+
+fn set_executable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .context("stat binary")?
+            .permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(path, perms).context("chmod binary")?;
+    }
+    Ok(())
+}
