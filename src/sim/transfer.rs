@@ -7,7 +7,6 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use crate::sim::report::TransferResult;
-use crate::sim::runner::parse_duration;
 use crate::sim::runner::SimState;
 use crate::sim::Step;
 
@@ -109,7 +108,6 @@ pub fn start_transfer(
         .set_capture(step_id, "endpoint_id", bound.endpoint_id.clone());
 
     let mut fetchers = Vec::with_capacity(fetcher_devs.len());
-    let fetch_duration_s = transfer_duration_seconds(step)?;
     for (idx, fetcher_dev) in fetcher_devs.iter().enumerate() {
         let fetcher_log = step_dir.join(format!("fetcher-{}", idx));
         std::fs::create_dir_all(&fetcher_log)
@@ -123,13 +121,11 @@ pub fn start_transfer(
             "--logs-path".to_string(),
             fetcher_log.display().to_string(),
             "fetch".to_string(),
-            format!("--duration={fetch_duration_s}"),
         ];
         fetcher_cmd
             .args(["--output", "json", "--logs-path"])
             .arg(&fetcher_log)
-            .arg("fetch")
-            .arg(format!("--duration={fetch_duration_s}"));
+            .arg("fetch");
         if step.strategy.as_deref() == Some("endpoint_id_with_direct_addrs") {
             if let Some(addr) = &bound.direct_addr {
                 fetcher_cmd.args(["--remote-direct-address", addr]);
@@ -263,16 +259,6 @@ fn add_env_to_cmd(cmd: &mut std::process::Command, state: &SimState, keylog_suff
         .join("logs")
         .join(format!("keylog_{}.txt", sanitize_for_file(keylog_suffix)));
     cmd.env("SSLKEYLOGFILE", keylog);
-}
-
-fn transfer_duration_seconds(step: &Step) -> Result<u64> {
-    let parsed = step
-        .duration
-        .as_deref()
-        .map(parse_duration)
-        .transpose()?
-        .unwrap_or(Duration::from_secs(10));
-    Ok(parsed.as_secs().max(1))
 }
 
 fn format_cmd(binary: &Path, args: &[String]) -> String {
@@ -413,7 +399,6 @@ fn sanitize_for_file(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::Step;
 
     #[test]
     fn parse_endpoint_bound_with_direct_addr() {
@@ -430,22 +415,5 @@ mod tests {
         let parsed = parse_endpoint_bound_line(line).expect("endpoint bound");
         assert_eq!(parsed.endpoint_id, "abc");
         assert!(parsed.direct_addr.is_none());
-    }
-
-    #[test]
-    fn transfer_duration_defaults_to_10s() {
-        let step = Step::default();
-        let secs = transfer_duration_seconds(&step).expect("default duration");
-        assert_eq!(secs, 10);
-    }
-
-    #[test]
-    fn transfer_duration_parses_step_duration() {
-        let step = Step {
-            duration: Some("20s".to_string()),
-            ..Default::default()
-        };
-        let secs = transfer_duration_seconds(&step).expect("parsed duration");
-        assert_eq!(secs, 20);
     }
 }

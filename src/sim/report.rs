@@ -366,9 +366,9 @@ struct RunResults {
     iperf: Vec<IperfResult>,
 }
 
-/// Scan run directories under `work_root` and emit combined reports.
+/// Scan per-sim result directories under one run root and emit combined reports.
 ///
-/// If `run_names` is non-empty, only those run directories are included.
+/// If `run_names` is non-empty, only those directory names are included.
 pub async fn write_combined_results_for_runs(work_root: &Path, run_names: &[String]) -> Result<()> {
     let mut runs = load_runs(work_root, run_names)?;
     runs.sort_by(|a, b| a.run.cmp(&b.run));
@@ -692,6 +692,11 @@ pub fn print_combined_results_table_for_runs(work_root: &Path, run_names: &[Stri
 }
 
 fn load_runs(work_root: &Path, run_names: &[String]) -> Result<Vec<RunResults>> {
+    let run_name = work_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("run")
+        .to_string();
     let include: Option<HashSet<&str>> = if run_names.is_empty() {
         None
     } else {
@@ -742,7 +747,7 @@ fn load_runs(work_root: &Path, run_names: &[String]) -> Result<Vec<RunResults>> 
         )
         .context("parse iperf array")?;
         runs.push(RunResults {
-            run: name.to_string(),
+            run: run_name.clone(),
             sim,
             transfers,
             iperf,
@@ -871,8 +876,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn write_combined_results_filters_runs_and_writes_summary() {
         let root = temp_dir("report-combined");
-        let run_a = root.join("sim-a-260220-120000");
-        let run_b = root.join("sim-b-260220-120500");
+        let run_a = root.join("sim-a");
+        let run_b = root.join("sim-b");
         std::fs::create_dir_all(&run_a).unwrap();
         std::fs::create_dir_all(&run_b).unwrap();
 
@@ -905,14 +910,14 @@ mod tests {
             .await
             .unwrap();
 
-        write_combined_results_for_runs(&root, &["sim-a-260220-120000".to_string()])
+        write_combined_results_for_runs(&root, &["sim-a".to_string()])
             .await
             .unwrap();
 
         let json = std::fs::read_to_string(root.join("combined-results.json")).unwrap();
         let md = std::fs::read_to_string(root.join("combined-results.md")).unwrap();
-        assert!(json.contains("\"run\": \"sim-a-260220-120000\""));
-        assert!(!json.contains("\"run\": \"sim-b-260220-120500\""));
+        assert!(json.contains("\"sim\": \"sim-a\""));
+        assert!(!json.contains("\"sim\": \"sim-b\""));
         assert!(md.contains("| sim-a | 1 | 0.8 | 100% |"));
         assert!(!md.contains("sim-b"));
     }

@@ -84,24 +84,25 @@ pub async fn run_sims(
     if sims.is_empty() {
         bail!("no sim files found");
     }
-    let mut run_names = Vec::new();
+    let run_root = prepare_run_root(&work_dir)?;
+    let mut sim_dir_names = Vec::new();
     for sim in sims {
-        let run_dir = run_single_sim(sim, work_dir.clone(), binary_overrides.clone()).await?;
-        if let Some(run_name) = run_dir.file_name().and_then(|s| s.to_str()) {
-            run_names.push(run_name.to_string());
+        let sim_dir = run_single_sim(sim, run_root.clone(), binary_overrides.clone()).await?;
+        if let Some(sim_dir_name) = sim_dir.file_name().and_then(|s| s.to_str()) {
+            sim_dir_names.push(sim_dir_name.to_string());
         }
     }
-    write_combined_results_for_runs(&work_dir, &run_names)
+    write_combined_results_for_runs(&run_root, &sim_dir_names)
         .await
         .context("write combined results")?;
-    print_combined_results_table_for_runs(&work_dir, &run_names)
+    print_combined_results_table_for_runs(&run_root, &sim_dir_names)
         .context("print combined results table")?;
     Ok(())
 }
 
 async fn run_single_sim(
     sim_path: PathBuf,
-    work_dir: PathBuf,
+    run_root: PathBuf,
     binary_overrides: Vec<String>,
 ) -> Result<PathBuf> {
     let text = std::fs::read_to_string(&sim_path)
@@ -116,7 +117,7 @@ async fn run_single_sim(
     } else {
         sim.sim.name.clone()
     };
-    let run_work_dir = prepare_run_dir(&work_dir, &sim_name)?;
+    let run_work_dir = prepare_sim_dir(&run_root, &sim_name)?;
 
     tokio::fs::create_dir_all(&run_work_dir)
         .await
@@ -220,11 +221,11 @@ fn expand_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(sims)
 }
 
-fn prepare_run_dir(work_root: &Path, sim_name: &str) -> Result<PathBuf> {
+fn prepare_run_root(work_root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(work_root)
         .with_context(|| format!("create work root {}", work_root.display()))?;
     let stamp = now_stamp()?;
-    let run_base = format!("{}-{}", sanitize_for_filename(sim_name), stamp);
+    let run_base = format!("sim-{}", stamp);
     let mut run_name = run_base.clone();
     let mut run_dir = work_root.join(&run_name);
     let mut n = 1u32;
@@ -257,6 +258,26 @@ fn prepare_run_dir(work_root: &Path, sim_name: &str) -> Result<PathBuf> {
             .with_context(|| format!("create latest dir {}", latest.display()))?;
     }
     Ok(run_dir)
+}
+
+fn prepare_sim_dir(run_root: &Path, sim_name: &str) -> Result<PathBuf> {
+    let sim_base = sanitize_for_filename(sim_name);
+    let mut sim_name = sim_base.clone();
+    let mut sim_dir = run_root.join(&sim_name);
+    let mut n = 1u32;
+    loop {
+        match std::fs::create_dir(&sim_dir) {
+            Ok(()) => return Ok(sim_dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                sim_name = format!("{sim_base}-{n}");
+                sim_dir = run_root.join(&sim_name);
+                n += 1;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| format!("create sim dir {}", sim_dir.display()))
+            }
+        }
+    }
 }
 
 fn now_stamp() -> Result<String> {
@@ -1065,11 +1086,11 @@ mod tests {
     }
 
     #[test]
-    fn prepare_run_dir_sets_relative_latest_and_unique_suffix() {
+    fn prepare_run_root_sets_relative_latest_and_unique_suffix() {
         let root = temp_dir("prepare-run");
 
-        let first = prepare_run_dir(&root, "sim-a").expect("first run dir");
-        let second = prepare_run_dir(&root, "sim-a").expect("second run dir");
+        let first = prepare_run_root(&root).expect("first run dir");
+        let second = prepare_run_root(&root).expect("second run dir");
         assert_ne!(first, second, "second run should not reuse same dir");
 
         let latest = root.join("latest");
@@ -1086,6 +1107,26 @@ mod tests {
                 .map(PathBuf::from)
                 .expect("second basename"),
             "latest should point at newest run dir"
+        );
+    }
+
+    #[test]
+    fn prepare_sim_dir_sets_unique_suffix() {
+        let root = temp_dir("prepare-sim-dir");
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let first = prepare_sim_dir(&root, "sim-a").expect("first sim dir");
+        let second = prepare_sim_dir(&root, "sim-a").expect("second sim dir");
+        assert_ne!(first, second, "second sim should not reuse same dir");
+        assert_eq!(
+            first.file_name().and_then(|s| s.to_str()),
+            Some("sim-a"),
+            "first sim dir name"
+        );
+        assert_eq!(
+            second.file_name().and_then(|s| s.to_str()),
+            Some("sim-a-1"),
+            "second sim dir suffix"
         );
     }
 }

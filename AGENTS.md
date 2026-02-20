@@ -117,6 +117,9 @@ after confirmation commit with "feat: short description" etc and some details af
 - Implemented artifact strategy A staging in `netsim-vm`: `--binary` overrides (`path|build|fetch`) are resolved on host and rewritten to staged guest paths under `/work/binaries/*`.
 - Added `netsim-vm test` VM test flow: host `cargo test --no-run --target ... --message-format json` artifact discovery, staging to `/work/binaries/tests`, guest execution, and pass/fail summary.
 - Updated `Makefile.toml` VM tasks to invoke `cargo run -p netsim-vm -- ...` (`run-vm`, `test-vm`, `setup-vm`, `vm-status`, `vm-down`) instead of `qemu-vm.sh`.
+- Sim runner output layout was refactored to invocation-scoped roots:
+  - `netsim run ...` now creates `sim-<yymmdd>-<hhmmss>[-N]` under the selected work dir, keeps `latest` as a relative symlink to that run root, writes one subdirectory per sim inside the run root, and writes `combined-results.{json,md}` into that same run root (`src/sim/runner.rs`, `src/sim/report.rs`).
+- `kind = "iroh-transfer"` no longer injects an implicit `--duration=10s` or uses `step.duration`; transfer duration is now passed explicitly via `fetch_args` when needed (e.g. `fetch_args = ["--duration=20s"]`) (`src/sim/transfer.rs`, `iroh-integration/sims/*.toml`).
 - Added optional Chuck-compatible reporting output for sim runs:
   - New `[sim] chuck_compat = true` emits `report/<sim>__transfer.json` and `report/integration_<sim>__transfer.json` alongside standard netsim reports (`src/sim/mod.rs`, `src/sim/report.rs`, `src/sim/runner.rs`).
 - Ported legacy iroh/chuck JSON suites from `resources/iroh-sims` into current TOML format under `iroh-integration/sims-ported/` (63 case files) with conversion notes in `iroh-integration/sims-ported/PORTED_FROM_RESOURCES.md`.
