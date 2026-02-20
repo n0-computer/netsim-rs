@@ -787,24 +787,14 @@ impl Lab {
     /// Brings a device interface administratively down.
     pub fn link_down(&mut self, device: &str, ifname: &str) -> Result<()> {
         let ns = self.dev_ns(device)?;
-        let if_owned = ifname.to_string();
-        run_command_in_namespace(&ns, {
-            let mut cmd = Command::new("ip");
-            cmd.args(["link", "set", &if_owned, "down"]);
-            cmd
-        })?;
+        self.core.set_link_state_in_namespace(&ns, ifname, false)?;
         Ok(())
     }
 
     /// Brings a device interface administratively up.
     pub fn link_up(&mut self, device: &str, ifname: &str) -> Result<()> {
         let ns = self.dev_ns(device)?;
-        let if_owned = ifname.to_string();
-        run_command_in_namespace(&ns, {
-            let mut cmd = Command::new("ip");
-            cmd.args(["link", "set", &if_owned, "up"]);
-            cmd
-        })?;
+        self.core.set_link_state_in_namespace(&ns, ifname, true)?;
         Ok(())
     }
 
@@ -829,27 +819,8 @@ impl Lab {
             (dev.ns.clone(), iface.uplink, iface.impair)
         };
         let gw_ip = self.core.router_downlink_gw_for_switch(uplink)?;
-        // Remove old default route (ignore failure — may already be absent).
-        let _ = run_command_in_namespace(&ns, {
-            let mut cmd = Command::new("ip");
-            cmd.args(["route", "del", "default"]);
-            cmd.stderr(std::process::Stdio::null());
-            cmd
-        });
-        // Add new default via the gateway of the target interface.
-        run_command_in_namespace(&ns, {
-            let mut cmd = Command::new("ip");
-            cmd.args([
-                "route",
-                "add",
-                "default",
-                "via",
-                &gw_ip.to_string(),
-                "dev",
-                to,
-            ]);
-            cmd
-        })?;
+        self.core
+            .replace_default_route_in_namespace(&ns, to, gw_ip)?;
         match impair {
             Some(imp) => apply_impair_in(&ns, to, imp),
             None => qdisc::remove_qdisc(&ns, to),
@@ -1146,8 +1117,12 @@ mod tests {
         let dc = lab.add_router("dc", Some("eu"), None, NatMode::None)?;
         let upstream = match wiring {
             UplinkWiring::DirectIx => None,
-            UplinkWiring::ViaPublicIsp => Some(lab.add_router("isp", Some("eu"), None, NatMode::None)?),
-            UplinkWiring::ViaCgnatIsp => Some(lab.add_router("isp", Some("eu"), None, NatMode::Cgnat)?),
+            UplinkWiring::ViaPublicIsp => {
+                Some(lab.add_router("isp", Some("eu"), None, NatMode::None)?)
+            }
+            UplinkWiring::ViaCgnatIsp => {
+                Some(lab.add_router("isp", Some("eu"), None, NatMode::Cgnat)?)
+            }
         };
         let nat = lab.add_router("nat", None, upstream, nat_mode)?;
         let dev = lab.add_device("dev").iface("eth0", nat, None).build()?;
@@ -1706,7 +1681,10 @@ gateway = "lan1"
     #[traced_test]
     async fn nat_mapping_port_behavior_by_mode_and_wiring() -> Result<()> {
         check_caps()?;
-        let modes = [NatMode::DestinationIndependent, NatMode::DestinationDependent];
+        let modes = [
+            NatMode::DestinationIndependent,
+            NatMode::DestinationDependent,
+        ];
         let wirings = [
             UplinkWiring::DirectIx,
             UplinkWiring::ViaPublicIsp,

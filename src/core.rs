@@ -608,6 +608,59 @@ impl LabCore {
             .ok_or_else(|| anyhow!("switch missing gateway ip"))
     }
 
+    /// Sets interface admin state in `ns` using rtnetlink.
+    pub fn set_link_state_in_namespace(&self, ns: &str, ifname: &str, up: bool) -> Result<()> {
+        let ns_name = ns.to_string();
+        let ifname = ifname.to_string();
+        std::thread::scope(|scope| {
+            let join = scope.spawn(|| -> Result<()> {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("create tokio runtime for link state change")?;
+                rt.block_on(self.netns.run_in(&ns_name, move || async move {
+                    let (conn, handle, _) = new_connection().context("rtnetlink new_connection")?;
+                    tokio::spawn(conn);
+                    let mut nl = Netlink::new(handle);
+                    if up {
+                        nl.set_link_up(&ifname).await
+                    } else {
+                        nl.set_link_down(&ifname).await
+                    }
+                }))
+            });
+            join.join()
+                .map_err(|_| anyhow!("link state thread panicked"))?
+        })
+    }
+
+    /// Replaces default route in `ns` with `default via <via> dev <ifname>`.
+    pub fn replace_default_route_in_namespace(
+        &self,
+        ns: &str,
+        ifname: &str,
+        via: Ipv4Addr,
+    ) -> Result<()> {
+        let ns_name = ns.to_string();
+        let ifname = ifname.to_string();
+        std::thread::scope(|scope| {
+            let join = scope.spawn(|| -> Result<()> {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("create tokio runtime for route switch")?;
+                rt.block_on(self.netns.run_in(&ns_name, move || async move {
+                    let (conn, handle, _) = new_connection().context("rtnetlink new_connection")?;
+                    tokio::spawn(conn);
+                    let mut nl = Netlink::new(handle);
+                    nl.replace_default_route_v4(&ifname, via).await
+                }))
+            });
+            join.join()
+                .map_err(|_| anyhow!("route switch thread panicked"))?
+        })
+    }
+
     /// Adds a switch node and returns its identifier.
     pub fn add_switch(
         &mut self,
@@ -1484,6 +1537,15 @@ impl Netlink {
         Ok(())
     }
 
+    async fn set_link_down(&mut self, ifname: &str) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, "netlink: set link down");
+        let idx = self.link_index(ifname).await?;
+        let msg = LinkUnspec::new_with_index(idx).down().build();
+        self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
     async fn rename_link(&mut self, from: &str, to: &str) -> Result<()> {
         self.bump();
         debug!(from = %from, to = %to, "netlink: rename link");
@@ -1546,6 +1608,31 @@ impl Netlink {
             }
             return Err(err.into());
         }
+        Ok(())
+    }
+
+    async fn replace_default_route_v4(&mut self, ifname: &str, via: Ipv4Addr) -> Result<()> {
+        self.bump();
+        debug!(ifname = %ifname, via = %via, "netlink: replace default route");
+        let ifindex = self.link_index(ifname).await?;
+
+        self.bump();
+        let mut routes = self
+            .handle
+            .route()
+            .get(RouteMessageBuilder::<Ipv4Addr>::new().build())
+            .execute();
+        while let Some(route) = routes.try_next().await? {
+            if route.header.destination_prefix_length == 0 {
+                let _ = self.handle.route().del(route).execute().await;
+            }
+        }
+
+        let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+            .output_interface(ifindex)
+            .gateway(via)
+            .build();
+        self.handle.route().add(msg).execute().await?;
         Ok(())
     }
 
