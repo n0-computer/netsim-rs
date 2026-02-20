@@ -15,7 +15,7 @@ porting. `resources/dogfood/` — Rust transfer logic to port.
 - `kind = "iroh-transfer"` sequence corrected: `PathStats` = end-of-connection on
   provider side (not a metric, not readiness); `connected_via` comes from
   `ConnectionTypeChanged` events; `--output json --logs-path` flags documented
-- `[binary]` gains `url` source option; `[relay_binary]` section added
+- `[binary]` gains `url` source option; 
 - `wait-for` default timeout specified: 300 s
 - `count` restored (Phase 3, needed for 1→N sims)
 - Capture→substitution dependency ordering documented
@@ -469,13 +469,15 @@ Supported parsers for generic steps:
 name     = "iroh-wifi-to-mobile"
 topology = "wifi-to-mobile"     # loads topos/wifi-to-mobile.toml
 
-[binary]
+[[binary]]
+name = "transfer"
 repo    = "https://github.com/n0-computer/iroh"
 commit  = "main"
 example = "transfer"
 
-[relay_binary]
-url = "https://github.com/n0-computer/iroh/releases/download/v0.35.0/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
+[[binary]]
+name = relay
+url = "https://github.com/n0-computer/iroh/releases/download/v0.96.1/iroh-relay-x86_64-unknown-linux-musl.tar.gz"
 ```
 
 Inline topology (no `topology` ref):

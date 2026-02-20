@@ -27,7 +27,7 @@ if [[ "$need_sudo" -eq 1 ]]; then
   maybe_sudo=(sudo)
 fi
 
-caps="cap_dac_override,cap_net_admin,cap_sys_admin,cap_net_raw+ep"
+caps="cap_net_admin,cap_sys_admin,cap_net_raw+ep"
 
 crate_name="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[0].name')"
 if [[ -z "${crate_name}" ]]; then

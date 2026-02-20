@@ -1,63 +1,814 @@
-   Compiling netsim v0.1.0 (/home/bit/Code/rust/netsim-rs)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.48s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
      Running unittests src/lib.rs (/home/bit/rust_target/debug/deps/netsim-8db58bde8d993994)
 
 running 16 tests
 test tests::manual_impair_deserialize ... ok
-test tests::load_from_toml ... ok
-test tests::latency_inter_region_dc_to_dc ... ok
-test tests::latency_device_impair_adds_delay ... ok
-test tests::cgnat_hides_behind_isp_public_ip ... ok
-test tests::latency_directional_between_regions ... ok
-test tests::nat_dest_independent_keeps_port ... ok
-PING 10.0.1.1 (10.0.1.1) 56(84) Bytes an Daten.
-64 Bytes von 10.0.1.1: icmp_seq=1 ttl=64 Zeit=0.065 ms
+test tests::load_from_toml ... FAILED
+test tests::latency_manual_impair_applies ... FAILED
+test tests::latency_device_impair_adds_delay ... FAILED
+test tests::cgnat_hides_behind_isp_public_ip ... FAILED
+test tests::nat_dest_independent_keeps_port ... FAILED
+test tests::isp_home_wan_pool_selection ... FAILED
+test tests::smoke_ping_gateway ... FAILED
+test tests::latency_directional_between_regions ... FAILED
+test tests::nat_dest_dependent_changes_port ... FAILED
+test tests::latency_inter_region_dc_to_dc ... FAILED
+test tests::smoke_device_to_device_same_lan ... FAILED
+test tests::smoke_ping_isp_to_ix_and_dc ... FAILED
+test tests::smoke_ping_home_to_isp ... FAILED
+test tests::smoke_tcp_dc_roundtrip ... FAILED
+test tests::smoke_udp_dc_roundtrip ... FAILED
 
---- 10.0.1.1 Ping-Statistiken ---
-1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
-rtt min/avg/max/mdev = 0.065/0.065/0.065/0.000 ms
-test tests::smoke_ping_gateway ... ok
-test tests::latency_manual_impair_applies ... ok
-PING 203.0.113.1 (203.0.113.1) 56(84) Bytes an Daten.
-64 Bytes von 203.0.113.1: icmp_seq=1 ttl=64 Zeit=0.062 ms
+failures:
 
---- 203.0.113.1 Ping-Statistiken ---
-1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
-rtt min/avg/max/mdev = 0.062/0.062/0.062/0.000 ms
-PING 203.0.113.250 (203.0.113.250) 56(84) Bytes an Daten.
-64 Bytes von 203.0.113.250: icmp_seq=1 ttl=64 Zeit=0.033 ms
+---- tests::load_from_toml stdout ----
+[2m2026-02-20T00:26:54.558729Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.558756Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.558778Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.558793Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.559515Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.559550Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.559564Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.560192Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.560218Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.560230Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.560664Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.560681Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.560693Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.561076Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.561106Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.561196Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.561213Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.561229Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.561461Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.561905Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.561922Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.562972Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:54.563019Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.563564Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:54.563589Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.563615Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.563621Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.563685Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.563694Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.563807Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m293
+[2m2026-02-20T00:26:54.590241Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:54.591138Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.591156Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.591402Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.592457Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.592477Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.592811Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.592835Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.592842Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.593022Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.593041Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.593084Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.593092Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.593290Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.593299Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.593467Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:54.593477Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.593912Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:54.594019Z[0m [34mDEBUG[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
---- 203.0.113.250 Ping-Statistiken ---
-1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
-rtt min/avg/max/mdev = 0.033/0.033/0.033/0.000 ms
-test tests::smoke_ping_isp_to_ix_and_dc ... ok
-PING 10.0.1.3 (10.0.1.3) 56(84) Bytes an Daten.
-64 Bytes von 10.0.1.3: icmp_seq=1 ttl=64 Zeit=0.041 ms
+---- tests::latency_manual_impair_applies stdout ----
+[2m2026-02-20T00:26:54.597695Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.597729Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.597758Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.597785Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.598432Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.598475Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.598501Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.599134Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.599177Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.599203Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.599814Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.599860Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.599933Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.599960Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.599985Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.600943Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m295
+[2m2026-02-20T00:26:54.637238Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.637544Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.637561Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.638455Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:54.638489Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.639363Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:54.639429Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.639513Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.639539Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.639802Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m297
+[2m2026-02-20T00:26:54.659189Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.659212Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.659295Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:54.660013Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.660031Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.660217Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.660781Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.660795Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.660998Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.661021Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.661031Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.661215Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.661245Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.661290Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.661301Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.661475Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.661488Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.661637Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.250/24
+[2m2026-02-20T00:26:54.661651Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.661913Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:54.661970Z[0m [34mDEBUG[0m [1mlatency_manual_impair_applies[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
---- 10.0.1.3 Ping-Statistiken ---
-1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
-rtt min/avg/max/mdev = 0.041/0.041/0.041/0.000 ms
-test tests::smoke_device_to_device_same_lan ... ok
-PING 203.0.1.1 (203.0.1.1) 56(84) Bytes an Daten.
-64 Bytes von 203.0.1.1: icmp_seq=1 ttl=64 Zeit=0.052 ms
+---- tests::latency_device_impair_adds_delay stdout ----
+[2m2026-02-20T00:26:54.665655Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.665689Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.665717Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.665744Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.666225Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.666262Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.666287Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.666745Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.666784Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.666808Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.667280Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.667323Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.667394Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.667421Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.667445Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.668483Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m298
+[2m2026-02-20T00:26:54.712214Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.712677Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.712710Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.713893Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:54.713927Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.714902Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:54.714949Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.715028Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.715047Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.715267Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m300
+[2m2026-02-20T00:26:54.750198Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.750234Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.750378Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:54.751534Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.751566Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.751872Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.752903Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.752931Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.753319Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.753358Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.753384Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.753694Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.753728Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.753791Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.753808Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.754092Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.754113Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.754365Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.250/24
+[2m2026-02-20T00:26:54.754414Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.754838Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:54.754973Z[0m [34mDEBUG[0m [1mlatency_device_impair_adds_delay[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
---- 203.0.1.1 Ping-Statistiken ---
-1 Pakete übertragen, 1 empfangen, 0% packet loss, time 0ms
-rtt min/avg/max/mdev = 0.052/0.052/0.052/0.000 ms
-test tests::smoke_ping_home_to_isp ... ok
-test tests::nat_dest_dependent_changes_port ... ok
-test tests::smoke_tcp_dc_roundtrip ... ok
-test tests::smoke_udp_dc_roundtrip ... ok
-test tests::isp_home_wan_pool_selection ... ok
+---- tests::cgnat_hides_behind_isp_public_ip stdout ----
+[2m2026-02-20T00:26:54.759321Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.759354Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.759383Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.759412Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.759919Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.759955Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.759981Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.760446Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.760485Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.760510Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.760968Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.761009Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.761033Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.766497Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.766555Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.766652Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.766682Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.766710Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.767669Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m301
+[2m2026-02-20T00:26:54.819223Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.819720Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.819743Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.820428Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:54.820450Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.821169Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:54.821217Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.821267Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:54.821283Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:54.821397Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.821420Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.821603Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m302
+[2m2026-02-20T00:26:54.844180Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i4 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:54.845376Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i4 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.845406Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:54.845668Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.846815Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:54.846847Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:54.847183Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.847214Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.847229Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.847452Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.847485Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.847545Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.847562Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.847823Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.847844Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.848096Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.250/24
+[2m2026-02-20T00:26:54.848119Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.848413Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:54.848496Z[0m [34mDEBUG[0m [1mcgnat_hides_behind_isp_public_ip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-2
+Error: Received a netlink error message File exists (os error 17)
 
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.87s
+---- tests::nat_dest_independent_keeps_port stdout ----
+[2m2026-02-20T00:26:54.852935Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.852955Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.852968Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.852980Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.861158Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.861211Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.861238Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.861769Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.861808Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.861833Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.862323Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.862357Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.862381Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.862938Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.862974Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.863062Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.863089Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.863116Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.864033Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m304
+[2m2026-02-20T00:26:54.914258Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.914780Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.914825Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.915953Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:54.916000Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.916912Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:54.916969Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.917034Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.917050Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.917153Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.917171Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.917324Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m305
+[2m2026-02-20T00:26:54.935193Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:54.936093Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.936114Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.936330Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.937314Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.937334Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:54.937671Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.937694Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.937704Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.937858Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.937882Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.937925Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.937936Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:54.938121Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.938134Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.938298Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:54.938319Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:54.938578Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:54.938638Z[0m [34mDEBUG[0m [1mnat_dest_independent_keeps_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
-   Doc-tests netsim
+---- tests::isp_home_wan_pool_selection stdout ----
+[2m2026-02-20T00:26:54.943371Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:54.943395Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:54.943415Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.943435Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.948216Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:54.948244Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.948255Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.948709Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:54.948727Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.948737Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.949126Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:54.949142Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.949151Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.949481Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:54.949497Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:54.949573Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.949584Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.949594Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:54.950104Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m307
+[2m2026-02-20T00:26:55.010210Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.010678Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.010712Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.011754Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.011785Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.012799Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.012865Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.012934Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.012958Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.013299Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m309
+[2m2026-02-20T00:26:55.046246Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.046295Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.046452Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.047856Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.047891Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.048213Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.049451Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.049542Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.049969Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.050018Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.050044Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.050313Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.050359Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.050437Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.050463Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.050767Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.050796Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.051080Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.051110Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.051420Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.051530Z[0m [34mDEBUG[0m [1misp_home_wan_pool_selection[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
-running 3 tests
-test src/lib.rs - Lab::run_on (line 430) - compile ... ok
-test src/lib.rs - (line 4) - compile ... ok
-test src/lib.rs - (line 18) - compile ... ok
+---- tests::smoke_ping_gateway stdout ----
+[2m2026-02-20T00:26:55.056249Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.056292Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.056328Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.056361Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.061564Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.061618Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.061645Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.062315Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.062366Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.062393Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.062817Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.062876Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.062959Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.062994Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.063019Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.063952Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m310
+[2m2026-02-20T00:26:55.116218Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.116679Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.116728Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.118082Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.118126Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.119153Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.119219Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.119292Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.119314Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.119626Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m312
+[2m2026-02-20T00:26:55.134151Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.134181Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.134284Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.135238Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.135259Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.135456Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.136200Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.136220Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.136482Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.136509Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.136522Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.136715Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.136746Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.136799Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.136814Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.137070Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.137123Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.137330Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.137344Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.137622Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.137688Z[0m [34mDEBUG[0m [1msmoke_ping_gateway[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+---- tests::latency_directional_between_regions stdout ----
+[2m2026-02-20T00:26:55.142636Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.142656Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.142668Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.142678Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.144823Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.144847Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.144858Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.147330Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.147357Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.147368Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.147879Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.147914Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.147935Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.148298Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.148333Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.148402Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.148415Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.148426Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.148920Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m313
+[2m2026-02-20T00:26:55.191207Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.191726Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.191758Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.192846Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.192884Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.193983Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.194091Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.194195Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.194239Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.194600Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m315
+[2m2026-02-20T00:26:55.225201Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.225238Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.225367Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.226526Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.226554Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.226808Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.227921Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.227947Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.228225Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.228265Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.228276Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.228424Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.228447Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.228489Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.228500Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.228672Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.228686Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.228844Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.250/24
+[2m2026-02-20T00:26:55.228858Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.229105Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.229162Z[0m [34mDEBUG[0m [1mlatency_directional_between_regions[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
 
+---- tests::nat_dest_dependent_changes_port stdout ----
+[2m2026-02-20T00:26:55.233621Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.233654Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.233684Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.233710Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.234226Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.234262Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.234287Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.234732Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.234766Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.234790Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.235691Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.235746Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.235778Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.238759Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.238808Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.238889Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.238919Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.238948Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.239888Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m316
+[2m2026-02-20T00:26:55.290216Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.290653Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.290684Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.291550Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.291611Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.293182Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.293252Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.293338Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.293377Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.293723Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m318
+[2m2026-02-20T00:26:55.321202Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.321240Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.321371Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.322583Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.322615Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.322876Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.323843Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.323866Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.324191Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.324223Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.324238Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.324494Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.324530Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.324592Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.324609Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.324878Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.324900Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.325122Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.325142Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.325559Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.325676Z[0m [34mDEBUG[0m [1mnat_dest_dependent_changes_port[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::latency_inter_region_dc_to_dc stdout ----
+[2m2026-02-20T00:26:55.330964Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.331006Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.331035Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.331061Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.331633Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.331672Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.331695Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.332139Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.332205Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.332246Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.337934Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.338021Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.338109Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.338140Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.338166Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.339114Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m319
+[2m2026-02-20T00:26:55.381228Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.381697Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.381733Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.382800Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.382836Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.383948Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.384026Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.384103Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.384126Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.384289Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.384316Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.384575Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m320
+[2m2026-02-20T00:26:55.407148Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i4 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.408180Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i4 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.408203Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.408421Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.409055Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.409069Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.409260Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.409283Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.409293Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.409486Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.409511Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.409553Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.409563Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.409873Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.409906Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.410253Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.249/24
+[2m2026-02-20T00:26:55.410288Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.410608Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.410718Z[0m [34mDEBUG[0m [1mlatency_inter_region_dc_to_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-2
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::smoke_device_to_device_same_lan stdout ----
+[2m2026-02-20T00:26:55.415502Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.415541Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.415570Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.415598Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.422870Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.422924Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.422951Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.423478Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.423520Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.423545Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.423960Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.423998Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.424022Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.424499Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.424535Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.424617Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.424644Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.424668Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.425582Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m322
+[2m2026-02-20T00:26:55.473190Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.473579Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.473611Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.474592Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.474629Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.475680Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.475745Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.475810Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.475826Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.475941Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.475964Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.476158Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m323
+[2m2026-02-20T00:26:55.502259Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.503572Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.503607Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.503938Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.505106Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.505153Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.505484Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.505511Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.505524Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.505711Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.505739Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.505791Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.505805Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.506034Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.506052Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.506250Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.506277Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.506593Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.506756Z[0m [34mDEBUG[0m [1msmoke_device_to_device_same_lan[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::smoke_ping_isp_to_ix_and_dc stdout ----
+[2m2026-02-20T00:26:55.511834Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.511874Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.511908Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.511944Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.517972Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.518035Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.518063Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.518623Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.518676Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.518758Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.518785Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.518809Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.519773Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m325
+[2m2026-02-20T00:26:55.549185Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.549594Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.549629Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.550566Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.550598Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.551535Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.551600Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.551681Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.551708Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.552011Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m327
+[2m2026-02-20T00:26:55.582259Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.582291Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.582408Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.583391Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.583411Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.583639Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.584367Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.584387Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.584669Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.584698Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.584711Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.584934Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.584971Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.585045Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.585060Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.585318Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.585337Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.585563Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.585587Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.585820Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.585881Z[0m [34mDEBUG[0m [1msmoke_ping_isp_to_ix_and_dc[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::smoke_ping_home_to_isp stdout ----
+[2m2026-02-20T00:26:55.590712Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.590738Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.590756Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.590778Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.595550Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.595575Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.595585Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.596155Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.596190Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.596233Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.596246Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.596256Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.596763Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m328
+[2m2026-02-20T00:26:55.675210Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.675726Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.675773Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.677089Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.677141Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.678205Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.678291Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.678376Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.678400Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.678742Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mlab-p8539i2 [3midx[0m[2m=[0m330
+[2m2026-02-20T00:26:55.709222Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.709259Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.709394Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.710594Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.710619Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.710911Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.711911Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.711935Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.712304Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.712350Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.712378Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.712679Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.712714Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.712777Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.712788Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.712967Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.712981Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.713147Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.713161Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.713663Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.713743Z[0m [34mDEBUG[0m [1msmoke_ping_home_to_isp[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::smoke_tcp_dc_roundtrip stdout ----
+[2m2026-02-20T00:26:55.717859Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.717890Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.717912Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.717933Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.718453Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.718488Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.718505Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.723363Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.723390Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.723401Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.724150Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.724182Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.724204Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.724667Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.724702Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.724752Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.724763Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.724773Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.725288Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m331
+[2m2026-02-20T00:26:55.775208Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.775638Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.775669Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.776609Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.776639Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.777681Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.777748Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.777835Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.777872Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.778083Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.778128Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.778388Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m332
+[2m2026-02-20T00:26:55.810196Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i4 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.811408Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i4 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.811442Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.811743Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.812934Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.812966Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i4
+[2m2026-02-20T00:26:55.813484Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.813525Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.813546Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.813853Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.813898Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.813978Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.814010Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.814335Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.814348Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.814499Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.250/24
+[2m2026-02-20T00:26:55.814513Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.815039Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.815152Z[0m [34mDEBUG[0m [1msmoke_tcp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-2
+Error: Received a netlink error message File exists (os error 17)
+
+---- tests::smoke_udp_dc_roundtrip stdout ----
+[2m2026-02-20T00:26:55.819713Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m508:[0m build: ensure /var/run/netns exists
+[2m2026-02-20T00:26:55.819753Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m905:[0m netns: using in-memory namespace registry
+[2m2026-02-20T00:26:55.819783Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.819813Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.825595Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.825645Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.825672Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.826242Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-2
+[2m2026-02-20T00:26:55.826280Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.826305Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.826754Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-3
+[2m2026-02-20T00:26:55.826787Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m512:[0m build: create named netns [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.826811Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m923:[0m netns: create named namespace [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.827275Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-4
+[2m2026-02-20T00:26:55.827314Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.827396Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m520:[0m build: ensure root IX bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.827422Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.827446Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.828370Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mbr-p8539-1 [3midx[0m[2m=[0m334
+[2m2026-02-20T00:26:55.876179Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1172:[0m netlink: add bridge [3mbridge[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.876569Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.876596Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.877657Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mbr-p8539-1 [3mcidr[0m[2m=[0m203.0.113.1/24
+[2m2026-02-20T00:26:55.877683Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.878556Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m982:[0m sysctl: set in root [3mpath[0m[2m=[0mnet/ipv4/ip_forward [3mval[0m[2m=[0m1
+[2m2026-02-20T00:26:55.878616Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1272:[0m netlink: open root rtnetlink connection
+[2m2026-02-20T00:26:55.878676Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.878695Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.878830Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1162:[0m netlink: ensure link deleted [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.878857Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.879095Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1164:[0m netlink: delete link [3mifname[0m[2m=[0mix [3midx[0m[2m=[0m335
+[2m2026-02-20T00:26:55.905209Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1184:[0m netlink: add veth pair [3ma[0m[2m=[0mlab-p8539i2 [3mb[0m[2m=[0mix
+[2m2026-02-20T00:26:55.906211Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1215:[0m netlink: set master [3mifname[0m[2m=[0mlab-p8539i2 [3mmaster[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.906231Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.906434Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mbr-p8539-1
+[2m2026-02-20T00:26:55.907137Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.907158Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlab-p8539i2
+[2m2026-02-20T00:26:55.907438Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.907465Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1225:[0m netlink: move link to netns [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.907477Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.907683Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1283:[0m netlink: enter namespace [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.907724Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m910:[0m netns: open namespace fd [3mns[0m[2m=[0mlab-p8539-1
+[2m2026-02-20T00:26:55.907786Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.907806Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mlo
+[2m2026-02-20T00:26:55.908058Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1197:[0m netlink: set link up [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.908076Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.908282Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1236:[0m netlink: add IPv4 address [3mifname[0m[2m=[0mix [3mcidr[0m[2m=[0m203.0.113.10/24
+[2m2026-02-20T00:26:55.908303Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1146:[0m netlink: lookup link index [3mifname[0m[2m=[0mix
+[2m2026-02-20T00:26:55.908842Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1249:[0m netlink: add default route [3mvia[0m[2m=[0m203.0.113.1
+[2m2026-02-20T00:26:55.908965Z[0m [34mDEBUG[0m [1msmoke_udp_dc_roundtrip[0m[2m:[0m [2mnetsim::core[0m[2m:[0m [2m1296:[0m netlink: exit namespace [3mns[0m[2m=[0mlab-p8539-1
+Error: Received a netlink error message File exists (os error 17)
+
+
+failures:
+    tests::cgnat_hides_behind_isp_public_ip
+    tests::isp_home_wan_pool_selection
+    tests::latency_device_impair_adds_delay
+    tests::latency_directional_between_regions
+    tests::latency_inter_region_dc_to_dc
+    tests::latency_manual_impair_applies
+    tests::load_from_toml
+    tests::nat_dest_dependent_changes_port
+    tests::nat_dest_independent_keeps_port
+    tests::smoke_device_to_device_same_lan
+    tests::smoke_ping_gateway
+    tests::smoke_ping_home_to_isp
+    tests::smoke_ping_isp_to_ix_and_dc
+    tests::smoke_tcp_dc_roundtrip
+    tests::smoke_udp_dc_roundtrip
+
+test result: FAILED. 1 passed; 15 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.36s
+
+error: test failed, to rerun pass `--lib`

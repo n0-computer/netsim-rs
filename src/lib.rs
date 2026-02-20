@@ -57,8 +57,7 @@ use crate::core::{
 /// Stable identifier for devices/routers/switches in the lab.
 pub use crate::core::NodeId;
 
-/// Verify the process has enough privileges to manage namespaces, routes, raw sockets,
-/// and create netns entries under `/var/run/netns`.
+/// Verify the process has enough privileges to manage namespaces, routes, and raw sockets.
 pub fn check_caps() -> Result<()> {
     if nix::unistd::Uid::effective().is_root() {
         return Ok(());
@@ -69,12 +68,10 @@ pub fn check_caps() -> Result<()> {
         .find_map(|line| line.strip_prefix("CapEff:\t"))
         .ok_or_else(|| anyhow!("missing CapEff in /proc/self/status"))?;
     let cap_eff = u64::from_str_radix(cap_eff.trim(), 16).context("parse CapEff")?;
-    const CAP_DAC_OVERRIDE: u64 = 1;
     const CAP_NET_ADMIN: u64 = 12;
     const CAP_NET_RAW: u64 = 13;
     const CAP_SYS_ADMIN: u64 = 21;
     let need = [
-        ("CAP_DAC_OVERRIDE", CAP_DAC_OVERRIDE),
         ("CAP_NET_ADMIN", CAP_NET_ADMIN),
         ("CAP_NET_RAW", CAP_NET_RAW),
         ("CAP_SYS_ADMIN", CAP_SYS_ADMIN),

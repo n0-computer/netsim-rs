@@ -1,18 +1,18 @@
 use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::TryStreamExt;
 use ipnet::Ipv4Net;
-use nix::sched::{setns, CloneFlags};
+use nix::sched::{setns, unshare, CloneFlags};
 use rtnetlink::{
-    new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, NetworkNamespace, RouteMessageBuilder,
+    new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder,
 };
 use std::collections::{HashMap, HashSet};
-use std::fs::{create_dir_all, File};
+use std::fs::File;
 use std::io::Write as IoWrite;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
 use std::process::ExitStatus;
 use std::sync::mpsc;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use tracing::debug;
 
@@ -128,6 +128,38 @@ pub struct ResourceList {
 
 static RESOURCES: OnceLock<ResourceList> = OnceLock::new();
 static INIT_HOOKS: Once = Once::new();
+static NETNS_REGISTRY: OnceLock<NetnsRegistry> = OnceLock::new();
+
+#[derive(Default)]
+struct NetnsRegistry {
+    map: Mutex<HashMap<String, Arc<File>>>,
+}
+
+fn netns_registry() -> &'static NetnsRegistry {
+    NETNS_REGISTRY.get_or_init(NetnsRegistry::default)
+}
+
+impl NetnsRegistry {
+    fn insert(&self, name: &str, fd: File) {
+        let mut m = self.map.lock().unwrap();
+        m.insert(name.to_string(), Arc::new(fd));
+    }
+
+    fn get(&self, name: &str) -> Option<Arc<File>> {
+        let m = self.map.lock().unwrap();
+        m.get(name).cloned()
+    }
+
+    fn remove(&self, name: &str) {
+        let mut m = self.map.lock().unwrap();
+        m.remove(name);
+    }
+
+    fn remove_prefix(&self, prefix: &str) {
+        let mut m = self.map.lock().unwrap();
+        m.retain(|k, _| !k.starts_with(prefix));
+    }
+}
 
 pub fn resources() -> &'static ResourceList {
     RESOURCES.get_or_init(|| {
@@ -177,10 +209,7 @@ impl ResourceList {
                 .status();
         }
         for ns in netns {
-            let _ = std::process::Command::new("ip")
-                .args(["netns", "del", &ns])
-                .stderr(std::process::Stdio::null())
-                .status();
+            cleanup_netns(&ns);
         }
     }
 
@@ -222,6 +251,7 @@ impl ResourceList {
                 }
             }
         }
+        netns_registry().remove_prefix(prefix);
     }
 
     pub fn cleanup_everything(&self) {
@@ -872,55 +902,43 @@ fn add_host(cidr: Ipv4Net, host: u8) -> Result<Ipv4Addr> {
 // ─────────────────────────────────────────────
 
 pub fn ensure_netns_dir() -> Result<()> {
-    debug!(path = "/var/run/netns", "netns: ensure directory");
-    create_dir_all("/var/run/netns").context("create /var/run/netns")
+    debug!("netns: using in-memory namespace registry");
+    Ok(())
 }
 
 pub fn open_netns_fd(name: &str) -> Result<File> {
     debug!(ns = %name, "netns: open namespace fd");
-    let path = format!("/var/run/netns/{}", name);
-    match File::open(&path) {
-        Ok(f) => Ok(f),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            ip_netns_add(name)?;
-            File::open(&path).with_context(|| format!("open netns fd for '{}'", name))
-        }
-        Err(e) => Err(e).with_context(|| format!("open netns fd for '{}'", name)),
-    }
+    let fd = netns_registry()
+        .get(name)
+        .ok_or_else(|| anyhow!("netns '{}' not found in registry", name))?;
+    fd.try_clone()
+        .with_context(|| format!("clone netns fd for '{}'", name))
 }
 
 pub fn cleanup_netns(name: &str) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let name = name.to_string();
-        handle.spawn(async move {
-            let _ = NetworkNamespace::del(name).await;
-        });
-        return;
-    }
-    let _ = std::process::Command::new("ip")
-        .args(["netns", "del", name])
-        .status();
+    netns_registry().remove(name);
 }
 
 pub async fn create_named_netns(name: &str) -> Result<()> {
     debug!(ns = %name, "netns: create named namespace");
-    let _ = NetworkNamespace::del(name.to_string()).await;
-    ip_netns_add(name)?;
+    cleanup_netns(name);
+    let fd = create_unshared_netns_fd().context("create unshared netns")?;
+    netns_registry().insert(name, fd);
     let _ = open_netns_fd(name)?;
     resources().register_netns(name);
     Ok(())
 }
 
-fn ip_netns_add(name: &str) -> Result<()> {
-    let output = std::process::Command::new("ip")
-        .args(["netns", "add", name])
-        .output()
-        .context("exec: ip netns add")?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    bail!("ip netns add {} failed: {}", name, stderr.trim());
+fn create_unshared_netns_fd() -> Result<File> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let res: Result<File> = (|| {
+            unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
+            File::open("/proc/self/ns/net").context("open /proc/self/ns/net in new ns")
+        })();
+        let _ = tx.send(res);
+    });
+    rx.recv().context("receive netns fd from helper thread")?
 }
 
 pub fn spawn_in_netns_thread<F, R>(ns: String, f: F) -> thread::JoinHandle<Result<R>>
