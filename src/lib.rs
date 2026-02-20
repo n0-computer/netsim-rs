@@ -1143,8 +1143,14 @@ router = "lan1"
         lab.add_region_latency("us", "eu", 70);
         let dc_eu = lab.add_router("dc-eu", Some("eu"), None, NatMode::None)?;
         let dc_us = lab.add_router("dc-us", Some("us"), None, NatMode::None)?;
-        let dev_eu = lab.add_device("dev-eu").iface("eth0", dc_eu, None).build()?;
-        let dev_us = lab.add_device("dev-us").iface("eth0", dc_us, None).build()?;
+        let dev_eu = lab
+            .add_device("dev-eu")
+            .iface("eth0", dc_eu, None)
+            .build()?;
+        let dev_us = lab
+            .add_device("dev-us")
+            .iface("eth0", dc_us, None)
+            .build()?;
         lab.build().await?;
 
         let dc_us_ip = lab.router_uplink_ip(dc_us)?;
@@ -1222,7 +1228,9 @@ router = "lan1"
             lab.add_region_latency("us", "eu", 40);
             let dc_eu = lab.add_router("dc-eu", Some("eu"), None, NatMode::None)?;
             let dc_us = lab.add_router("dc-us", Some("us"), None, NatMode::None)?;
-            lab.add_device("dev1").iface("eth0", dc_eu, impair).build()?;
+            lab.add_device("dev1")
+                .iface("eth0", dc_eu, impair)
+                .build()?;
             lab.build().await?;
 
             let dc_us_ip = lab.router_uplink_ip(dc_us)?;

@@ -2,9 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures::stream::TryStreamExt;
 use ipnet::Ipv4Net;
 use nix::sched::{setns, unshare, CloneFlags};
-use rtnetlink::{
-    new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder,
-};
+use rtnetlink::{new_connection, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write as IoWrite;
@@ -484,11 +482,7 @@ impl LabCore {
             .get_mut(&device)
             .ok_or_else(|| anyhow!("unknown device id"))?;
         if !dev.interfaces.iter().any(|i| i.ifname == ifname) {
-            bail!(
-                "interface '{}' not found on device '{}'",
-                ifname,
-                dev.name
-            );
+            bail!("interface '{}' not found on device '{}'", ifname, dev.name);
         }
         dev.default_via = ifname.to_string();
         Ok(())
@@ -819,13 +813,20 @@ impl LabCore {
         let mut iface_data = Vec::new();
         for dev in self.devices.values() {
             for iface in &dev.interfaces {
-                let sw = self
-                    .switches
-                    .get(&iface.uplink)
-                    .ok_or_else(|| anyhow!("device '{}' iface '{}' switch missing", dev.name, iface.ifname))?;
-                let gw_router = sw
-                    .owner_router
-                    .ok_or_else(|| anyhow!("device '{}' iface '{}' switch missing owner", dev.name, iface.ifname))?;
+                let sw = self.switches.get(&iface.uplink).ok_or_else(|| {
+                    anyhow!(
+                        "device '{}' iface '{}' switch missing",
+                        dev.name,
+                        iface.ifname
+                    )
+                })?;
+                let gw_router = sw.owner_router.ok_or_else(|| {
+                    anyhow!(
+                        "device '{}' iface '{}' switch missing owner",
+                        dev.name,
+                        iface.ifname
+                    )
+                })?;
                 let gw = sw.gw.ok_or_else(|| anyhow!("device switch missing gw"))?;
                 let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
                 let gw_ns = self.routers.get(&gw_router).unwrap().ns.clone();
