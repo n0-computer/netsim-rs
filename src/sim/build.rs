@@ -31,6 +31,19 @@ pub async fn build_or_fetch_binary(spec: &BinarySpec, work_dir: &Path) -> Result
     bail!("binary spec must have url, path, or repo");
 }
 
+/// Build a named binary from a local checkout directory.
+///
+/// Tries `cargo build --example <name>` first, then falls back to
+/// `cargo build --bin <name>`.
+pub async fn build_local_binary(name: &str, source_dir: &Path, work_dir: &Path) -> Result<PathBuf> {
+    let source = source_dir.to_path_buf();
+    let work = work_dir.to_path_buf();
+    let name = name.to_string();
+    tokio::task::spawn_blocking(move || build_local_binary_blocking(&name, &source, &work))
+        .await
+        .context("join local binary build task")?
+}
+
 async fn download_binary(url: &str, work_dir: &Path) -> Result<PathBuf> {
     let bins_dir = work_dir.join("bins");
     tokio::fs::create_dir_all(&bins_dir)
@@ -118,6 +131,61 @@ fn extract_first_binary(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {
     found.ok_or_else(|| anyhow::anyhow!("no binary found in archive {}", archive.display()))
 }
 
+fn build_local_binary_blocking(name: &str, source_dir: &Path, work_dir: &Path) -> Result<PathBuf> {
+    if !source_dir.is_dir() {
+        bail!(
+            "local binary source is not a directory: {}",
+            source_dir.display()
+        );
+    }
+    let target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
+    let target_base = work_dir.join("build-target");
+    std::fs::create_dir_all(&target_base).context("create local build target dir")?;
+
+    let mut example_args = vec!["build", "--release", "--example", name];
+    if let Some(t) = target.as_deref() {
+        example_args.extend(["--target", t]);
+    }
+    let example_status = std::process::Command::new("cargo")
+        .args(&example_args)
+        .env("CARGO_TARGET_DIR", &target_base)
+        .current_dir(source_dir)
+        .status()
+        .context("spawn cargo build --example")?;
+    if example_status.success() {
+        return Ok(local_target_artifact_path(
+            &target_base,
+            name,
+            true,
+            target.as_deref(),
+        ));
+    }
+
+    let mut bin_args = vec!["build", "--release", "--bin", name];
+    if let Some(t) = target.as_deref() {
+        bin_args.extend(["--target", t]);
+    }
+    let bin_status = std::process::Command::new("cargo")
+        .args(&bin_args)
+        .env("CARGO_TARGET_DIR", &target_base)
+        .current_dir(source_dir)
+        .status()
+        .context("spawn cargo build --bin")?;
+    if !bin_status.success() {
+        bail!(
+            "failed to build '{}' as example or bin in {}",
+            name,
+            source_dir.display()
+        );
+    }
+    Ok(local_target_artifact_path(
+        &target_base,
+        name,
+        false,
+        target.as_deref(),
+    ))
+}
+
 async fn build_from_git(
     repo: &str,
     commit: &str,
@@ -144,7 +212,11 @@ async fn build_from_git(
     tokio::task::spawn_blocking(move || {
         git_clone_or_update(&repo, &commit, &src)?;
 
+        let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
         let mut args = vec!["build", "--release"];
+        if let Some(t) = rust_target.as_deref() {
+            args.extend(["--target", t]);
+        }
         if let Some(ex) = example_owned.as_deref() {
             args.extend(["--example", ex]);
         }
@@ -173,9 +245,19 @@ async fn build_from_git(
             .ok_or_else(|| anyhow::anyhow!("missing target_directory"))?;
 
         if let Some(ex) = example_owned.as_deref() {
-            Ok(PathBuf::from(target_dir).join("release/examples").join(ex))
+            Ok(artifact_path_from_target_dir(
+                target_dir,
+                ex,
+                true,
+                rust_target.as_deref(),
+            ))
         } else if let Some(b) = bin_owned.as_deref() {
-            Ok(PathBuf::from(target_dir).join("release").join(b))
+            Ok(artifact_path_from_target_dir(
+                target_dir,
+                b,
+                false,
+                rust_target.as_deref(),
+            ))
         } else {
             bail!("binary spec must specify example or bin for git source");
         }
@@ -226,4 +308,40 @@ fn set_executable(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, perms).context("chmod binary")?;
     }
     Ok(())
+}
+
+fn artifact_path_from_target_dir(
+    target_dir: &str,
+    binary_name: &str,
+    is_example: bool,
+    rust_target: Option<&str>,
+) -> PathBuf {
+    let mut path = PathBuf::from(target_dir);
+    if let Some(t) = rust_target {
+        path.push(t);
+    }
+    path.push("release");
+    if is_example {
+        path.push("examples");
+    }
+    path.push(binary_name);
+    path
+}
+
+fn local_target_artifact_path(
+    target_base: &Path,
+    binary_name: &str,
+    is_example: bool,
+    rust_target: Option<&str>,
+) -> PathBuf {
+    let mut path = target_base.to_path_buf();
+    if let Some(t) = rust_target {
+        path.push(t);
+    }
+    path.push("release");
+    if is_example {
+        path.push("examples");
+    }
+    path.push(binary_name);
+    path
 }

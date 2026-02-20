@@ -1,0 +1,25 @@
+[[router]]
+name = "dc"
+
+[[router]]
+name = "isp"
+nat  = "cgnat"
+
+[[router]]
+name     = "lan"
+upstream = "isp"
+nat      = "destination-independent"
+
+[device.provider.eth0]
+gateway = "dc"
+
+[device.fetcher]
+default_via = "eth1"
+
+[device.fetcher.eth0]
+gateway = "isp"
+impair  = "mobile"
+
+[device.fetcher.eth1]
+gateway = "lan"
+impair  = "wifi"

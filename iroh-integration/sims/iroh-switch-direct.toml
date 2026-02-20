@@ -1,0 +1,31 @@
+[sim]
+name     = "iroh-switch-direct"
+topology = "switch-direct"
+binaries = "iroh-defaults.toml"
+
+[[step]]
+action   = "spawn"
+kind     = "iroh-transfer"
+id       = "xfer"
+provider = "provider"
+fetcher  = "fetcher"
+strategy = "endpoint_id_with_direct_addrs"
+fetch_args = ["--duration=20"]
+
+[[step]]
+action   = "wait"
+duration = "10s"
+
+[[step]]
+action = "switch-route"
+device = "fetcher"
+to     = "eth0"
+
+[[step]]
+action  = "wait-for"
+id      = "xfer"
+timeout = "600s"
+
+[[step]]
+action = "assert"
+check  = "xfer.final_conn_direct == true"

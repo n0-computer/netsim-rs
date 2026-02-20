@@ -14,8 +14,8 @@ porting. `resources/dogfood/` — Rust transfer logic to port.
 - Process log structure and result parsing added (were entirely missing)
 - `kind = "iroh-transfer"` sequence corrected: `PathStats` = end-of-connection on
   provider side (not a metric, not readiness); `connected_via` comes from
-  `ConnectionTypeChanged` events; `--output json --log-path` flags documented
-- Transfer runs always pass `--log-path` and generate `results.md` in addition to `results.json`
+  `ConnectionTypeChanged` events; `--output json --logs-path` flags documented
+- Transfer runs always pass `--logs-path` and generate `results.md` in addition to `results.json`
 - Added `strategy = "endpoint_id_with_direct_addrs"` for direct-address fetches
 - `[[binary]]` gains `url` source option; 
 - `wait-for` default timeout specified: 300 s
@@ -383,7 +383,7 @@ Directory layout under `<work_dir>/`:
 unnamed `run` steps.
 
 For `kind = "iroh-transfer"`, the transfer binary writes NDJSON logs via
-`--log-path`. These files are the primary log source for parsing.
+`--logs-path`. These files are the primary log source for parsing.
 
 ```
 logs/
@@ -407,7 +407,7 @@ After all steps complete, the runner post-processes logs and writes:
 
 ### Transfer stats (iroh)
 
-Scan the fetcher NDJSON log (from `--log-path`) for `DownloadComplete`:
+Scan the fetcher NDJSON log (from `--logs-path`) for `DownloadComplete`:
 
 ```json
 {"kind": "DownloadComplete", "size": 1073741824, "duration": 12345678}
@@ -625,32 +625,32 @@ Fail fast if no such binary is configured.
 
 ```
 # Provider (inside provider's netns):
-${binary.transfer} --output json --log-path <log_dir>/xfer_provider.ndjson provide
+${binary.transfer} --output json --logs-path <log_dir>/xfer_provider.ndjson provide
 
 # Fetcher (inside fetcher's netns):
-${binary.transfer} --output json --log-path <log_dir>/xfer_fetcher.ndjson \
+${binary.transfer} --output json --logs-path <log_dir>/xfer_fetcher.ndjson \
          fetch <endpoint_id> [--relay-url <url>] [fetch_args…]
 
 # If strategy == "endpoint_id_with_direct_addrs" and a direct address is available:
-${binary.transfer} --output json --log-path <log_dir>/xfer_fetcher.ndjson \
+${binary.transfer} --output json --logs-path <log_dir>/xfer_fetcher.ndjson \
          fetch --remote-direct-address <addr> <endpoint_id> [--relay-url <url>] [fetch_args…]
 ```
 
-`--output json` switches the binary to NDJSON output (used by `--log-path`).
+`--output json` switches the binary to NDJSON output (used by `--logs-path`).
 Without this flag the binary emits human-readable text that cannot be parsed.
 
 #### Execution sequence
 
 1. Start provider subprocess in provider's netns.
 2. Stream provider stdout/stderr only for readiness/capture (not parsing).
-3. Tail provider `--log-path` file until `{"kind":"EndpointBound","endpoint_id":"…"}`:
+3. Tail provider `--logs-path` file until `{"kind":"EndpointBound","endpoint_id":"…"}`:
    extract `endpoint_id`. Expose as `${xfer.endpoint_id}`.
 4. If `strategy == "endpoint_id_with_direct_addrs"`, also collect `direct_addresses`
    from the same event; pick the first address for `--remote-direct-address`
    if present.
 5. Start fetcher subprocess(es) in their netns(es) with `endpoint_id` and
    optional `--remote-direct-address`.
-6. Tail fetcher `--log-path` file until fetcher emits `EndpointBound`
+6. Tail fetcher `--logs-path` file until fetcher emits `EndpointBound`
    (confirms it started).
 7. **Concurrently:**
    - Fetcher side: wait for fetcher process to exit naturally (exits after
@@ -919,7 +919,7 @@ iroh-integration/
 ## 16. CLI
 
 ```
-cargo run -- iroh-integration/sims/iroh-1to1-public.toml [--work-dir .netsim-work] [--set key=value …]
+cargo run -- iroh-integration/sims/iroh-1to1-public.toml [--work-dir .netsim-work] [--set key=value …] [--binary.transfer=.]
 ```
 
 ```rust
@@ -930,10 +930,14 @@ struct Cli {
     work_dir:  PathBuf,
     #[arg(long = "set", value_parser = parse_kv)]
     overrides: Vec<(String, String)>,
+    #[arg(long = "binary.transfer")]
+    binary_transfer: Option<String>,
 }
 ```
 
 `--set` applies dotted-key overrides to any scalar in the sim config.
+`--binary.transfer=.` builds `transfer` from the current checkout in release mode
+(honoring `RUST_TARGET`, e.g. MUSL in VM runs).
 
 ---
 
@@ -983,7 +987,7 @@ tar         = "0.4"
     Honor `RUST_*` env vars and `RUST_TARGET` for cargo builds.
 11. **`sim/transfer.rs`**: port `TransferCommand` / `LogReader` from
     `resources/dogfood/`; adapt to run in namespaces via `spawn_in_netns`;
-    always pass `--log-path` and support `strategy = "endpoint_id_with_direct_addrs"`.
+    always pass `--logs-path` and support `strategy = "endpoint_id_with_direct_addrs"`.
 12. **`sim/report.rs`**: `parse_iroh_log(path)` → `TransferResult`;
     `write_results_json(work_dir, results)`;
     `write_results_md(work_dir, results)`.
@@ -1000,6 +1004,37 @@ tar         = "0.4"
 18. **`runner.rs`**: handle `fetchers = [...]` in `kind = "iroh-transfer"`;
     aggregate per-fetcher results in `results.json` and `results.md`.
 19. Write `iroh-integration/sims/iroh-1toN.toml` family.
+
+### Phase 5 — Shared binary manifests + generic binary overrides
+
+20. **Shared binary file support**:
+    - Add `[sim] binaries = "iroh-defaults.toml"` (parallel to `topology`).
+    - Load shared binary entries from `../topos/`-style adjacent lookup (and repo-root fallback).
+    - Keep inline `[[binary]]` support.
+    - Merge rule: shared first, then inline overrides by `name`.
+
+21. **CLI generic binary override**:
+    - Add repeatable `--binary "<name>:<mode>:<value>"`.
+    - Supported modes:
+      - `build` (`transfer:build:.`) → build from local checkout path.
+      - `fetch` (`relay:fetch:https://...`) → force URL download source.
+      - `path` (`transfer:path:./bins/transfer`) → copy into workdir and use copied path.
+    - Override precedence: CLI override > inline `[[binary]]` > shared binaries file.
+
+22. **Path-copy semantics for `mode=path`**:
+    - Resolve host path (relative to invocation cwd).
+    - Copy to `<work_dir>/bins/<name>-override`.
+    - `chmod +x` target (unix) and execute copied path for run stability/reproducibility.
+
+23. **Validation + UX**:
+    - Validate override syntax and duplicate conflicting overrides early.
+    - Error messages include exact bad override and accepted format.
+    - Emit resolved binary source map at startup (name + final mode/path).
+
+24. **Tests + examples**:
+    - Unit tests for parse/merge/precedence.
+    - Add `iroh-integration/iroh-defaults.toml`.
+    - Update sim examples to consume shared binaries file while still demonstrating inline overrides.
 
 ---
 

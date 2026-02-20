@@ -31,6 +31,18 @@ Status key: ✅ implemented, ⚠️ partially implemented, ❌ not implemented.
 | `iroh-netsim.md` | 14. CLI wiring in `src/main.rs` | ✅ | Implemented (`src/main.rs`). |
 | `iroh-netsim.md` | 15. Write `iroh-integration/topos/*.toml` and `sims/*.toml` | ✅ | Files exist (`iroh-integration/topos/`, `iroh-integration/sims/`). |
 | `iroh-netsim.md` | 16. End-to-end `cargo make run-vm` proof | ❌ | No confirmed/recorded completion evidence in repo artifacts. |
-| `iroh-netsim.md` | 17. Phase 4 `count` device expansion | ❌ | `count` parsing/expansion not implemented in lab topology loading. |
-| `iroh-netsim.md` | 18. Runner support for `fetchers = [...]` in transfer | ❌ | Runner/transfer currently require singular `fetcher` path (`src/sim/transfer.rs`, `src/sim/runner.rs`). |
+| `iroh-netsim.md` | 17. Phase 4 `count` device expansion | ✅ | `Lab::from_config` expands device templates with `count` into suffixed devices (`src/lib.rs`). |
+| `iroh-netsim.md` | 18. Runner support for `fetchers = [...]` in transfer | ✅ | `iroh-transfer` supports `fetchers` and emits per-fetcher results (`src/sim/transfer.rs`, `src/sim/runner.rs`). |
 | `iroh-netsim.md` | 19. 1→N sim files | ✅ | `iroh-1to10-public.toml` present (`iroh-integration/sims/`). |
+| `iroh-netsim.md` | 20. Shared binary file support (`[sim] binaries = ...`) | ✅ | Shared binaries manifest loading and merge with inline specs implemented (`src/sim/mod.rs`, `src/sim/runner.rs`). |
+| `iroh-netsim.md` | 21. Generic CLI `--binary name:mode:value` overrides | ✅ | Repeatable `--binary` override parsing with `build|fetch|path` modes implemented (`src/main.rs`, `src/sim/runner.rs`). |
+| `iroh-netsim.md` | 22. `path` override copy-to-workdir semantics | ✅ | Path overrides are staged into `<work_dir>/bins` and chmodded executable (`src/sim/runner.rs`). |
+| `iroh-netsim.md` | 23. Override validation + resolved-source startup reporting | ⚠️ | Validation implemented; startup logs resolved binary path per name, but no dedicated summary table yet (`src/sim/runner.rs`). |
+| `iroh-netsim.md` | 24. Tests/examples for shared binaries + overrides | ⚠️ | Added override parser tests + shared defaults file + sims switched to shared binaries; merge-path tests are still limited (`src/sim/runner.rs`, `iroh-integration/iroh-defaults.toml`, `iroh-integration/sims/`). |
+| `selfcontained.md` | 1. Reshape CLI into explicit `run`/`run-vm`/`setup-caps` subcommands | ❌ | Planned in `plans/selfcontained.md`; current CLI only accepts `<sim>` positional (`src/main.rs`). |
+| `selfcontained.md` | 2. Embed `qemu-vm.sh` behavior in Rust VM module | ❌ | Planned in `plans/selfcontained.md`; VM orchestration still shell script based (`qemu-vm.sh`, `Makefile.toml`). |
+| `selfcontained.md` | 3. Implement built-in self capability setup (`netsim setup-caps`) | ❌ | Planned in `plans/selfcontained.md`; capability flow currently external script (`setcap.sh`). |
+| `selfcontained.md` | 4. Keep `setcap.sh` for test binaries and clarify role split | ❌ | Planned in `plans/selfcontained.md`; script currently handles broad setup only (`setcap.sh`). |
+| `selfcontained.md` | 5. Wire `run-vm` to execute `netsim run` in guest | ❌ | Planned in `plans/selfcontained.md`; current flow executes release binary directly with positional args (`Makefile.toml`). |
+| `selfcontained.md` | 6. Update automation/docs to binary-first workflows | ❌ | Planned in `plans/selfcontained.md`; docs/tasks still reference wrapper/script-first workflows (`README.md`, `Makefile.toml`). |
+| `selfcontained.md` | 7. Validate local + VM + external-checkout flow | ❌ | Planned in `plans/selfcontained.md`; no recorded validation artifact yet. |

@@ -112,6 +112,8 @@ when a task is ready run the checks then ask to commit, don't commit without ask
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
 
 ## Recent Changes
+- Added `plans/selfcontained.md` outlining migration to a self-contained `netsim` binary (`run`, `run-vm`, `setup-caps`) and linked step tracking in `plans/PLAN.md`.
+- Revised `plans/selfcontained.md` VM migration approach to a single `src/vm.rs` (no submodules), with a near-literal command-exec port of `qemu-vm.sh` using short helper functions.
 - Completed public API doc coverage audit: all public library items now have rustdoc comments (verified with `RUSTFLAGS='-W missing-docs' cargo check`).
 - Updated stale runtime docs: `Lab::build`/`Lab::load` no longer claim a `current_thread` Tokio requirement, matching the worker-thread `NetnsManager` `setns` model.
 - Namespace entry is centralized: `setns(2)` is now only invoked in `src/netns.rs` worker threads (`NetnsManager`), while `src/core.rs` uses backend helpers and does not call `setns` directly.
@@ -125,10 +127,17 @@ after confirmation commit with "feat: short description" etc and some details af
 - Simplified FD netns backend internals: removed keeper-thread state from `FdRegistry`; namespace lifetime is now tied directly to stored namespace FDs.
 - Fixed VM test runner stale-binary issue: `build-test-vm` now deletes old executable `deps/${crate}-*` test binaries before `cargo test --no-run`, so `test-vm` no longer executes outdated artifacts.
 - `Lab::new` now appends a process-local atomic counter suffix to prefixes/bridge tags (`lab-p<pid><n>`, `br-p<pid><n>-*`) so concurrent labs in one process do not collide on netns/link names.
-- Updated the iroh netsim plan to use `--log-path`, generate `results.json` and `results.md`, and add named binaries with `endpoint_id_only` / `endpoint_id_with_direct_addrs` strategies; `IROH_DATA_DIR` stays unset.
+- Updated the iroh netsim plan to use `--logs-path`, generate `results.json` and `results.md`, and add named binaries with `endpoint_id_only` / `endpoint_id_with_direct_addrs` strategies; `IROH_DATA_DIR` stays unset.
 - Drafted iroh integration workflow + example sims and topos under `iroh-integration/` with transfer duration set to 20s and topology files colocated in `iroh-integration/topos`.
 - Refactored namespace execution to a dedicated `NetnsManager` (`src/netns.rs`) that keeps one long-lived worker thread + single-thread Tokio runtime per namespace and executes async closures there, with panic forwarding through task join errors.
 - Updated `set_sysctl_in` / `spawn_in_netns_thread` (`src/core.rs`) to avoid restoring the original netns on helper-thread exit; helper threads now stay in target netns for their lifetime and then terminate.
 - Added `smoke_debug_netns_exit_trace` test (`src/lib.rs`) to emit deep namespace diagnostics (inode, links, IPv4 addrs, routes) pre-build, on build error, and post-build.
 - FD netns backend now keeps a per-namespace keeper thread alive (`src/netns.rs`) so unnamed namespaces stay anchored and distinct; cleanup sends stop and joins keeper threads.
 - Fixed FD netns capture to open thread-local namespace FDs (`/proc/thread-self/ns/net` with `/proc/self/task/<tid>/ns/net` fallback) instead of `/proc/self/ns/net`, which can resolve to thread-group leader ns in worker threads.
+- Sim runner now supports topology loading via `src/sim/topology.rs`, non-blocking `iroh-transfer` lifecycle (`spawn` starts, `wait-for` finalizes), `fetchers=[...]` multi-fetcher results, and `count` expansion for `[device.<name>]` templates in `Lab::from_config`.
+- CLI now accepts repeatable generic `--binary` overrides and `run-vm` sets `RUST_TARGET=${MUSL_TARGET}` while writing sim artifacts under `/work/latest` (host `.netsim-work/latest`).
+- Sim runner now supports shared binary manifests via `[sim] binaries = "...toml"` and repeatable generic CLI overrides: `--binary <name>:build:<path>`, `--binary <name>:fetch:<url>`, `--binary <name>:path:<file>` (path overrides are copied into `<work_dir>/bins`).
+- QEMU VM mounts changed: `/app` and `/target` are exported/mounted read-only; new writable `/work` mount maps to host `.netsim-work` (default via `QEMU_VM_WORK_DIR` / `--work-dir`).
+- Step/process logging tightened: `run` and generic `spawn` always write stdout+stderr log files under `<work_dir>/logs`; iroh transfer provider/fetcher stdout+stderr logs are emitted alongside NDJSON `--logs-path` files.
+- Multi-sim execution is now first-class: `netsim` accepts multiple sim paths/directories in one invocation, writes per-run dirs (`<sim>-YYMMDD-HHMMSS[-N]`) under one work root, updates `latest` as a relative symlink, and emits invocation-scoped `combined-results.json` / `combined-results.md`.
+- `iroh-integration/netsim.yaml` now runs all requested sims in one `netsim` command against `iroh-integration/work` and publishes `combined-results.md` into the GitHub step summary for drop-in aggregated reporting.

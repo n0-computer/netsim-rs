@@ -1,0 +1,24 @@
+[sim]
+name     = "iroh-1to1-nat"
+topology = "1to1-nat"
+binaries = "iroh-defaults.toml"
+
+[[step]]
+action      = "spawn"
+id          = "relay"
+device      = "relay"
+cmd         = ["${binary.relay}", "--dev"]
+ready_after = "2s"
+
+[[step]]
+action    = "spawn"
+kind      = "iroh-transfer"
+id        = "xfer"
+provider  = "provider"
+fetcher   = "fetcher"
+relay_url = "http://$NETSIM_IP_relay:3340"
+fetch_args = ["--duration=20"]
+
+[[step]]
+action = "wait-for"
+id     = "xfer"

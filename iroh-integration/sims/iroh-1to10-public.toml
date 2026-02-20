@@ -1,0 +1,28 @@
+[sim]
+name     = "iroh-1to10-public"
+topology = "1to10-public"
+binaries = "iroh-defaults.toml"
+
+[[step]]
+action   = "spawn"
+kind     = "iroh-transfer"
+id       = "xfer"
+provider = "provider"
+strategy = "endpoint_id_with_direct_addrs"
+fetchers = [
+  "fetcher-0",
+  "fetcher-1",
+  "fetcher-2",
+  "fetcher-3",
+  "fetcher-4",
+  "fetcher-5",
+  "fetcher-6",
+  "fetcher-7",
+  "fetcher-8",
+  "fetcher-9",
+]
+fetch_args = ["--duration=20"]
+
+[[step]]
+action = "wait-for"
+id     = "xfer"

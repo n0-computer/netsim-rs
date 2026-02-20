@@ -321,6 +321,19 @@ impl Lab {
                     .get("default_via")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let count = match dev_table.get("count") {
+                    None => 1usize,
+                    Some(v) => {
+                        let n = v.as_integer().ok_or_else(|| {
+                            anyhow!("device '{}' count must be an integer", dev_name)
+                        })?;
+                        if n < 1 {
+                            bail!("device '{}' count must be >= 1", dev_name);
+                        }
+                        usize::try_from(n)
+                            .map_err(|_| anyhow!("device '{}' count out of range", dev_name))?
+                    }
+                };
                 // Interface sub-tables: table-valued keys, excluding scalar device-level keys.
                 let mut iface_keys: Vec<&String> = dev_table
                     .keys()
@@ -362,11 +375,21 @@ impl Lab {
                     };
                     ifaces.push((ifname.clone(), router_id, impair));
                 }
-                result.push(ParsedDev {
-                    name: dev_name.clone(),
-                    default_via,
-                    ifaces,
-                });
+                if dev_table.contains_key("count") {
+                    for idx in 0..count {
+                        result.push(ParsedDev {
+                            name: format!("{dev_name}-{idx}"),
+                            default_via: default_via.clone(),
+                            ifaces: ifaces.clone(),
+                        });
+                    }
+                } else {
+                    result.push(ParsedDev {
+                        name: dev_name.clone(),
+                        default_via,
+                        ifaces,
+                    });
+                }
             }
             result
         };
@@ -1815,6 +1838,27 @@ impair = { rate = 5000, loss = 1.5, latency = 40 }
             }
             other => bail!("unexpected impair: {:?}", other),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn from_config_expands_count_devices() -> Result<()> {
+        let cfg = r#"
+[[router]]
+name = "dc1"
+
+[device.fetcher]
+count = 2
+default_via = "eth0"
+
+[device.fetcher.eth0]
+gateway = "dc1"
+"#;
+        let parsed: config::LabConfig = toml::from_str(cfg)?;
+        let lab = Lab::from_config(parsed)?;
+        assert!(lab.device_id("fetcher-0").is_some());
+        assert!(lab.device_id("fetcher-1").is_some());
+        assert!(lab.device_id("fetcher").is_none());
         Ok(())
     }
 }

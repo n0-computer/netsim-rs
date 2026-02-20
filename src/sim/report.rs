@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 /// Parsed result from one iroh-transfer run.
@@ -121,6 +122,154 @@ pub async fn write_results(
         .await
         .context("write results.md")?;
 
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RunResults {
+    run: String,
+    sim: String,
+    transfers: Vec<TransferResult>,
+}
+
+/// Scan run directories under `work_root` and emit combined reports.
+///
+/// If `run_names` is non-empty, only those run directories are included.
+pub async fn write_combined_results_for_runs(work_root: &Path, run_names: &[String]) -> Result<()> {
+    let include: Option<HashSet<&str>> = if run_names.is_empty() {
+        None
+    } else {
+        Some(run_names.iter().map(String::as_str).collect())
+    };
+    let mut runs = Vec::new();
+    for ent in
+        std::fs::read_dir(work_root).with_context(|| format!("read {}", work_root.display()))?
+    {
+        let ent = ent?;
+        let path = ent.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if name == "latest" {
+            continue;
+        }
+        if let Some(filter) = &include {
+            if !filter.contains(name) {
+                continue;
+            }
+        }
+        let results_json = path.join("results.json");
+        if !results_json.exists() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&results_json)
+            .with_context(|| format!("read {}", results_json.display()))?;
+        let v: serde_json::Value = serde_json::from_str(&text).context("parse run results json")?;
+        let sim = v
+            .get("sim")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
+        let transfers: Vec<TransferResult> = serde_json::from_value(
+            v.get("transfers")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+        )
+        .context("parse transfers array")?;
+        runs.push(RunResults {
+            run: name.to_string(),
+            sim,
+            transfers,
+        });
+    }
+
+    runs.sort_by(|a, b| a.run.cmp(&b.run));
+
+    let all_json = serde_json::to_string_pretty(&serde_json::json!({
+        "runs": runs,
+    }))
+    .context("serialize combined results")?;
+    tokio::fs::write(work_root.join("combined-results.json"), all_json)
+        .await
+        .context("write combined-results.json")?;
+
+    let mut by_sim: BTreeMap<String, Vec<&TransferResult>> = BTreeMap::new();
+    for run in &runs {
+        for t in &run.transfers {
+            by_sim.entry(run.sim.clone()).or_default().push(t);
+        }
+    }
+
+    let mut md = String::new();
+    md.push_str("| sim | transfers | avg_mbps | direct_final_pct |\n");
+    md.push_str("| --- | --------- | -------- | ---------------- |\n");
+    for (sim, transfers) in &by_sim {
+        let mut mbps_sum = 0.0f64;
+        let mut mbps_count = 0usize;
+        let mut direct_total = 0usize;
+        let mut direct_yes = 0usize;
+        for t in transfers {
+            if let Some(v) = t.mbps {
+                mbps_sum += v;
+                mbps_count += 1;
+            }
+            if let Some(v) = t.final_conn_direct {
+                direct_total += 1;
+                if v {
+                    direct_yes += 1;
+                }
+            }
+        }
+        let avg_mbps = if mbps_count > 0 {
+            format!("{:.1}", mbps_sum / mbps_count as f64)
+        } else {
+            String::new()
+        };
+        let direct_pct = if direct_total > 0 {
+            format!(
+                "{:.0}%",
+                100.0 * (direct_yes as f64) / (direct_total as f64)
+            )
+        } else {
+            String::new()
+        };
+        md.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            sim,
+            transfers.len(),
+            avg_mbps,
+            direct_pct
+        ));
+    }
+    md.push('\n');
+    md.push_str("| run | sim | id | provider | fetcher | size_bytes | elapsed_s | mbps | final_conn_direct | conn_upgrade | conn_events |\n");
+    md.push_str("| --- | --- | -- | -------- | ------- | ---------- | --------- | ---- | ----------------- | ------------ | ----------- |\n");
+    for run in &runs {
+        for r in &run.transfers {
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                run.run,
+                run.sim,
+                r.id,
+                r.provider,
+                r.fetcher,
+                r.size_bytes.map(|v| v.to_string()).unwrap_or_default(),
+                r.elapsed_s.map(|v| format!("{:.3}", v)).unwrap_or_default(),
+                r.mbps.map(|v| format!("{:.1}", v)).unwrap_or_default(),
+                r.final_conn_direct
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                r.conn_upgrade.map(|v| v.to_string()).unwrap_or_default(),
+                r.conn_events,
+            ));
+        }
+    }
+    tokio::fs::write(work_root.join("combined-results.md"), md)
+        .await
+        .context("write combined-results.md")?;
     Ok(())
 }
 

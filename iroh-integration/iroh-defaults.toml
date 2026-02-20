@@ -1,0 +1,7 @@
+[[binary]]
+name = "transfer"
+path = "/target/x86_64-unknown-linux-musl/release/examples/transfer"
+
+[[binary]]
+name = "relay"
+url = "https://github.com/n0-computer/iroh/releases/download/v0.96.0/iroh-relay-v0.96.0-x86_64-unknown-linux-musl.tar.gz"

@@ -1,9 +1,9 @@
 # DEV-VM
 
-This project now has a QEMU-based VM flow that can replace Lima:
+This project uses a QEMU-based VM flow:
 
 - wrapper: `qemu-vm.sh`
-- cargo-make file: `Makefile2.toml`
+- cargo-make file: `Makefile.toml`
 
 It uses a Debian cloud image and cloud-init.  
 If ISO seed tools are missing, the wrapper automatically falls back to an internal HTTP seed server (`python3 -m http.server`) so you do not need `cloud-localds` just to boot.
@@ -13,30 +13,31 @@ To keep startup fast, `up` does not install packages. Required tools are install
 
 1. Build and start VM:
 ```bash
-cargo make --makefile Makefile2.toml setup-vm
+cargo make setup-vm
 ```
 
 2. Run binary in VM:
 ```bash
-cargo make --makefile Makefile2.toml run-vm -- --help
+cargo make run-vm -- --help
 ```
 
 3. Run tests in VM:
 ```bash
-cargo make --makefile Makefile2.toml test-vm
+cargo make test-vm
 ```
 
 4. Stop VM:
 ```bash
-cargo make --makefile Makefile2.toml shutdown
+cargo make vm-down
 ```
 
 ## What Gets Mounted
 
-- Host workspace -> `/app` in VM
-- Host Cargo target dir -> `/target` in VM
+- Host workspace -> `/app` in VM (read-only)
+- Host Cargo target dir -> `/target` in VM (read-only)
+- Host `.netsim-work` -> `/work` in VM (read-write)
 
-The wrapper injects these as 9p mounts.
+The wrapper injects these as virtiofs/9p mounts.
 It prefers `virtiofs` when host `virtiofsd` is available, and falls back to `9p`.
 
 ## Required Host Tools
@@ -157,16 +158,17 @@ ss -ltn | grep 2222
 ./qemu-vm.sh up
 ```
 
-### `/app` or `/target` is empty
+### `/app`, `/target`, or `/work` is empty
 
-The wrapper now mounts both paths after SSH is ready and validates `/app/Cargo.toml`.
+The wrapper mounts these paths after SSH is ready and validates `/app/Cargo.toml`.
 
 Manual checks:
 
 ```bash
-./qemu-vm.sh ssh -- mount | grep -E ' /app | /target '
+./qemu-vm.sh ssh -- mount | grep -E ' /app | /target | /work '
 ./qemu-vm.sh ssh -- ls -la /app | head
 ./qemu-vm.sh ssh -- ls -la /target | head
+./qemu-vm.sh ssh -- ls -la /work | head
 ```
 
 If mounts are missing, restart once:

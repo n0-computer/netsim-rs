@@ -1,19 +1,10 @@
 //! Handles the `kind = "iroh-transfer"` spawn step.
-//!
-//! Execution sequence (synchronous / blocking for the MVP):
-//! 1. Spawn provider subprocess in provider's netns; pipe stdout.
-//! 2. Read provider stdout until `EndpointBound` → extract `endpoint_id`.
-//! 3. Spawn fetcher subprocess with `endpoint_id`; pipe stdout.
-//! 4. Wait for fetcher process to exit.
-//! 5. Send SIGINT to provider; drain its stdout.
-//! 6. Parse fetcher log file for DownloadComplete + ConnectionTypeChanged.
-//! 7. Return `TransferResult`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::sim::report::TransferResult;
 use crate::sim::runner::SimState;
@@ -25,191 +16,267 @@ struct EndpointBoundInfo {
     direct_addr: Option<String>,
 }
 
-pub struct TransferHandle {
-    pub join: thread::JoinHandle<Result<TransferResult>>,
+struct FetcherHandle {
+    name: String,
+    child: std::process::Child,
+    parse_log_path: PathBuf,
 }
 
+/// In-progress transfer started by a `spawn` step.
+pub struct TransferHandle {
+    id: String,
+    provider: String,
+    provider_child: std::process::Child,
+    provider_parse_log: PathBuf,
+    fetchers: Vec<FetcherHandle>,
+}
+
+/// Start a transfer and return a handle that is finalized in `wait-for`.
 pub fn start_transfer(
     state: &mut SimState,
     step: &Step,
     log_dir: &Path,
     binary: &Path,
 ) -> Result<TransferHandle> {
-    // Compile-first behavior: execute immediately and hand back a completed join handle.
-    let result = run_transfer(state, step, log_dir, binary)?;
-    let join = thread::spawn(move || Ok(result));
-    Ok(TransferHandle { join })
-}
-
-pub fn run_transfer(
-    state: &mut SimState,
-    step: &Step,
-    log_dir: &Path,
-    binary: &Path,
-) -> Result<TransferResult> {
     let step_id = step.id.as_deref().context("iroh-transfer: missing id")?;
     let provider_dev = step
         .provider
         .as_deref()
         .context("iroh-transfer: missing provider")?;
-    let fetcher_dev = step
-        .fetcher
-        .as_deref()
-        .context("iroh-transfer: missing fetcher")?;
+    let fetcher_devs = resolve_fetchers(step)?;
 
-    let provider_log = log_dir.join(format!("xfer_{}_provider.ndjson", step_id));
-    let fetcher_log = log_dir.join(format!("xfer_{}_fetcher.ndjson", step_id));
+    let step_dir = log_dir.join(sanitize_for_file(step_id));
+    std::fs::create_dir_all(&step_dir)
+        .with_context(|| format!("create transfer step dir {}", step_dir.display()))?;
+    let provider_logs_dir = step_dir.join("provider");
+    let provider_stdio_log = step_dir.join("provider.log");
+    std::fs::create_dir_all(&provider_logs_dir)
+        .with_context(|| format!("create provider logs dir {}", provider_logs_dir.display()))?;
 
-    // ── 1. Spawn provider ────────────────────────────────────────────────
     let mut provider_cmd = std::process::Command::new(binary);
     provider_cmd
-        .args(["--output", "json", "--log-path"])
-        .arg(&provider_log)
-        .arg("provide")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .args(["--output", "json", "--logs-path"])
+        .arg(&provider_logs_dir)
+        .arg("provide");
+    let p_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&provider_stdio_log)
+        .with_context(|| format!("open provider stdio log {}", provider_stdio_log.display()))?;
+    let p_log2 = p_log.try_clone().context("clone provider stdio log")?;
+    provider_cmd
+        .stdout(Stdio::from(p_log))
+        .stderr(Stdio::from(p_log2));
 
-    add_env_to_cmd(&mut provider_cmd, state);
+    add_env_to_cmd(&mut provider_cmd, state, &format!("{}_provider", step_id));
     if let Some(relay_url) = &step.relay_url {
         let url = state.env.interpolate_str(relay_url)?;
         provider_cmd.args(["--relay-url", &url]);
     }
 
-    let mut provider = state
+    let provider = state
         .lab
         .spawn_unmanaged_on(provider_dev, provider_cmd)
         .context("spawn provider")?;
 
-    // Wait for the log file to appear (binary writes it before EndpointBound).
-    wait_for_file(&provider_log, 30)?;
-
-    // ── 2. Read provider log until EndpointBound ─────────────────────────
-    let bound = read_until_endpoint_bound(&provider_log, 30)?;
+    wait_for_file(&provider_stdio_log, 30)?;
+    let bound = read_until_endpoint_bound(&provider_stdio_log, 30)?
+        .ok_or_else(|| anyhow!("EOF before EndpointBound in provider log"))?;
     tracing::info!(
         step_id,
         endpoint_id = %bound.endpoint_id,
         direct_addr = ?bound.direct_addr,
         "iroh-transfer: provider ready"
     );
-
-    // Store capture so later steps can use `${step_id.endpoint_id}`.
     state
         .env
         .set_capture(step_id, "endpoint_id", bound.endpoint_id.clone());
 
-    // ── 3. Spawn fetcher ─────────────────────────────────────────────────
-    let mut fetcher_cmd = std::process::Command::new(binary);
-    fetcher_cmd
-        .args(["--output", "json", "--log-path"])
-        .arg(&fetcher_log)
-        .arg("fetch");
-    if step.strategy.as_deref() == Some("endpoint_id_with_direct_addrs") {
-        if let Some(addr) = &bound.direct_addr {
-            fetcher_cmd.args(["--remote-direct-address", addr]);
+    let mut fetchers = Vec::with_capacity(fetcher_devs.len());
+    for (idx, fetcher_dev) in fetcher_devs.iter().enumerate() {
+        let fetcher_log = step_dir.join(format!("fetcher-{}", idx));
+        std::fs::create_dir_all(&fetcher_log)
+            .with_context(|| format!("create fetcher logs dir {}", fetcher_log.display()))?;
+        let fetcher_stdio_log = step_dir.join(format!("fetcher-{}.log", idx));
+
+        let mut fetcher_cmd = std::process::Command::new(binary);
+        fetcher_cmd
+            .args(["--output", "json", "--logs-path"])
+            .arg(&fetcher_log)
+            .arg("fetch");
+        if step.strategy.as_deref() == Some("endpoint_id_with_direct_addrs") {
+            if let Some(addr) = &bound.direct_addr {
+                fetcher_cmd.args(["--remote-direct-address", addr]);
+            }
         }
-    }
-    fetcher_cmd.arg(&bound.endpoint_id);
-    if let Some(relay_url) = &step.relay_url {
-        let url = state.env.interpolate_str(relay_url)?;
-        fetcher_cmd.args(["--relay-url", &url]);
-    }
-    if let Some(extra) = &step.fetch_args {
-        let extra = state.env.interpolate(extra)?;
-        fetcher_cmd.args(extra);
-    }
-    fetcher_cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        fetcher_cmd.arg(&bound.endpoint_id);
+        if let Some(relay_url) = &step.relay_url {
+            let url = state.env.interpolate_str(relay_url)?;
+            fetcher_cmd.args(["--relay-url", &url]);
+        }
+        if let Some(extra) = &step.fetch_args {
+            let extra = state.env.interpolate(extra)?;
+            fetcher_cmd.args(extra);
+        }
+        let f_log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&fetcher_stdio_log)
+            .with_context(|| format!("open fetcher stdio log {}", fetcher_stdio_log.display()))?;
+        let f_log2 = f_log.try_clone().context("clone fetcher stdio log")?;
+        fetcher_cmd
+            .stdout(Stdio::from(f_log))
+            .stderr(Stdio::from(f_log2));
+        add_env_to_cmd(
+            &mut fetcher_cmd,
+            state,
+            &format!("{}_fetcher_{}", step_id, idx),
+        );
 
-    add_env_to_cmd(&mut fetcher_cmd, state);
-
-    let mut fetcher = state
-        .lab
-        .spawn_unmanaged_on(fetcher_dev, fetcher_cmd)
-        .context("spawn fetcher")?;
-
-    // ── 4. Wait for fetcher to exit ──────────────────────────────────────
-    let status = fetcher.wait().context("wait fetcher")?;
-    if !status.success() {
-        tracing::warn!(step_id, ?status, "fetcher exited with non-zero status");
+        let child = state
+            .lab
+            .spawn_unmanaged_on(fetcher_dev, fetcher_cmd)
+            .with_context(|| format!("spawn fetcher '{}'", fetcher_dev))?;
+        fetchers.push(FetcherHandle {
+            name: fetcher_dev.clone(),
+            child,
+            parse_log_path: fetcher_stdio_log,
+        });
     }
 
-    // ── 5. Wait for provider PathStats then SIGINT ────────────────────────
-    let _ = read_until_path_stats(&provider_log, 60);
+    Ok(TransferHandle {
+        id: step_id.to_string(),
+        provider: provider_dev.to_string(),
+        provider_child: provider,
+        provider_parse_log: provider_stdio_log,
+        fetchers,
+    })
+}
+
+/// Finalize a transfer started earlier by [`start_transfer`].
+pub fn finish_transfer(
+    mut handle: TransferHandle,
+    timeout: Duration,
+) -> Result<Vec<TransferResult>> {
+    let deadline = Instant::now() + timeout;
+
+    for fetcher in &mut handle.fetchers {
+        wait_for_child_with_timeout(&mut fetcher.child, deadline)
+            .with_context(|| format!("wait fetcher '{}'", fetcher.name))?;
+    }
+
+    let remain = deadline.saturating_duration_since(Instant::now());
+    let _ = read_until_path_stats(&handle.provider_parse_log, remain);
     #[cfg(unix)]
     {
-        let pid = provider.id();
+        let pid = handle.provider_child.id();
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGINT,
         );
     }
-    let _ = provider.wait();
+    let _ = handle.provider_child.wait();
 
-    // ── 6 + 7. Parse fetcher log, return result ───────────────────────────
-    let mut result = TransferResult {
-        id: step_id.to_string(),
-        provider: provider_dev.to_string(),
-        fetcher: fetcher_dev.to_string(),
-        ..Default::default()
-    };
-    if fetcher_log.exists() {
-        result.parse_fetcher_log(&fetcher_log)?;
+    let mut results = Vec::with_capacity(handle.fetchers.len());
+    for fetcher in &handle.fetchers {
+        let mut result = TransferResult {
+            id: if handle.fetchers.len() == 1 {
+                handle.id.clone()
+            } else {
+                format!("{}.{}", handle.id, fetcher.name)
+            },
+            provider: handle.provider.clone(),
+            fetcher: fetcher.name.clone(),
+            ..Default::default()
+        };
+        if fetcher.parse_log_path.exists() {
+            result.parse_fetcher_log(&fetcher.parse_log_path)?;
+        }
+        results.push(result);
     }
-    Ok(result)
+    Ok(results)
 }
 
-// ─────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────
+fn resolve_fetchers(step: &Step) -> Result<Vec<String>> {
+    if let Some(fetchers) = &step.fetchers {
+        if fetchers.is_empty() {
+            bail!("iroh-transfer: fetchers must not be empty");
+        }
+        return Ok(fetchers.clone());
+    }
+    if let Some(fetcher) = &step.fetcher {
+        return Ok(vec![fetcher.clone()]);
+    }
+    bail!("iroh-transfer: missing fetcher/fetchers");
+}
 
-fn add_env_to_cmd(cmd: &mut std::process::Command, state: &SimState) {
+fn add_env_to_cmd(cmd: &mut std::process::Command, state: &SimState, keylog_suffix: &str) {
     for (k, v) in state.env.process_env() {
         cmd.env(k, v);
     }
     cmd.env("RUST_LOG_STYLE", "never");
+    cmd.env("RUST_LOG", "warn,iroh::_events::conn_type=trace");
+    let keylog = state
+        .work_dir
+        .join("logs")
+        .join(format!("keylog_{}.txt", sanitize_for_file(keylog_suffix)));
+    cmd.env("SSLKEYLOGFILE", keylog);
 }
 
-/// Poll until `path` exists (up to `timeout_secs`).
+fn wait_for_child_with_timeout(child: &mut std::process::Child, deadline: Instant) -> Result<()> {
+    loop {
+        if let Some(status) = child.try_wait().context("try_wait child")? {
+            if !status.success() {
+                tracing::warn!(?status, "fetcher exited with non-zero status");
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("transfer wait timed out");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn wait_for_file(path: &Path, timeout_secs: u64) -> Result<()> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         if path.exists() {
             return Ok(());
         }
-        if std::time::Instant::now() >= deadline {
+        if Instant::now() >= deadline {
             bail!("timed out waiting for {}", path.display());
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// Tail `path` until a line with `"kind":"EndpointBound"` is found.
-/// Returns endpoint metadata from the first `EndpointBound` line.
-fn read_until_endpoint_bound(path: &Path, timeout_secs: u64) -> Result<EndpointBoundInfo> {
-    tail_until(path, timeout_secs, |line| parse_endpoint_bound_line(line))
-        .context("waiting for EndpointBound")?
-        .ok_or_else(|| anyhow::anyhow!("EOF before EndpointBound in provider log"))
+fn read_until_endpoint_bound(path: &Path, timeout_secs: u64) -> Result<Option<EndpointBoundInfo>> {
+    tail_until(
+        path,
+        Duration::from_secs(timeout_secs),
+        parse_endpoint_bound_line,
+    )
+    .context("waiting for EndpointBound")
 }
 
-/// Tail `path` until a line with `"kind":"PathStats"` is found.
-fn read_until_path_stats(path: &Path, timeout_secs: u64) -> Result<()> {
-    tail_until(path, timeout_secs, |line| {
+fn read_until_path_stats(path: &Path, timeout: Duration) -> Result<()> {
+    let _ = tail_until(path, timeout, |line| {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         if v.get("kind")?.as_str()? == "PathStats" {
             Some(())
         } else {
             None
         }
-    })
-    .map(|_| ())
+    })?;
+    Ok(())
 }
 
-/// Generic log-file tailer: read new lines as they appear and call `f` on each.
-/// Returns `Ok(Some(R))` when `f` returns `Some(R)`, or `Ok(None)` on EOF/timeout.
-fn tail_until<F, R>(path: &Path, timeout_secs: u64, mut f: F) -> Result<Option<R>>
+fn tail_until<F, R>(path: &Path, timeout: Duration, mut f: F) -> Result<Option<R>>
 where
     F: FnMut(&str) -> Option<R>,
 {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let deadline = Instant::now() + timeout;
     let file =
         std::fs::File::open(path).with_context(|| format!("open log file {}", path.display()))?;
     let mut reader = BufReader::new(file);
@@ -219,11 +286,10 @@ where
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => {
-                // EOF — check for timeout, then sleep and retry.
-                if std::time::Instant::now() >= deadline {
+                if Instant::now() >= deadline {
                     return Ok(None);
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(100));
             }
             Ok(_) => {
                 let trimmed = line.trim();
@@ -256,6 +322,12 @@ fn parse_endpoint_bound_line(line: &str) -> Option<EndpointBoundInfo> {
     })
 }
 
+fn sanitize_for_file(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,7 +336,7 @@ mod tests {
     fn parse_endpoint_bound_with_direct_addr() {
         let line =
             r#"{"kind":"EndpointBound","endpoint_id":"abc","direct_addresses":["1.2.3.4:7777"]}"#;
-        let parsed = parse_endpoint_bound_line(line).unwrap();
+        let parsed = parse_endpoint_bound_line(line).expect("endpoint bound");
         assert_eq!(parsed.endpoint_id, "abc");
         assert_eq!(parsed.direct_addr.as_deref(), Some("1.2.3.4:7777"));
     }
@@ -272,7 +344,7 @@ mod tests {
     #[test]
     fn parse_endpoint_bound_without_direct_addr() {
         let line = r#"{"kind":"EndpointBound","endpoint_id":"abc"}"#;
-        let parsed = parse_endpoint_bound_line(line).unwrap();
+        let parsed = parse_endpoint_bound_line(line).expect("endpoint bound");
         assert_eq!(parsed.endpoint_id, "abc");
         assert!(parsed.direct_addr.is_none());
     }

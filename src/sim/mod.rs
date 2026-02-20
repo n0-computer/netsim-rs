@@ -2,9 +2,10 @@ pub mod build;
 pub mod env;
 pub mod report;
 pub mod runner;
+pub mod topology;
 pub mod transfer;
 
-pub use runner::run_sim;
+pub use runner::run_sims;
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -48,6 +49,10 @@ pub struct SimMeta {
     /// If set, the topology is loaded from `../topos/<topology>.toml`
     /// relative to the sim file; inline router/device tables are ignored.
     pub topology: Option<String>,
+    /// Optional shared binary manifest file.
+    ///
+    /// This is loaded in addition to inline `[[binary]]` entries.
+    pub binaries: Option<String>,
 }
 
 /// Binary source specification inside a `[[binary]]` entry.

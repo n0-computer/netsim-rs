@@ -9,8 +9,10 @@ QEMU_WRAPPER = "./qemu-vm.sh"
 script = ["""
   set -euo pipefail
   TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+  WORK_BASE="${PWD}/.netsim-work"
   mkdir -p "${TARGET_BASE}"
-  QEMU_VM_NAME="${VM_NAME}" QEMU_VM_TARGET_DIR="${TARGET_BASE}" ${QEMU_WRAPPER} up
+  mkdir -p "${WORK_BASE}"
+  QEMU_VM_NAME="${VM_NAME}" QEMU_VM_TARGET_DIR="${TARGET_BASE}" QEMU_VM_WORK_DIR="${WORK_BASE}" ${QEMU_WRAPPER} up
   """]
 
 [tasks.target-dir]
@@ -77,7 +79,7 @@ EOF
 dependencies = ["setup-vm", "build-vm", "prepare-vm"]
 script = ['''
   QEMU_VM_NAME="${VM_NAME}" ${QEMU_WRAPPER} ssh -- \
-    "sudo /target/${MUSL_TARGET}/release/${CARGO_MAKE_CRATE_NAME} ${@}"
+    "sudo mkdir -p /work && sudo RUST_TARGET=${MUSL_TARGET} /target/${MUSL_TARGET}/release/${CARGO_MAKE_CRATE_NAME} --work-dir /work ${@}"
   ''']
 
 [tasks.test-vm]

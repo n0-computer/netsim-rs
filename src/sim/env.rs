@@ -72,6 +72,9 @@ impl SimEnv {
                 rest = &rest[end..];
                 if let Some(val) = self.lab_vars.get(key) {
                     out.push_str(val);
+                } else if let Some(val) = self.lab_vars.get(&key.to_ascii_uppercase()) {
+                    // Accept lowercase/mixed-case NETSIM vars in sim files.
+                    out.push_str(val);
                 } else {
                     // Unknown $VAR — leave as-is for the process environment.
                     out.push('$');

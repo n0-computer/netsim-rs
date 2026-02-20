@@ -14,6 +14,7 @@ Commands:
 Options for `up`:
   --workspace <dir>  Host path mounted to /app (default: current directory).
   --target-dir <dir> Host path mounted to /target (default: ./target).
+  --work-dir <dir>   Host path mounted to /work (default: ./.netsim-work).
   --ssh-port <port>  Localhost SSH port (default: 2222).
   --recreate         Stop a running VM first, then start with current mount paths.
 
@@ -28,6 +29,7 @@ Environment overrides:
   QEMU_VM_QEMU_BIN          QEMU binary path (default: qemu-system-x86_64)
   QEMU_VM_SEED_PORT         cloud-init HTTP seed port (default: 8555)
   QEMU_VM_VIRTIOFSD_BIN     virtiofsd path (auto-detected when unset)
+  QEMU_VM_WORK_DIR          Host path mounted to /work (default: ./.netsim-work)
 EOF
 }
 
@@ -65,6 +67,7 @@ ssh_port="${QEMU_VM_SSH_PORT:-2222}"
 seed_port="${QEMU_VM_SEED_PORT:-8555}"
 workspace="${QEMU_VM_WORKSPACE:-$PWD}"
 target_dir="${QEMU_VM_TARGET_DIR:-$PWD/target}"
+work_dir="${QEMU_VM_WORK_DIR:-$PWD/.netsim-work}"
 
 vm_dir="$state_root/$vm_name"
 base_img="$vm_dir/base.qcow2"
@@ -80,8 +83,10 @@ virtiofsd_bin="${QEMU_VM_VIRTIOFSD_BIN:-}"
 fs_mode="9p"
 workspace_sock="$vm_dir/workspace.vfs.sock"
 target_sock="$vm_dir/target.vfs.sock"
+work_sock="$vm_dir/work.vfs.sock"
 workspace_vfs_pid="$vm_dir/workspace.virtiofsd.pid"
 target_vfs_pid="$vm_dir/target.virtiofsd.pid"
+work_vfs_pid="$vm_dir/work.virtiofsd.pid"
 pid_file="$vm_dir/qemu.pid"
 serial_log="$vm_dir/serial.log"
 ssh_key="$vm_dir/id_ed25519"
@@ -97,6 +102,7 @@ persist_runtime() {
   cat >"$runtime_file" <<EOF
 workspace=${workspace}
 target_dir=${target_dir}
+work_dir=${work_dir}
 fs_mode=${fs_mode}
 ssh_port=${ssh_port}
 EOF
@@ -104,14 +110,18 @@ EOF
 
 check_running_mount_paths() {
   [[ -f "$runtime_file" ]] || return 0
-  local running_workspace running_target
+  local running_workspace running_target running_work
   running_workspace="$(awk -F= '$1=="workspace"{print substr($0, index($0,$2)); exit}' "$runtime_file")"
   running_target="$(awk -F= '$1=="target_dir"{print substr($0, index($0,$2)); exit}' "$runtime_file")"
+  running_work="$(awk -F= '$1=="work_dir"{print substr($0, index($0,$2)); exit}' "$runtime_file")"
   if [[ -n "$running_workspace" && "$running_workspace" != "$1" ]]; then
-    err "VM already running with workspace '${running_workspace}', requested '$1'. Use: $0 up --recreate --workspace '$1' --target-dir '$2'"
+    err "VM already running with workspace '${running_workspace}', requested '$1'. Use: $0 up --recreate --workspace '$1' --target-dir '$2' --work-dir '$3'"
   fi
   if [[ -n "$running_target" && "$running_target" != "$2" ]]; then
-    err "VM already running with target dir '${running_target}', requested '$2'. Use: $0 up --recreate --workspace '$1' --target-dir '$2'"
+    err "VM already running with target dir '${running_target}', requested '$2'. Use: $0 up --recreate --workspace '$1' --target-dir '$2' --work-dir '$3'"
+  fi
+  if [[ -n "$running_work" && "$running_work" != "$3" ]]; then
+    err "VM already running with work dir '${running_work}', requested '$3'. Use: $0 up --recreate --workspace '$1' --target-dir '$2' --work-dir '$3'"
   fi
 }
 
@@ -128,7 +138,7 @@ cleanup_seed_server() {
 
 cleanup_virtiofsd() {
   local pid
-  for f in "$workspace_vfs_pid" "$target_vfs_pid"; do
+  for f in "$workspace_vfs_pid" "$target_vfs_pid" "$work_vfs_pid"; do
     if [[ -f "$f" ]]; then
       pid="$(cat "$f" || true)"
       if [[ -n "$pid" ]]; then
@@ -137,7 +147,7 @@ cleanup_virtiofsd() {
       rm -f "$f"
     fi
   done
-  rm -f "$workspace_sock" "$target_sock"
+  rm -f "$workspace_sock" "$target_sock" "$work_sock"
 }
 
 detect_virtiofsd_bin() {
@@ -239,7 +249,7 @@ runcmd:
   - modprobe virtiofs || true
   - modprobe 9p || true
   - modprobe 9pnet_virtio || true
-  - mkdir -p /app /target
+  - mkdir -p /app /target /work
 EOF
 
   cat >"$meta_data" <<EOF
@@ -323,26 +333,29 @@ start_virtiofsd() {
   [[ "$fs_mode" == "virtiofs" ]] || return
   cleanup_virtiofsd
 
-  nohup "$virtiofsd_bin" --shared-dir "$workspace" --socket-path "$workspace_sock" --cache auto --sandbox none --inode-file-handles=never >"$vm_dir/workspace.virtiofsd.log" 2>&1 < /dev/null &
+  nohup "$virtiofsd_bin" --shared-dir "$workspace" --socket-path "$workspace_sock" --cache auto --sandbox none --inode-file-handles=never --readonly >"$vm_dir/workspace.virtiofsd.log" 2>&1 < /dev/null &
   echo "$!" >"$workspace_vfs_pid"
-  nohup "$virtiofsd_bin" --shared-dir "$target_dir" --socket-path "$target_sock" --cache auto --sandbox none --inode-file-handles=never >"$vm_dir/target.virtiofsd.log" 2>&1 < /dev/null &
+  nohup "$virtiofsd_bin" --shared-dir "$target_dir" --socket-path "$target_sock" --cache auto --sandbox none --inode-file-handles=never --readonly >"$vm_dir/target.virtiofsd.log" 2>&1 < /dev/null &
   echo "$!" >"$target_vfs_pid"
+  nohup "$virtiofsd_bin" --shared-dir "$work_dir" --socket-path "$work_sock" --cache auto --sandbox none --inode-file-handles=never >"$vm_dir/work.virtiofsd.log" 2>&1 < /dev/null &
+  echo "$!" >"$work_vfs_pid"
 
   # Wait briefly for sockets to appear.
   local i
   for i in $(seq 1 30); do
-    if [[ -S "$workspace_sock" && -S "$target_sock" ]]; then
-      local wp tp
+    if [[ -S "$workspace_sock" && -S "$target_sock" && -S "$work_sock" ]]; then
+      local wp tp wk
       wp="$(cat "$workspace_vfs_pid" 2>/dev/null || true)"
       tp="$(cat "$target_vfs_pid" 2>/dev/null || true)"
-      if [[ -n "$wp" ]] && kill -0 "$wp" >/dev/null 2>&1 && [[ -n "$tp" ]] && kill -0 "$tp" >/dev/null 2>&1; then
+      wk="$(cat "$work_vfs_pid" 2>/dev/null || true)"
+      if [[ -n "$wp" ]] && kill -0 "$wp" >/dev/null 2>&1 && [[ -n "$tp" ]] && kill -0 "$tp" >/dev/null 2>&1 && [[ -n "$wk" ]] && kill -0 "$wk" >/dev/null 2>&1; then
         return
       fi
       break
     fi
     sleep 0.1
   done
-  err "virtiofsd failed to become healthy; check ${vm_dir}/workspace.virtiofsd.log and ${vm_dir}/target.virtiofsd.log"
+  err "virtiofsd failed to become healthy; check ${vm_dir}/workspace.virtiofsd.log, ${vm_dir}/target.virtiofsd.log and ${vm_dir}/work.virtiofsd.log"
 }
 
 ensure_disk() {
@@ -375,19 +388,25 @@ ensure_guest_mounts() {
   local mnt_opts
   mnt_opts="trans=virtio,version=9p2000.L,msize=262144"
 
-  ssh_cmd "sudo mkdir -p /app /target"
-  ssh_cmd "sudo sed -i '/[[:space:]]\\/app[[:space:]].*9p/d; /[[:space:]]\\/target[[:space:]].*9p/d' /etc/fstab || true"
+  ssh_cmd "sudo mkdir -p /app /target /work"
+  ssh_cmd "sudo sed -i '/[[:space:]]\\/app[[:space:]].*9p/d; /[[:space:]]\\/target[[:space:]].*9p/d; /[[:space:]]\\/work[[:space:]].*9p/d' /etc/fstab || true"
   if [[ "$fs_mode" == "virtiofs" ]]; then
-    ssh_cmd "sudo sh -lc 'mountpoint -q /app || mount -t virtiofs workspace /app || mount -t 9p -o ${mnt_opts} workspace /app'"
-    ssh_cmd "sudo sh -lc 'mountpoint -q /target || mount -t virtiofs target /target || mount -t 9p -o ${mnt_opts} target /target'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /app || mount -t virtiofs -o ro workspace /app || mount -t 9p -o ${mnt_opts},ro workspace /app'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /target || mount -t virtiofs -o ro target /target || mount -t 9p -o ${mnt_opts},ro target /target'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /work || mount -t virtiofs work /work || mount -t 9p -o ${mnt_opts} work /work'"
   else
-    ssh_cmd "sudo sh -lc 'mountpoint -q /app || mount -t 9p -o ${mnt_opts} workspace /app || mount -t virtiofs workspace /app'"
-    ssh_cmd "sudo sh -lc 'mountpoint -q /target || mount -t 9p -o ${mnt_opts} target /target || mount -t virtiofs target /target'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /app || mount -t 9p -o ${mnt_opts},ro workspace /app || mount -t virtiofs -o ro workspace /app'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /target || mount -t 9p -o ${mnt_opts},ro target /target || mount -t virtiofs -o ro target /target'"
+    ssh_cmd "sudo sh -lc 'mountpoint -q /work || mount -t 9p -o ${mnt_opts} work /work || mount -t virtiofs work /work'"
   fi
+  ssh_cmd "sudo mount -o remount,ro /app || true"
+  ssh_cmd "sudo mount -o remount,ro /target || true"
+  ssh_cmd "sudo mount -o remount,rw /work || true"
 
   # Fast sanity checks for this repo's expected paths.
   ssh_cmd "test -f /app/Cargo.toml" || err "/app is mounted but missing /app/Cargo.toml; check host workspace path"
   ssh_cmd "test -d /target" || err "/target mount is not available in guest"
+  ssh_cmd "test -d /work" || err "/work mount is not available in guest"
 }
 
 ssh_cmd() {
@@ -409,7 +428,9 @@ start_vm() {
   need_cmd ssh
   workspace="$(abspath "$workspace")"
   target_dir="$(abspath "$target_dir")"
+  work_dir="$(abspath "$work_dir")"
   mkdir -p "$target_dir"
+  mkdir -p "$work_dir"
   select_fs_mode
   if [[ "$fs_mode" == "virtiofs" ]]; then
     start_virtiofsd
@@ -440,11 +461,14 @@ start_vm() {
       -device "vhost-user-fs-pci,chardev=workspacefs,tag=workspace"
       -chardev "socket,id=targetfs,path=${target_sock}"
       -device "vhost-user-fs-pci,chardev=targetfs,tag=target"
+      -chardev "socket,id=workfs,path=${work_sock}"
+      -device "vhost-user-fs-pci,chardev=workfs,tag=work"
     )
   else
     qemu_fs_args=(
-      -virtfs "local,path=${workspace},mount_tag=workspace,security_model=none,multidevs=remap,id=workspace"
-      -virtfs "local,path=${target_dir},mount_tag=target,security_model=none,multidevs=remap,id=target"
+      -virtfs "local,path=${workspace},mount_tag=workspace,security_model=none,multidevs=remap,id=workspace,readonly=on"
+      -virtfs "local,path=${target_dir},mount_tag=target,security_model=none,multidevs=remap,id=target,readonly=on"
+      -virtfs "local,path=${work_dir},mount_tag=work,security_model=none,multidevs=remap,id=work"
     )
   fi
 
@@ -470,17 +494,19 @@ up() {
   ensure_dirs
   workspace="$(abspath "$workspace")"
   target_dir="$(abspath "$target_dir")"
+  work_dir="$(abspath "$work_dir")"
   log "workspace=${workspace}"
   log "target=${target_dir}"
+  log "work=${work_dir}"
   if (( recreate )) && is_running; then
     log "recreate requested; stopping existing VM"
     down
   fi
   if is_running; then
-    check_running_mount_paths "$workspace" "$target_dir"
+    check_running_mount_paths "$workspace" "$target_dir" "$work_dir"
     log "vm already running; skipping boot path"
     wait_for_ssh
-    log "ensuring /app and /target mounts"
+    log "ensuring /app, /target and /work mounts"
     ensure_guest_mounts
     log "${vm_name} ready (ssh: ${ssh_user}@127.0.0.1:${ssh_port})"
     return
@@ -494,7 +520,7 @@ up() {
   log "starting qemu"
   start_vm
   wait_for_ssh
-  log "ensuring /app and /target mounts"
+  log "ensuring /app, /target and /work mounts"
   ensure_guest_mounts
   log "${vm_name} ready (ssh: ${ssh_user}@127.0.0.1:${ssh_port})"
 }
@@ -551,6 +577,11 @@ while [[ $# -gt 0 ]]; do
     --target-dir)
       [[ $# -ge 2 ]] || err "--target-dir needs a value"
       target_dir="$2"
+      shift 2
+      ;;
+    --work-dir)
+      [[ $# -ge 2 ]] || err "--work-dir needs a value"
+      work_dir="$2"
       shift 2
       ;;
     --ssh-port)
