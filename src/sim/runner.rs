@@ -4,9 +4,11 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use netsim::config::LabConfig;
 use netsim::{Impair, Lab};
+use serde::Serialize;
 
 use crate::sim::build::build_local_binary;
 use crate::sim::build::build_or_fetch_binary;
@@ -61,6 +63,82 @@ enum StepParser {
     Iperf3Json,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct StepFailureInfo {
+    index: usize,
+    action: String,
+    id: Option<String>,
+    device: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimFailureInfo {
+    phase: String,
+    message: String,
+    step: Option<StepFailureInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimSetupSummary {
+    sim_path: String,
+    topology_ref: Option<String>,
+    topology_mode: String,
+    routers: usize,
+    devices: usize,
+    regions: usize,
+    steps: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SimSummary {
+    sim: String,
+    sim_dir: String,
+    status: String,
+    started_at: String,
+    ended_at: String,
+    runtime_ms: u128,
+    setup: SimSetupSummary,
+    error: Option<SimFailureInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct SimRunOutcome {
+    sim_dir_name: String,
+    summary: SimSummary,
+    success: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunEnvironment {
+    os: String,
+    arch: String,
+    family: String,
+    current_dir: String,
+    executable: String,
+    rust_log: Option<String>,
+    netsim_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ManifestSimSummary {
+    sim: String,
+    sim_dir: String,
+    status: String,
+    runtime_ms: u128,
+    sim_json: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RunManifest {
+    run: String,
+    started_at: String,
+    ended_at: String,
+    runtime_ms: u128,
+    success: bool,
+    environment: RunEnvironment,
+    simulations: Vec<ManifestSimSummary>,
+}
+
 impl Drop for SimState {
     fn drop(&mut self) {
         for sp in self.spawned.values_mut() {
@@ -85,18 +163,35 @@ pub async fn run_sims(
         bail!("no sim files found");
     }
     let run_root = prepare_run_root(&work_dir)?;
+    let run_start = SystemTime::now();
+    let run_start_instant = Instant::now();
     let mut sim_dir_names = Vec::new();
+    let mut outcomes = Vec::new();
     for sim in sims {
-        let sim_dir = run_single_sim(sim, run_root.clone(), binary_overrides.clone()).await?;
-        if let Some(sim_dir_name) = sim_dir.file_name().and_then(|s| s.to_str()) {
-            sim_dir_names.push(sim_dir_name.to_string());
-        }
+        let outcome = run_single_sim(sim, run_root.clone(), binary_overrides.clone()).await?;
+        sim_dir_names.push(outcome.sim_dir_name.clone());
+        outcomes.push(outcome);
     }
     write_combined_results_for_runs(&run_root, &sim_dir_names)
         .await
         .context("write combined results")?;
     print_combined_results_table_for_runs(&run_root, &sim_dir_names)
         .context("print combined results table")?;
+    let run_end = SystemTime::now();
+    let run_manifest = build_run_manifest(
+        &run_root,
+        run_start,
+        run_end,
+        run_start_instant.elapsed(),
+        &outcomes,
+    )?;
+    write_run_manifest(&run_root, &run_manifest).await?;
+    if outcomes.iter().any(|outcome| !outcome.success) {
+        bail!(
+            "one or more simulations failed; see {}",
+            run_root.join("manifest.json").display()
+        );
+    }
     Ok(())
 }
 
@@ -104,21 +199,61 @@ async fn run_single_sim(
     sim_path: PathBuf,
     run_root: PathBuf,
     binary_overrides: Vec<String>,
-) -> Result<PathBuf> {
-    let text = std::fs::read_to_string(&sim_path)
-        .with_context(|| format!("read sim file {}", sim_path.display()))?;
-    let sim: SimFile = toml::from_str(&text).context("parse sim file")?;
-    let sim_name = if sim.sim.name.is_empty() {
-        sim_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("sim")
-            .to_string()
-    } else {
-        sim.sim.name.clone()
-    };
-    let run_work_dir = prepare_sim_dir(&run_root, &sim_name)?;
+) -> Result<SimRunOutcome> {
+    let started_at = SystemTime::now();
+    let started_at_str = format_timestamp(started_at);
+    let started_instant = Instant::now();
+    let fallback_sim_name = sim_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sim")
+        .to_string();
 
+    let parsed_sim = match std::fs::read_to_string(&sim_path) {
+        Ok(text) => match toml::from_str::<SimFile>(&text) {
+            Ok(sim) => sim,
+            Err(err) => {
+                return finalize_failed_sim(
+                    &run_root,
+                    &sim_path,
+                    &fallback_sim_name,
+                    started_at_str,
+                    started_instant.elapsed(),
+                    SimFailureInfo {
+                        phase: "parse-sim".to_string(),
+                        message: err.to_string(),
+                        step: None,
+                    },
+                    base_setup_summary(&sim_path),
+                )
+                .await;
+            }
+        },
+        Err(err) => {
+            return finalize_failed_sim(
+                &run_root,
+                &sim_path,
+                &fallback_sim_name,
+                started_at_str,
+                started_instant.elapsed(),
+                SimFailureInfo {
+                    phase: "read-sim".to_string(),
+                    message: err.to_string(),
+                    step: None,
+                },
+                base_setup_summary(&sim_path),
+            )
+            .await;
+        }
+    };
+
+    let sim_name = if parsed_sim.sim.name.is_empty() {
+        fallback_sim_name.clone()
+    } else {
+        parsed_sim.sim.name.clone()
+    };
+    let setup = setup_summary_from_sim(&sim_path, &parsed_sim);
+    let run_work_dir = prepare_sim_dir(&run_root, &sim_name)?;
     tokio::fs::create_dir_all(&run_work_dir)
         .await
         .context("create work dir")?;
@@ -127,69 +262,65 @@ async fn run_single_sim(
         .await
         .context("create log dir")?;
 
-    // ── Resolve binaries ─────────────────────────────────────────────────
-    let shared_binaries = load_shared_binaries(&sim, &sim_path)?;
-    let merged_specs = merge_binary_specs(shared_binaries, sim.binaries.clone());
-    let overrides = parse_binary_overrides(&binary_overrides)?;
-    let binary_names = merged_binary_names(&merged_specs, &overrides);
-
-    let mut binary_paths: HashMap<String, PathBuf> = HashMap::new();
-    for name in binary_names {
-        let path = resolve_binary_path(&name, &merged_specs, &overrides, &run_work_dir).await?;
-        tracing::info!(name = %name, path = %path.display(), "binary ready");
-        binary_paths.insert(name, path);
-    }
-
-    // ── Load topology ────────────────────────────────────────────────────
-    let topo = load_topology(&sim, &sim_path)?;
-
-    // ── Build lab ────────────────────────────────────────────────────────
-    let mut lab = Lab::from_config(topo).context("configure lab")?;
-    lab.build().await.context("build lab network")?;
-
-    // ── Build env vars ───────────────────────────────────────────────────
-    let bin_strs: HashMap<String, String> = binary_paths
-        .iter()
-        .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned()))
-        .collect();
-    let env = SimEnv::new(lab.env_vars(), bin_strs);
-
-    let mut state = SimState {
-        lab,
-        env,
-        spawned: HashMap::new(),
-        transfers: HashMap::new(),
-        results: vec![],
-        iperf_results: vec![],
-        binaries: binary_paths,
-        work_dir: run_work_dir.clone(),
-        sim_name: sim_name.clone(),
-        chuck_compat: sim.sim.chuck_compat,
-    };
-
-    // ── Execute steps ────────────────────────────────────────────────────
-    for step in &sim.steps {
-        execute_step(&mut state, step, &log_dir)?;
-    }
-
-    // Kill any dangling spawned processes.
-    for sp in state.spawned.values_mut() {
-        let _ = sp.child.kill();
-        let _ = sp.child.wait();
-    }
-
-    // ── Write results ────────────────────────────────────────────────────
-    write_results(
-        &state.work_dir,
-        &state.sim_name,
-        &state.results,
-        &state.iperf_results,
-        state.chuck_compat,
+    let execute = execute_single_sim(
+        &sim_path,
+        &run_work_dir,
+        &log_dir,
+        &sim_name,
+        parsed_sim,
+        setup.clone(),
+        binary_overrides,
     )
-    .await
-    .context("write results")?;
+    .await;
 
-    Ok(run_work_dir)
+    match execute {
+        Ok(resolved_setup) => {
+            let summary = SimSummary {
+                sim: sim_name,
+                sim_dir: run_work_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("sim")
+                    .to_string(),
+                status: "ok".to_string(),
+                started_at: started_at_str,
+                ended_at: format_timestamp(SystemTime::now()),
+                runtime_ms: started_instant.elapsed().as_millis(),
+                setup: resolved_setup,
+                error: None,
+            };
+            write_sim_summary(&run_work_dir, &summary).await?;
+            Ok(SimRunOutcome {
+                sim_dir_name: summary.sim_dir.clone(),
+                summary,
+                success: true,
+            })
+        }
+        Err(err) => {
+            let failure = extract_failure_info(&err);
+            let resolved_setup = setup_topology_summary(&setup, None);
+            let summary = SimSummary {
+                sim: sim_name,
+                sim_dir: run_work_dir
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("sim")
+                    .to_string(),
+                status: "error".to_string(),
+                started_at: started_at_str,
+                ended_at: format_timestamp(SystemTime::now()),
+                runtime_ms: started_instant.elapsed().as_millis(),
+                setup: resolved_setup,
+                error: Some(failure),
+            };
+            write_sim_summary(&run_work_dir, &summary).await?;
+            Ok(SimRunOutcome {
+                sim_dir_name: summary.sim_dir.clone(),
+                summary,
+                success: false,
+            })
+        }
+    }
 }
 
 fn expand_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
@@ -277,6 +408,317 @@ fn prepare_sim_dir(run_root: &Path, sim_name: &str) -> Result<PathBuf> {
                 return Err(err).with_context(|| format!("create sim dir {}", sim_dir.display()))
             }
         }
+    }
+}
+
+async fn execute_single_sim(
+    sim_path: &Path,
+    run_work_dir: &Path,
+    log_dir: &Path,
+    sim_name: &str,
+    sim: SimFile,
+    setup_base: SimSetupSummary,
+    binary_overrides: Vec<String>,
+) -> Result<SimSetupSummary> {
+    // ── Resolve binaries ─────────────────────────────────────────────────
+    let shared_binaries = load_shared_binaries(&sim, sim_path)
+        .with_context(|| "step=resolve-binaries".to_string())?;
+    let merged_specs = merge_binary_specs(shared_binaries, sim.binaries.clone());
+    let overrides = parse_binary_overrides(&binary_overrides)
+        .with_context(|| "step=parse-binary-overrides".to_string())?;
+    let binary_names = merged_binary_names(&merged_specs, &overrides);
+
+    let mut binary_paths: HashMap<String, PathBuf> = HashMap::new();
+    for name in binary_names {
+        let path = resolve_binary_path(&name, &merged_specs, &overrides, run_work_dir)
+            .await
+            .with_context(|| format!("step=resolve-binary name={name}"))?;
+        tracing::info!(name = %name, path = %path.display(), "binary ready");
+        binary_paths.insert(name, path);
+    }
+
+    // ── Load topology ────────────────────────────────────────────────────
+    let topo = load_topology(&sim, sim_path).with_context(|| "step=load-topology".to_string())?;
+    let setup = setup_topology_summary(&setup_base, Some(&topo));
+
+    // ── Build lab ────────────────────────────────────────────────────────
+    let mut lab = Lab::from_config(topo).context("step=configure-lab")?;
+    lab.build().await.context("step=build-lab-network")?;
+
+    // ── Build env vars ───────────────────────────────────────────────────
+    let bin_strs: HashMap<String, String> = binary_paths
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned()))
+        .collect();
+    let env = SimEnv::new(lab.env_vars(), bin_strs);
+
+    let mut state = SimState {
+        lab,
+        env,
+        spawned: HashMap::new(),
+        transfers: HashMap::new(),
+        results: vec![],
+        iperf_results: vec![],
+        binaries: binary_paths,
+        work_dir: run_work_dir.to_path_buf(),
+        sim_name: sim_name.to_string(),
+        chuck_compat: sim.sim.chuck_compat,
+    };
+
+    // ── Execute steps ────────────────────────────────────────────────────
+    for (idx, step) in sim.steps.iter().enumerate() {
+        if let Err(err) = execute_step(&mut state, step, log_dir) {
+            let step_info = StepFailureInfo {
+                index: idx,
+                action: step.action.clone(),
+                id: step.id.clone(),
+                device: step.device.clone(),
+            };
+            return Err(err).context(format!(
+                "step-failed:{}",
+                serialize_step_failure(&step_info)
+            ));
+        }
+    }
+
+    // Kill any dangling spawned processes.
+    for sp in state.spawned.values_mut() {
+        let _ = sp.child.kill();
+        let _ = sp.child.wait();
+    }
+
+    // ── Write results ────────────────────────────────────────────────────
+    write_results(
+        &state.work_dir,
+        &state.sim_name,
+        &state.results,
+        &state.iperf_results,
+        state.chuck_compat,
+    )
+    .await
+    .context("step=write-results")?;
+
+    Ok(setup)
+}
+
+fn base_setup_summary(sim_path: &Path) -> SimSetupSummary {
+    SimSetupSummary {
+        sim_path: sim_path.display().to_string(),
+        topology_ref: None,
+        topology_mode: "inline".to_string(),
+        routers: 0,
+        devices: 0,
+        regions: 0,
+        steps: 0,
+    }
+}
+
+fn setup_summary_from_sim(sim_path: &Path, sim: &SimFile) -> SimSetupSummary {
+    let mut setup = base_setup_summary(sim_path);
+    setup.topology_ref = sim.sim.topology.clone();
+    setup.topology_mode = if setup.topology_ref.is_some() {
+        "external".to_string()
+    } else {
+        "inline".to_string()
+    };
+    setup.routers = sim.router.len();
+    setup.devices = sim.device.len();
+    setup.regions = sim.region.as_ref().map(|r| r.len()).unwrap_or(0);
+    setup.steps = sim.steps.len();
+    setup
+}
+
+fn setup_topology_summary(base: &SimSetupSummary, topo: Option<&LabConfig>) -> SimSetupSummary {
+    let mut setup = base.clone();
+    if let Some(topo) = topo {
+        setup.routers = topo.router.len();
+        setup.devices = topo.device.len();
+        setup.regions = topo.region.as_ref().map(|r| r.len()).unwrap_or(0);
+    }
+    setup
+}
+
+async fn finalize_failed_sim(
+    run_root: &Path,
+    sim_path: &Path,
+    sim_name: &str,
+    started_at_str: String,
+    elapsed: Duration,
+    failure: SimFailureInfo,
+    setup: SimSetupSummary,
+) -> Result<SimRunOutcome> {
+    let run_work_dir = prepare_sim_dir(run_root, sim_name)?;
+    tokio::fs::create_dir_all(&run_work_dir)
+        .await
+        .context("create failed sim work dir")?;
+    let summary = SimSummary {
+        sim: sim_name.to_string(),
+        sim_dir: run_work_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("sim")
+            .to_string(),
+        status: "error".to_string(),
+        started_at: started_at_str,
+        ended_at: format_timestamp(SystemTime::now()),
+        runtime_ms: elapsed.as_millis(),
+        setup: SimSetupSummary {
+            sim_path: sim_path.display().to_string(),
+            ..setup
+        },
+        error: Some(failure),
+    };
+    write_sim_summary(&run_work_dir, &summary).await?;
+    Ok(SimRunOutcome {
+        sim_dir_name: summary.sim_dir.clone(),
+        summary,
+        success: false,
+    })
+}
+
+async fn write_sim_summary(run_work_dir: &Path, summary: &SimSummary) -> Result<()> {
+    let text = serde_json::to_string_pretty(summary).context("serialize sim summary")?;
+    tokio::fs::write(run_work_dir.join("sim.json"), text)
+        .await
+        .with_context(|| format!("write {}", run_work_dir.join("sim.json").display()))?;
+    Ok(())
+}
+
+fn build_run_manifest(
+    run_root: &Path,
+    started_at: SystemTime,
+    ended_at: SystemTime,
+    elapsed: Duration,
+    outcomes: &[SimRunOutcome],
+) -> Result<RunManifest> {
+    let run = run_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sim-run")
+        .to_string();
+    let simulations = outcomes
+        .iter()
+        .map(|outcome| ManifestSimSummary {
+            sim: outcome.summary.sim.clone(),
+            sim_dir: outcome.summary.sim_dir.clone(),
+            status: outcome.summary.status.clone(),
+            runtime_ms: outcome.summary.runtime_ms,
+            sim_json: format!("{}/sim.json", outcome.summary.sim_dir),
+        })
+        .collect();
+    Ok(RunManifest {
+        run,
+        started_at: format_timestamp(started_at),
+        ended_at: format_timestamp(ended_at),
+        runtime_ms: elapsed.as_millis(),
+        success: outcomes.iter().all(|o| o.success),
+        environment: collect_run_environment()?,
+        simulations,
+    })
+}
+
+async fn write_run_manifest(run_root: &Path, manifest: &RunManifest) -> Result<()> {
+    let text = serde_json::to_string_pretty(manifest).context("serialize run manifest")?;
+    tokio::fs::write(run_root.join("manifest.json"), text)
+        .await
+        .with_context(|| format!("write {}", run_root.join("manifest.json").display()))?;
+    Ok(())
+}
+
+fn collect_run_environment() -> Result<RunEnvironment> {
+    Ok(RunEnvironment {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        family: std::env::consts::FAMILY.to_string(),
+        current_dir: std::env::current_dir()
+            .context("get current dir")?
+            .display()
+            .to_string(),
+        executable: std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        rust_log: std::env::var("RUST_LOG").ok(),
+        netsim_version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+fn format_timestamp(ts: SystemTime) -> String {
+    let secs = ts
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs();
+    match std::process::Command::new("date")
+        .args(["-u", &format!("-d@{secs}"), "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8(out.stdout)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| secs.to_string()),
+        _ => secs.to_string(),
+    }
+}
+
+fn serialize_step_failure(step: &StepFailureInfo) -> String {
+    format!(
+        "index={};action={};id={};device={}",
+        step.index,
+        step.action,
+        step.id.as_deref().unwrap_or(""),
+        step.device.as_deref().unwrap_or("")
+    )
+}
+
+fn parse_step_failure(raw: &str) -> Option<StepFailureInfo> {
+    let mut index = None;
+    let mut action = None;
+    let mut id = None;
+    let mut device = None;
+    for part in raw.split(';') {
+        let (k, v) = part.split_once('=')?;
+        match k {
+            "index" => index = v.parse::<usize>().ok(),
+            "action" => action = Some(v.to_string()),
+            "id" => {
+                if !v.is_empty() {
+                    id = Some(v.to_string());
+                }
+            }
+            "device" => {
+                if !v.is_empty() {
+                    device = Some(v.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(StepFailureInfo {
+        index: index?,
+        action: action?,
+        id,
+        device,
+    })
+}
+
+fn extract_failure_info(err: &anyhow::Error) -> SimFailureInfo {
+    let mut phase = "run".to_string();
+    let mut step = None;
+    for cause in err.chain() {
+        let msg = cause.to_string();
+        if let Some(raw) = msg.strip_prefix("step-failed:") {
+            if let Some(parsed) = parse_step_failure(raw) {
+                phase = "step".to_string();
+                step = Some(parsed);
+                break;
+            }
+        } else if let Some(raw) = msg.strip_prefix("step=") {
+            phase = raw.to_string();
+        }
+    }
+    SimFailureInfo {
+        phase,
+        message: format!("{err:#}"),
+        step,
     }
 }
 
@@ -1128,5 +1570,35 @@ mod tests {
             Some("sim-a-1"),
             "second sim dir suffix"
         );
+    }
+
+    #[test]
+    fn parse_step_failure_roundtrip() {
+        let src = StepFailureInfo {
+            index: 3,
+            action: "wait-for".to_string(),
+            id: Some("xfer".to_string()),
+            device: Some("fetcher".to_string()),
+        };
+        let raw = serialize_step_failure(&src);
+        let parsed = parse_step_failure(&raw).expect("parse step failure");
+        assert_eq!(parsed.index, 3);
+        assert_eq!(parsed.action, "wait-for");
+        assert_eq!(parsed.id.as_deref(), Some("xfer"));
+        assert_eq!(parsed.device.as_deref(), Some("fetcher"));
+    }
+
+    #[test]
+    fn extract_failure_info_reads_step_context() {
+        let err = anyhow!("root cause")
+            .context("step=build-lab-network")
+            .context("step-failed:index=1;action=assert;id=check;device=fetcher");
+        let info = extract_failure_info(&err);
+        assert_eq!(info.phase, "step");
+        let step = info.step.expect("step info");
+        assert_eq!(step.index, 1);
+        assert_eq!(step.action, "assert");
+        assert_eq!(step.id.as_deref(), Some("check"));
+        assert_eq!(step.device.as_deref(), Some("fetcher"));
     }
 }

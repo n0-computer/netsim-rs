@@ -112,6 +112,9 @@ when a task is ready run the checks then ask to commit, don't commit without ask
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
 
 ## Recent Changes
+- Sim runner now emits run/sim metadata manifests:
+  - Each invocation run root writes `manifest.json` with environment metadata, start/end timestamps, total runtime, overall success, and per-sim runtime/status entries.
+  - Each per-sim directory writes `sim.json` with start/end timestamps, runtime, setup/topology summary, status (`ok`/`error`), and structured failure details (phase + failing step metadata when available) (`src/sim/runner.rs`).
 - Added standalone workspace binary crate `crates/netsim-vm` with CLI commands: `up`, `down`, `status`, `cleanup`, `ssh`, `run`, and `test`.
 - `netsim-vm run` now supports `--netsim-version` sources: `latest`, release tags (e.g. `0.10.0`), and git refs via `git:<ref>` (e.g. `git:feat/foo`), staging guest runner binary under `/work/.netsim-bin/netsim`.
 - Implemented artifact strategy A staging in `netsim-vm`: `--binary` overrides (`path|build|fetch`) are resolved on host and rewritten to staged guest paths under `/work/binaries/*`.
