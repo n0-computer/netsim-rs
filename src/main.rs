@@ -4,12 +4,12 @@ use std::{
 };
 
 use anyhow::Result;
-use netsim::{udp_rtt_in_ns, Gateway, Impair, Lab};
+use netsim::{check_caps, udp_rtt_in_ns, Gateway, Impair, Lab};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    require_root();
+    check_caps()?;
     let mut lab = Lab::new();
     let dc_eu = lab.add_dc("dc-eu", "eu")?;
     let dc_us = lab.add_dc("dc-us", "us")?;
@@ -42,8 +42,4 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn require_root() {
-    if !nix::unistd::Uid::effective().is_root() {
-        panic!("test requires root / CAP_NET_ADMIN — run: sudo -E cargo test -- --nocapture");
-    }
-}
+ 

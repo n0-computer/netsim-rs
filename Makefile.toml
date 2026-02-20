@@ -3,51 +3,66 @@
 
 [env]
 VM_NAME = "netsim-vm"
-VM_DIR = "~/.lima/${VM_NAME}"
-VM_BIN_DIR = "/home/linux/netsim"
+MUSL_TARGET = "x86_64-unknown-linux-musl"
 
-[tasks.setup]
+[tasks.setup-vm]
 script = ["""
-  if limactl list netsim-vm 2>/dev/null | grep -q 'Stopped'; then
-    echo "Starting stopped Lima VM..."
-    limactl start netsim-vm
-  elif ! limactl list | grep -q 'netsim-vm'; then
-    echo "Creating new Lima VM..."
-    limactl start --name netsim-vm lima.yaml
-  else
-    echo "Lima VM 'netsim-vm' already running."
-  fi
+  set -euo pipefail
+  TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+  mkdir -p "${TARGET_BASE}"
+  NAME="${VM_NAME}" ./vm-up.sh "${TARGET_BASE}"
   """]
 
-[tasks.build]
-command = "cargo"
-args = ["build", "--release", "--target", "x86_64-unknown-linux-musl"]
-
-[tasks.copy]
-dependencies = ["build"]
+[tasks.target-dir]
 script = ['''
-  BIN_PATH=target/x86_64-unknown-linux-musl/release/${CARGO_MAKE_CRATE_NAME}
-
-  limactl shell ${VM_NAME} mkdir -p ${VM_BIN_DIR}
-  limactl shell ${VM_NAME} rm -f ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME}
-  limactl copy ${BIN_PATH} ${VM_NAME}:${VM_BIN_DIR}/
-
-  if [ ! -z "${ARGS}" ]; then
-    for bin in ${ARGS}; do
-      which $bin > /dev/null || { echo "Missing binary: $bin"; exit 1; }
-      limactl copy $(which $bin) ${VM_NAME}:${VM_BIN_DIR}/
-    done
+  set -euo pipefail
+  if [ -n "${RUST_TARGET:-}" ]; then
+    target="${RUST_TARGET}"
+  else
+    target="$(rustc -vV | awk '/^host:/{print $2}')"
   fi
+  base="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
+  echo "${base}/${target}"
   ''']
 
-[tasks.run]
-script = [
-    '''
-  limactl shell ${VM_NAME} chmod +x ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME}
-  limactl shell ${VM_NAME} sudo sysctl -w net.ipv4.ip_forward=1
-  # limactl shell ${VM_NAME} sudo ${VM_BIN_DIR}/${CARGO_MAKE_CRATE_NAME} test --config ${VM_BIN_DIR}/${TOPO_FILE} --cleanup
-  ''',
-]
+[tasks.setcap]
+command = "./setcap.sh"
+
+[tasks.build-vm]
+command = "cargo"
+args = ["build", "--release", "--target", "${MUSL_TARGET}"]
+
+[tasks.build-test-vm]
+command = "cargo"
+args = ["test", "--no-run", "--target", "${MUSL_TARGET}"]
+
+[tasks.run-local]
+dependencies = ["setcap"]
+command = "cargo"
+args = ["run"]
+
+[tasks.test-local]
+dependencies = ["setcap"]
+command = "cargo"
+args = ["test"]
+
+[tasks.run-vm]
+dependencies = ["setup-vm", "build-vm", "prepare-vm"]
+script = ['''
+  limactl shell --workdir / ${VM_NAME} sudo /target/${MUSL_TARGET}/release/${CARGO_MAKE_CRATE_NAME} ${ARGS}
+  ''']
+
+[tasks.test-vm]
+dependencies = ["setup-vm", "build-test-vm", "prepare-vm"]
+script = ['''
+  limactl shell --workdir / ${VM_NAME} sudo sh -c 'for t in /target/${MUSL_TARGET}/debug/deps/${CARGO_MAKE_CRATE_NAME}-*; do case "$t" in *.d) continue ;; esac; if [ -x "$t" ]; then "$t"; fi; done'
+  ''']
+
+[tasks.prepare-vm]
+dependencies = ["setup-vm"]
+script = ['''
+  limactl shell --workdir / ${VM_NAME} sudo sysctl -w net.ipv4.ip_forward=1
+  ''']
 
 [tasks.shutdown]
 script = ['''
@@ -56,4 +71,4 @@ script = ['''
   ''']
 
 [tasks.start]
-dependencies = ["setup", "copy", "run"]
+dependencies = ["setup-vm", "run-vm"]

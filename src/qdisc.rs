@@ -12,8 +12,8 @@ pub(crate) struct ImpairLimits {
 }
 
 pub(crate) fn apply_impair(ns: &str, ifname: &str, limits: ImpairLimits) -> Result<()> {
+    remove_qdisc(ns, ifname);
     let qdisc = Qdisc::new(ifname);
-    qdisc.clear_root(ns);
     qdisc.add_netem_root(ns, limits)?;
     if limits.rate_kbit > 0 {
         qdisc.add_tbf(ns, limits.rate_kbit)?;
@@ -26,8 +26,8 @@ pub(crate) fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, 
         return Ok(());
     }
 
+    remove_qdisc(ns, ifname);
     let qdisc = Qdisc::new(ifname);
-    qdisc.clear_root(ns);
     qdisc.add_htb_root(ns)?;
     qdisc.add_base_class(ns)?;
 
@@ -42,6 +42,11 @@ pub(crate) fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, 
     }
 
     Ok(())
+}
+
+pub(crate) fn remove_qdisc(ns: &str, ifname: &str) {
+    let qdisc = Qdisc::new(ifname);
+    qdisc.clear_root(ns);
 }
 
 struct Qdisc<'a> {

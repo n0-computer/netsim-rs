@@ -85,6 +85,17 @@ pub struct Switch {
     next_host: u8,
 }
 
+struct DevBuild {
+    dev_ns: String,
+    gw_ns: String,
+    gw_ip: Ipv4Addr,
+    gw_br: String,
+    dev_ip: Ipv4Addr,
+    prefix_len: u8,
+    impair: Option<Impair>,
+    idx: u32,
+}
+
 pub struct LabCore {
     cfg: CoreConfig,
     next_id: u64,
@@ -464,17 +475,6 @@ impl LabCore {
     }
 
     pub async fn build(&mut self, region_latencies: &[(String, String, u32)]) -> Result<()> {
-        struct DevBuild {
-            dev_ns: String,
-            gw_ns: String,
-            gw_ip: Ipv4Addr,
-            gw_br: String,
-            dev_ip: Ipv4Addr,
-            prefix_len: u8,
-            impair: Option<Impair>,
-            idx: u32,
-        }
-
         debug!("build: ensure /var/run/netns exists");
         ensure_netns_dir()?;
 
@@ -710,52 +710,7 @@ impl LabCore {
         }
 
         for dev in dev_data {
-            debug!(
-                dev_ns = %dev.dev_ns,
-                gw_ns = %dev.gw_ns,
-                gw_ip = %dev.gw_ip,
-                gw_br = %dev.gw_br,
-                dev_ip = %dev.dev_ip,
-                impair = ?dev.impair,
-                "build: connect device to gateway"
-            );
-            let root_gw = self.root_if("g", dev.idx as u64);
-            let root_dev = self.root_if("e", dev.idx as u64);
-
-            with_root_netlink(async |h| {
-                h.ensure_link_deleted(&root_gw).await.ok();
-                h.ensure_link_deleted(&root_dev).await.ok();
-                h.add_veth(&root_gw, &root_dev).await?;
-                h.move_link_to_netns(&root_gw, &open_netns_fd(&dev.gw_ns)?)
-                    .await?;
-                h.move_link_to_netns(&root_dev, &open_netns_fd(&dev.dev_ns)?)
-                    .await?;
-                Ok(())
-            })
-            .await?;
-
-            let ip_cidr = format!("{}/{}", dev.dev_ip, dev.prefix_len);
-            with_netns(&dev.dev_ns, async |h| {
-                h.set_link_up("lo").await?;
-                h.rename_link(&root_dev, "eth0").await?;
-                h.set_link_up("eth0").await?;
-                h.add_addr4("eth0", &ip_cidr).await?;
-                h.add_default_route_v4(dev.gw_ip).await?;
-                Ok(())
-            })
-            .await?;
-
-            with_netns(&dev.gw_ns, async |h| {
-                h.rename_link(&root_gw, &format!("v{}", dev.idx)).await?;
-                h.set_link_up(&format!("v{}", dev.idx)).await?;
-                h.set_master(&format!("v{}", dev.idx), &dev.gw_br).await?;
-                Ok(())
-            })
-            .await?;
-
-            if let Some(imp) = dev.impair {
-                apply_impair_in(&dev.dev_ns, "eth0", imp);
-            }
+            self.wire_device(dev).await?;
         }
 
         // Root-ns return routes to public downstreams behind IX routers.
@@ -795,6 +750,56 @@ impl LabCore {
         let id = self.next_id;
         self.next_id += 1;
         id
+    }
+
+    async fn wire_device(&self, dev: DevBuild) -> Result<()> {
+        debug!(
+            dev_ns = %dev.dev_ns,
+            gw_ns = %dev.gw_ns,
+            gw_ip = %dev.gw_ip,
+            gw_br = %dev.gw_br,
+            dev_ip = %dev.dev_ip,
+            impair = ?dev.impair,
+            "build: connect device to gateway"
+        );
+        let root_gw = self.root_if("g", dev.idx as u64);
+        let root_dev = self.root_if("e", dev.idx as u64);
+
+        with_root_netlink(async |h| {
+            h.ensure_link_deleted(&root_gw).await.ok();
+            h.ensure_link_deleted(&root_dev).await.ok();
+            h.add_veth(&root_gw, &root_dev).await?;
+            h.move_link_to_netns(&root_gw, &open_netns_fd(&dev.gw_ns)?)
+                .await?;
+            h.move_link_to_netns(&root_dev, &open_netns_fd(&dev.dev_ns)?)
+                .await?;
+            Ok(())
+        })
+        .await?;
+
+        let ip_cidr = format!("{}/{}", dev.dev_ip, dev.prefix_len);
+        with_netns(&dev.dev_ns, async |h| {
+            h.set_link_up("lo").await?;
+            h.rename_link(&root_dev, "eth0").await?;
+            h.set_link_up("eth0").await?;
+            h.add_addr4("eth0", &ip_cidr).await?;
+            h.add_default_route_v4(dev.gw_ip).await?;
+            Ok(())
+        })
+        .await?;
+
+        with_netns(&dev.gw_ns, async |h| {
+            h.rename_link(&root_gw, &format!("v{}", dev.idx)).await?;
+            h.set_link_up(&format!("v{}", dev.idx)).await?;
+            h.set_master(&format!("v{}", dev.idx), &dev.gw_br).await?;
+            Ok(())
+        })
+        .await?;
+
+        if let Some(imp) = dev.impair {
+            apply_impair_in(&dev.dev_ns, "eth0", imp);
+        }
+        Ok(())
     }
 
     fn alloc_private_cidr(&mut self) -> Result<Ipv4Net> {
@@ -877,10 +882,7 @@ pub fn open_netns_fd(name: &str) -> Result<File> {
     match File::open(&path) {
         Ok(f) => Ok(f),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let _ = std::process::Command::new("ip")
-                .args(["netns", "add", name])
-                .stderr(std::process::Stdio::null())
-                .status();
+            ip_netns_add(name)?;
             File::open(&path).with_context(|| format!("open netns fd for '{}'", name))
         }
         Err(e) => Err(e).with_context(|| format!("open netns fd for '{}'", name)),
@@ -903,13 +905,22 @@ pub fn cleanup_netns(name: &str) {
 pub async fn create_named_netns(name: &str) -> Result<()> {
     debug!(ns = %name, "netns: create named namespace");
     let _ = NetworkNamespace::del(name.to_string()).await;
-    let _ = std::process::Command::new("ip")
-        .args(["netns", "add", name])
-        .stderr(std::process::Stdio::null())
-        .status();
+    ip_netns_add(name)?;
     let _ = open_netns_fd(name)?;
     resources().register_netns(name);
     Ok(())
+}
+
+fn ip_netns_add(name: &str) -> Result<()> {
+    let output = std::process::Command::new("ip")
+        .args(["netns", "add", name])
+        .output()
+        .context("exec: ip netns add")?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!("ip netns add {} failed: {}", name, stderr.trim());
 }
 
 pub fn spawn_in_netns_thread<F, R>(ns: String, f: F) -> thread::JoinHandle<Result<R>>

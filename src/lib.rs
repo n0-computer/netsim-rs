@@ -57,6 +57,40 @@ use crate::core::{
 /// Stable identifier for devices/routers/switches in the lab.
 pub use crate::core::NodeId;
 
+/// Verify the process has enough privileges to manage namespaces, routes, raw sockets,
+/// and create netns entries under `/var/run/netns`.
+pub fn check_caps() -> Result<()> {
+    if nix::unistd::Uid::effective().is_root() {
+        return Ok(());
+    }
+    let status = std::fs::read_to_string("/proc/self/status").context("read /proc/self/status")?;
+    let cap_eff = status
+        .lines()
+        .find_map(|line| line.strip_prefix("CapEff:\t"))
+        .ok_or_else(|| anyhow!("missing CapEff in /proc/self/status"))?;
+    let cap_eff = u64::from_str_radix(cap_eff.trim(), 16).context("parse CapEff")?;
+    const CAP_DAC_OVERRIDE: u64 = 1;
+    const CAP_NET_ADMIN: u64 = 12;
+    const CAP_NET_RAW: u64 = 13;
+    const CAP_SYS_ADMIN: u64 = 21;
+    let need = [
+        ("CAP_DAC_OVERRIDE", CAP_DAC_OVERRIDE),
+        ("CAP_NET_ADMIN", CAP_NET_ADMIN),
+        ("CAP_NET_RAW", CAP_NET_RAW),
+        ("CAP_SYS_ADMIN", CAP_SYS_ADMIN),
+    ];
+    let missing: Vec<&str> = need
+        .into_iter()
+        .filter(|(_, bit)| (cap_eff & (1u64 << bit)) == 0)
+        .map(|(name, _)| name)
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        bail!("missing capabilities: {}", missing.join(", "))
+    }
+}
+
 // ─────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────
@@ -900,12 +934,6 @@ mod tests {
 
     use super::*;
 
-    fn require_root() {
-        if !nix::unistd::Uid::effective().is_root() {
-            panic!("test requires root / CAP_NET_ADMIN — run: sudo -E cargo test -- --nocapture");
-        }
-    }
-
     fn ping_in_ns(ns: &str, addr: &str) -> Result<()> {
         let mut cmd = std::process::Command::new("ping");
         cmd.args(["-c", "1", "-W", "1", addr]);
@@ -947,7 +975,7 @@ mod tests {
     #[serial]
     #[traced_test]
     async fn nat_dest_independent_keeps_port() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -983,7 +1011,7 @@ mod tests {
     #[serial]
     #[traced_test]
     async fn nat_dest_dependent_changes_port() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -1019,7 +1047,7 @@ mod tests {
     #[serial]
     #[traced_test]
     async fn cgnat_hides_behind_isp_public_ip() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", true /* cgnat */, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -1050,7 +1078,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn load_from_toml() -> Result<()> {
-        require_root();
+        check_caps()?;
         // Minimal inline TOML so the test is self-contained.
         let toml = r#"
 [[isp]]
@@ -1084,7 +1112,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_ping_gateway() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let home = lab.add_home("home1", isp, NatMode::DestinationIndependent)?;
@@ -1102,7 +1130,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_udp_dc_roundtrip() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -1127,7 +1155,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_tcp_dc_roundtrip() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -1156,7 +1184,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_ping_home_to_isp() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let home = lab.add_home("home1", isp, NatMode::DestinationIndependent)?;
@@ -1172,7 +1200,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_ping_isp_to_ix_and_dc() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let dc = lab.add_dc("dc1", "eu")?;
@@ -1189,7 +1217,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn smoke_device_to_device_same_lan() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp = lab.add_isp("isp1", "eu", false, None)?;
         let home = lab.add_home("home1", isp, NatMode::DestinationIndependent)?;
@@ -1207,7 +1235,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn latency_directional_between_regions() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         lab.add_region_latency("eu", "us", 30);
         lab.add_region_latency("us", "eu", 70);
@@ -1259,7 +1287,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn latency_inter_region_dc_to_dc() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         lab.add_region_latency("eu", "us", 50);
         lab.add_region_latency("us", "eu", 50);
@@ -1288,7 +1316,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn latency_device_impair_adds_delay() -> Result<()> {
-        require_root();
+        check_caps()?;
 
         async fn measure(impair: Option<Impair>) -> Result<Duration> {
             let mut lab = Lab::new();
@@ -1323,7 +1351,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn latency_manual_impair_applies() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let dc_eu = lab.add_dc("dc-eu", "eu")?;
         let dc_us = lab.add_dc("dc-us", "us")?;
@@ -1359,7 +1387,7 @@ gateway = "lan1"
     #[serial]
     #[traced_test]
     async fn isp_home_wan_pool_selection() -> Result<()> {
-        require_root();
+        check_caps()?;
         let mut lab = Lab::new();
         let isp_public = lab.add_isp("isp-public", "eu", false, None)?;
         let isp_cgnat = lab.add_isp("isp-cgnat", "eu", true, None)?;
