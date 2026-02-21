@@ -87,13 +87,13 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
     let provider_stdout_pump = spawn_pipe_pump(
         provider_stdout,
         provider_stdout_log.clone(),
-        format!("[{provider_dev}:out]"),
+        verbose_prefix(provider_dev, "out"),
         state.verbose,
     );
     let provider_stderr_pump = spawn_pipe_pump(
         provider_stderr,
         provider_stderr_log.clone(),
-        format!("[{provider_dev}:err]"),
+        verbose_prefix(provider_dev, "err"),
         state.verbose,
     );
 
@@ -179,13 +179,13 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         let stdout_pump = spawn_pipe_pump(
             fetch_stdout,
             fetcher_stdout_log.clone(),
-            format!("[{}:out]", fetcher_dev),
+            verbose_prefix(fetcher_dev, "out"),
             state.verbose,
         );
         let stderr_pump = spawn_pipe_pump(
             fetch_stderr,
             fetcher_stderr_log,
-            format!("[{}:err]", fetcher_dev),
+            verbose_prefix(fetcher_dev, "err"),
             state.verbose,
         );
         fetchers.push(FetcherHandle {
@@ -304,6 +304,15 @@ fn join_pump(handle: thread::JoinHandle<Result<()>>, label: &str) -> Result<()> 
         .join()
         .map_err(|_| anyhow!("{label} panicked"))?
         .with_context(|| label.to_string())
+}
+
+fn verbose_prefix(device: &str, stream: &str) -> String {
+    let mut dev: String = device.chars().take(10).collect();
+    let cur = dev.chars().count();
+    if cur < 10 {
+        dev.push_str(&" ".repeat(10 - cur));
+    }
+    format!("{dev}{stream}")
 }
 
 fn resolve_fetchers(step: &Step) -> Result<Vec<String>> {

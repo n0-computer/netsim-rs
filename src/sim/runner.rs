@@ -1150,14 +1150,14 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
             let out_pump = spawn_pipe_pump(
                 stdout,
                 logs.stdout.clone(),
-                format!("[{device}:out]"),
+                verbose_prefix(device, "out"),
                 state.verbose,
                 None,
             );
             let err_pump = spawn_pipe_pump(
                 stderr,
                 logs.stderr.clone(),
-                format!("[{device}:err]"),
+                verbose_prefix(device, "err"),
                 state.verbose,
                 None,
             );
@@ -1245,14 +1245,14 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
                 stdout_pump = Some(spawn_pipe_pump(
                     stdout,
                     logs.stdout.clone(),
-                    format!("[{device}:out]"),
+                    verbose_prefix(device, "out"),
                     state.verbose,
                     Some(tx),
                 ));
                 stderr_pump = Some(spawn_pipe_pump(
                     stderr,
                     logs.stderr.clone(),
-                    format!("[{device}:err]"),
+                    verbose_prefix(device, "err"),
                     state.verbose,
                     None,
                 ));
@@ -1263,14 +1263,14 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
                 stdout_pump = Some(spawn_pipe_pump(
                     stdout,
                     logs.stdout.clone(),
-                    format!("[{device}:out]"),
+                    verbose_prefix(device, "out"),
                     state.verbose,
                     None,
                 ));
                 stderr_pump = Some(spawn_pipe_pump(
                     stderr,
                     logs.stderr.clone(),
-                    format!("[{device}:err]"),
+                    verbose_prefix(device, "err"),
                     state.verbose,
                     None,
                 ));
@@ -1682,6 +1682,15 @@ fn join_pump(handle: thread::JoinHandle<Result<()>>, label: &str) -> Result<()> 
         .join()
         .map_err(|_| anyhow!("{label} panicked"))?
         .with_context(|| label.to_string())
+}
+
+fn verbose_prefix(device: &str, stream: &str) -> String {
+    let mut dev: String = device.chars().take(10).collect();
+    let cur = dev.chars().count();
+    if cur < 10 {
+        dev.push_str(&" ".repeat(10 - cur));
+    }
+    format!("{dev}{stream}")
 }
 
 fn shell_join(parts: &[String]) -> String {
