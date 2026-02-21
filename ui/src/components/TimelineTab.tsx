@@ -124,7 +124,7 @@ export default function TimelineTab({ base, logs, onJumpToLog }: Props) {
   const [timeMode, setTimeMode] = useState<'relative' | 'absolute'>('relative')
 
   const candidateLogs = useMemo(
-    () => logs.filter((l) => l.kind !== 'qlog' && (l.kind === 'transfer' || l.path.endsWith('/out.log'))),
+    () => logs.filter((l) => l.kind !== 'qlog' && (l.kind === 'transfer' || l.path.endsWith('/stdout.log') || l.path.endsWith('/stderr.log') || l.path.endsWith('/out.log'))),
     [logs],
   )
   const candidateKey = useMemo(() => candidateLogs.map((l) => `${l.node}:${l.path}:${l.kind}`).join('|'), [candidateLogs])

@@ -179,7 +179,9 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     if (!jumpTarget || logs.length === 0) return
     if (jumpHandledNonce === jumpTarget.nonce) return
     const direct = logs.find((l) => l.path === jumpTarget.path)
-    const byNode = logs.find((l) => l.node === jumpTarget.node && l.kind === 'transfer' && /logs-(fetch|provide)$/.test(l.path))
+    const byNode = logs.find((l) => l.node === jumpTarget.node && l.path.endsWith('/stderr.log'))
+      ?? logs.find((l) => l.node === jumpTarget.node && l.path.endsWith('/stdout.log'))
+      ?? logs.find((l) => l.node === jumpTarget.node && l.kind === 'transfer')
     const fallback = logs.find((l) => l.node === jumpTarget.node) ?? logs[0] ?? null
     setActive(direct ?? byNode ?? fallback)
     setJumpNeedle(jumpTarget.timeLabel)
@@ -220,7 +222,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const parsed = useMemo(() => text.split('\n').filter(Boolean).map(parseLine), [text])
   const transferEvents = useMemo(() => parseTransferPreview(text), [text])
   const qlogEvents = useMemo(() => parseQlogEvents(text), [text])
-  const supportsRendered = active?.kind === 'transfer' || active?.kind === 'qlog'
+  const supportsRendered = (active?.kind === 'transfer' && transferEvents.length > 0) || active?.kind === 'qlog'
 
   useEffect(() => {
     if (!jumpNeedle) {

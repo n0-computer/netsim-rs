@@ -36,6 +36,9 @@ enum Command {
         /// Binary override in `<name>:<mode>:<value>` form.
         #[arg(long = "binary")]
         binary_overrides: Vec<String>,
+        /// Stream live stdout/stderr lines with node prefixes.
+        #[arg(short = 'v', long, default_value_t = false)]
+        verbose: bool,
 
         /// Start embedded UI server and open browser.
         #[arg(long, default_value_t = false)]
@@ -103,6 +106,7 @@ async fn tokio_main() -> Result<()> {
             sims,
             work_dir,
             binary_overrides,
+            verbose,
             open,
             bind,
         } => {
@@ -116,7 +120,7 @@ async fn tokio_main() -> Result<()> {
             } else {
                 None
             };
-            let res = sim::run_sims(sims, work_dir, binary_overrides).await;
+            let res = sim::run_sims(sims, work_dir, binary_overrides, verbose).await;
             if open && res.is_ok() {
                 println!("run finished; UI server still running (Ctrl-C to exit)");
                 loop {

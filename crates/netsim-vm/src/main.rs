@@ -41,6 +41,8 @@ enum Command {
         work_dir: PathBuf,
         #[arg(long = "binary")]
         binary_overrides: Vec<String>,
+        #[arg(short = 'v', long, default_value_t = false)]
+        verbose: bool,
         #[arg(long)]
         recreate: bool,
         #[arg(long, default_value = "latest")]
@@ -86,6 +88,7 @@ fn main() -> Result<()> {
             sims,
             work_dir,
             binary_overrides,
+            verbose,
             recreate,
             netsim_version,
             open,
@@ -103,6 +106,7 @@ fn main() -> Result<()> {
                 sim_inputs: sims,
                 work_dir,
                 binary_overrides,
+                verbose,
                 recreate,
                 netsim_version,
             });

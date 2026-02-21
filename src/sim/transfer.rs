@@ -1,9 +1,10 @@
 //! Handles the `kind = "iroh-transfer"` spawn step.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::sim::report::TransferResult;
@@ -20,6 +21,8 @@ struct FetcherHandle {
     name: String,
     child: std::process::Child,
     parse_log_path: PathBuf,
+    stdout_pump: Option<thread::JoinHandle<Result<()>>>,
+    stderr_pump: Option<thread::JoinHandle<Result<()>>>,
 }
 
 /// In-progress transfer started by a `spawn` step.
@@ -28,6 +31,8 @@ pub struct TransferHandle {
     provider: String,
     provider_child: std::process::Child,
     provider_parse_log: PathBuf,
+    provider_stdout_pump: Option<thread::JoinHandle<Result<()>>>,
+    provider_stderr_pump: Option<thread::JoinHandle<Result<()>>>,
     fetchers: Vec<FetcherHandle>,
 }
 
@@ -43,29 +48,17 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
     let provider_logs_dir = node_transfer_dir(&state.work_dir, provider_dev, step_id, "provider");
     std::fs::create_dir_all(&provider_logs_dir)
         .with_context(|| format!("create provider logs dir {}", provider_logs_dir.display()))?;
-    let provider_stdio_log = provider_logs_dir.join("out.log");
+    let provider_stdout_log = provider_logs_dir.join("stdout.log");
+    let provider_stderr_log = provider_logs_dir.join("stderr.log");
 
     let mut provider_cmd = std::process::Command::new(binary);
     let mut provider_args = vec![
         "--output".to_string(),
         "json".to_string(),
-        "--logs-path".to_string(),
-        provider_logs_dir.display().to_string(),
         "provide".to_string(),
     ];
-    provider_cmd
-        .args(["--output", "json", "--logs-path"])
-        .arg(&provider_logs_dir)
-        .arg("provide");
-    let p_log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&provider_stdio_log)
-        .with_context(|| format!("open provider stdio log {}", provider_stdio_log.display()))?;
-    let p_log2 = p_log.try_clone().context("clone provider stdio log")?;
-    provider_cmd
-        .stdout(Stdio::from(p_log))
-        .stderr(Stdio::from(p_log2));
+    provider_cmd.args(["--output", "json", "provide"]);
+    provider_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     add_env_to_cmd(&mut provider_cmd, state, &format!("{}_provider", step_id));
     provider_cmd.args(["--env", "dev"]);
@@ -88,9 +81,24 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         .lab
         .spawn_unmanaged_on(provider_dev, provider_cmd)
         .context("spawn provider")?;
+    let mut provider = provider;
+    let provider_stdout = provider.stdout.take().context("take provider stdout")?;
+    let provider_stderr = provider.stderr.take().context("take provider stderr")?;
+    let provider_stdout_pump = spawn_pipe_pump(
+        provider_stdout,
+        provider_stdout_log.clone(),
+        format!("[{provider_dev}:out]"),
+        state.verbose,
+    );
+    let provider_stderr_pump = spawn_pipe_pump(
+        provider_stderr,
+        provider_stderr_log.clone(),
+        format!("[{provider_dev}:err]"),
+        state.verbose,
+    );
 
-    wait_for_file(&provider_stdio_log, 30)?;
-    let bound = read_until_endpoint_bound(&provider_stdio_log, 30)?
+    wait_for_file(&provider_stdout_log, 30)?;
+    let bound = read_until_endpoint_bound(&provider_stdout_log, 30)?
         .ok_or_else(|| anyhow!("EOF before EndpointBound in provider log"))?;
     tracing::info!(
         step_id,
@@ -112,20 +120,16 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         );
         std::fs::create_dir_all(&fetcher_log)
             .with_context(|| format!("create fetcher logs dir {}", fetcher_log.display()))?;
-        let fetcher_stdio_log = fetcher_log.join("out.log");
+        let fetcher_stdout_log = fetcher_log.join("stdout.log");
+        let fetcher_stderr_log = fetcher_log.join("stderr.log");
 
         let mut fetcher_cmd = std::process::Command::new(binary);
         let mut fetcher_args = vec![
             "--output".to_string(),
             "json".to_string(),
-            "--logs-path".to_string(),
-            fetcher_log.display().to_string(),
             "fetch".to_string(),
         ];
-        fetcher_cmd
-            .args(["--output", "json", "--logs-path"])
-            .arg(&fetcher_log)
-            .arg("fetch");
+        fetcher_cmd.args(["--output", "json", "fetch"]);
         if step.strategy.as_deref() == Some("endpoint_id_with_direct_addrs") {
             if let Some(addr) = &bound.direct_addr {
                 fetcher_cmd.args(["--remote-direct-address", addr]);
@@ -152,15 +156,7 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
             fetcher_cmd.args(extra.clone());
             fetcher_args.extend(extra);
         }
-        let f_log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&fetcher_stdio_log)
-            .with_context(|| format!("open fetcher stdio log {}", fetcher_stdio_log.display()))?;
-        let f_log2 = f_log.try_clone().context("clone fetcher stdio log")?;
-        fetcher_cmd
-            .stdout(Stdio::from(f_log))
-            .stderr(Stdio::from(f_log2));
+        fetcher_cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         add_env_to_cmd(
             &mut fetcher_cmd,
             state,
@@ -177,10 +173,27 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
             .lab
             .spawn_unmanaged_on(fetcher_dev, fetcher_cmd)
             .with_context(|| format!("spawn fetcher '{}'", fetcher_dev))?;
+        let mut child = child;
+        let fetch_stdout = child.stdout.take().context("take fetcher stdout")?;
+        let fetch_stderr = child.stderr.take().context("take fetcher stderr")?;
+        let stdout_pump = spawn_pipe_pump(
+            fetch_stdout,
+            fetcher_stdout_log.clone(),
+            format!("[{}:out]", fetcher_dev),
+            state.verbose,
+        );
+        let stderr_pump = spawn_pipe_pump(
+            fetch_stderr,
+            fetcher_stderr_log,
+            format!("[{}:err]", fetcher_dev),
+            state.verbose,
+        );
         fetchers.push(FetcherHandle {
             name: fetcher_dev.clone(),
             child,
-            parse_log_path: fetcher_stdio_log,
+            parse_log_path: fetcher_stdout_log,
+            stdout_pump: Some(stdout_pump),
+            stderr_pump: Some(stderr_pump),
         });
     }
 
@@ -188,7 +201,9 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         id: step_id.to_string(),
         provider: provider_dev.to_string(),
         provider_child: provider,
-        provider_parse_log: provider_stdio_log,
+        provider_parse_log: provider_stdout_log,
+        provider_stdout_pump: Some(provider_stdout_pump),
+        provider_stderr_pump: Some(provider_stderr_pump),
         fetchers,
     })
 }
@@ -203,6 +218,12 @@ pub fn finish_transfer(
     for fetcher in &mut handle.fetchers {
         wait_for_child_with_timeout(&mut fetcher.child, deadline)
             .with_context(|| format!("wait fetcher '{}'", fetcher.name))?;
+        if let Some(h) = fetcher.stdout_pump.take() {
+            join_pump(h, "fetcher stdout pump")?;
+        }
+        if let Some(h) = fetcher.stderr_pump.take() {
+            join_pump(h, "fetcher stderr pump")?;
+        }
     }
 
     let remain = deadline.saturating_duration_since(Instant::now());
@@ -216,6 +237,12 @@ pub fn finish_transfer(
         );
     }
     let _ = handle.provider_child.wait();
+    if let Some(h) = handle.provider_stdout_pump.take() {
+        join_pump(h, "provider stdout pump")?;
+    }
+    if let Some(h) = handle.provider_stderr_pump.take() {
+        join_pump(h, "provider stderr pump")?;
+    }
 
     let mut results = Vec::with_capacity(handle.fetchers.len());
     for fetcher in &handle.fetchers {
@@ -235,6 +262,48 @@ pub fn finish_transfer(
         results.push(result);
     }
     Ok(results)
+}
+
+fn spawn_pipe_pump<R: Read + Send + 'static>(
+    reader: R,
+    path: PathBuf,
+    prefix: String,
+    verbose: bool,
+) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || -> Result<()> {
+        let mut out = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open append log {}", path.display()))?;
+        let mut reader = BufReader::new(reader);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            let n = reader
+                .read_until(b'\n', &mut buf)
+                .with_context(|| format!("read pipe for {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            out.write_all(&buf)
+                .with_context(|| format!("append log {}", path.display()))?;
+            if verbose {
+                let line = String::from_utf8_lossy(&buf)
+                    .trim_end_matches('\n')
+                    .to_string();
+                println!("{prefix} {line}");
+            }
+        }
+        Ok(())
+    })
+}
+
+fn join_pump(handle: thread::JoinHandle<Result<()>>, label: &str) -> Result<()> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("{label} panicked"))?
+        .with_context(|| label.to_string())
 }
 
 fn resolve_fetchers(step: &Step) -> Result<Vec<String>> {

@@ -4,10 +4,12 @@ use netsim::assets::{
 };
 use std::collections::{BTreeSet, HashMap};
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use netsim::config::LabConfig;
@@ -45,12 +47,15 @@ pub struct SimState {
     pub binaries: HashMap<String, PathBuf>,
     pub work_dir: PathBuf,
     pub sim_name: String,
+    pub verbose: bool,
     relay_assets: HashMap<String, RelayRuntimeAssets>,
 }
 
 struct GenericProcess {
     child: std::process::Child,
     parser: Option<ParserConfig>,
+    stdout_pump: Option<thread::JoinHandle<Result<()>>>,
+    stderr_pump: Option<thread::JoinHandle<Result<()>>>,
 }
 
 #[derive(Clone)]
@@ -188,6 +193,12 @@ impl Drop for SimState {
         for sp in self.spawned.values_mut() {
             let _ = sp.child.kill();
             let _ = sp.child.wait();
+            if let Some(h) = sp.stdout_pump.take() {
+                let _ = join_pump(h, "drop stdout pump");
+            }
+            if let Some(h) = sp.stderr_pump.take() {
+                let _ = join_pump(h, "drop stderr pump");
+            }
         }
     }
 }
@@ -201,6 +212,7 @@ pub async fn run_sims(
     sim_inputs: Vec<PathBuf>,
     work_dir: PathBuf,
     binary_overrides: Vec<String>,
+    verbose: bool,
 ) -> Result<()> {
     let sims = expand_sim_inputs(&sim_inputs)?;
     if sims.is_empty() {
@@ -260,7 +272,8 @@ pub async fn run_sims(
         progress.updated_at = format_timestamp(SystemTime::now());
         write_progress(&run_root, &progress).await?;
 
-        let outcome = run_single_sim(sim, run_root.clone(), binary_overrides.clone()).await?;
+        let outcome =
+            run_single_sim(sim, run_root.clone(), binary_overrides.clone(), verbose).await?;
         sim_dir_names.push(outcome.sim_dir_name.clone());
         if let Some(item) = progress.simulations.get_mut(idx) {
             item.status = outcome.summary.status.clone();
@@ -334,6 +347,7 @@ async fn run_single_sim(
     sim_path: PathBuf,
     run_root: PathBuf,
     binary_overrides: Vec<String>,
+    verbose: bool,
 ) -> Result<SimRunOutcome> {
     let started_at = SystemTime::now();
     let started_at_str = format_timestamp(started_at);
@@ -400,6 +414,7 @@ async fn run_single_sim(
         parsed_sim,
         setup.clone(),
         binary_overrides,
+        verbose,
     )
     .await;
 
@@ -556,6 +571,7 @@ async fn execute_single_sim(
     sim: SimFile,
     setup_base: SimSetupSummary,
     binary_overrides: Vec<String>,
+    verbose: bool,
 ) -> Result<SimSetupSummary> {
     // ── Resolve binaries ─────────────────────────────────────────────────
     let shared_binaries = load_shared_binaries(&sim, sim_path)
@@ -599,6 +615,7 @@ async fn execute_single_sim(
         binaries: binary_paths,
         work_dir: run_work_dir.to_path_buf(),
         sim_name: sim_name.to_string(),
+        verbose,
         relay_assets: HashMap::new(),
     };
 
@@ -903,11 +920,11 @@ fn summarized_sim_error(summary: &SimSummary) -> Option<String> {
 }
 
 fn find_last_error_line_in_out_logs(run_work_dir: &Path) -> Option<String> {
-    let mut out_logs = Vec::new();
-    collect_out_log_paths(run_work_dir, &mut out_logs);
-    out_logs.sort();
+    let mut logs = Vec::new();
+    collect_error_log_paths(run_work_dir, &mut logs);
+    logs.sort();
     let mut last: Option<String> = None;
-    for path in out_logs {
+    for path in logs {
         if let Some(line) = last_error_line_in_file(&path) {
             last = Some(line);
         }
@@ -915,7 +932,7 @@ fn find_last_error_line_in_out_logs(run_work_dir: &Path) -> Option<String> {
     last
 }
 
-fn collect_out_log_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+fn collect_error_log_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     let read = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(_) => return,
@@ -923,11 +940,13 @@ fn collect_out_log_paths(dir: &Path, out: &mut Vec<PathBuf>) {
     for ent in read.flatten() {
         let path = ent.path();
         if path.is_dir() {
-            collect_out_log_paths(&path, out);
+            collect_error_log_paths(&path, out);
             continue;
         }
-        if path.file_name().and_then(|s| s.to_str()) == Some("out.log") {
-            out.push(path);
+        if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+            if name == "stderr.log" || name == "stdout.log" || name == "out.log" {
+                out.push(path);
+            }
         }
     }
 }
@@ -1120,19 +1139,35 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
                 "sim: run command"
             );
             let mut cmd = prepare_cmd(&cmd_parts, &step.env, state)?;
-            let log_path = node_out_log_path(&state.work_dir, device)?;
-            let log = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .with_context(|| format!("open step log {}", log_path.display()))?;
-            let log2 = log.try_clone().context("clone run log file")?;
-            cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log2));
-            let status = state.lab.run_on(device, cmd)?;
+            let logs = node_stdio_log_paths(&state.work_dir, device)?;
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = state
+                .lab
+                .spawn_unmanaged_on(device, cmd)
+                .with_context(|| format!("spawn run on '{}'", device))?;
+            let stdout = child.stdout.take().context("take run stdout")?;
+            let stderr = child.stderr.take().context("take run stderr")?;
+            let out_pump = spawn_pipe_pump(
+                stdout,
+                logs.stdout.clone(),
+                format!("[{device}:out]"),
+                state.verbose,
+                None,
+            );
+            let err_pump = spawn_pipe_pump(
+                stderr,
+                logs.stderr.clone(),
+                format!("[{device}:err]"),
+                state.verbose,
+                None,
+            );
+            let status = child.wait().context("wait run child")?;
+            join_pump(out_pump, "run stdout pump")?;
+            join_pump(err_pump, "run stderr pump")?;
             if !status.success() {
                 bail!("'run' on '{}' failed: {:?}", device, status);
             }
-            if let Some(parser_cfg) = build_parser_config(step, device, &log_path)? {
+            if let Some(parser_cfg) = build_parser_config(step, device, &logs.stdout)? {
                 apply_parser_result(state, parser_cfg)?;
             }
         }
@@ -1166,15 +1201,30 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
                 "sim: spawn command"
             );
             let mut cmd = prepare_cmd(&cmd_parts, &step.env, state)?;
-            let log_path = node_out_log_path(&state.work_dir, device)?;
+            let logs = node_stdio_log_paths(&state.work_dir, device)?;
+            let mut stdout_pump = None;
+            let mut stderr_pump = None;
             if step.captures.is_empty() {
-                let log = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .with_context(|| format!("open step log {}", log_path.display()))?;
-                let log2 = log.try_clone().context("clone spawn log file")?;
-                cmd.stdout(Stdio::from(log)).stderr(Stdio::from(log2));
+                if state.verbose {
+                    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+                } else {
+                    let out_log = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&logs.stdout)
+                        .with_context(|| {
+                            format!("open step stdout log {}", logs.stdout.display())
+                        })?;
+                    let err_log = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&logs.stderr)
+                        .with_context(|| {
+                            format!("open step stderr log {}", logs.stderr.display())
+                        })?;
+                    cmd.stdout(Stdio::from(out_log))
+                        .stderr(Stdio::from(err_log));
+                }
             } else {
                 cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
             }
@@ -1190,29 +1240,52 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
 
             if !step.captures.is_empty() {
                 let stdout = child.stdout.take().context("take child stdout")?;
-                if let Some(stderr) = child.stderr.take() {
-                    let err_log = log_path.clone();
-                    std::thread::spawn(move || -> Result<()> {
-                        let mut reader = BufReader::new(stderr);
-                        let mut line = String::new();
-                        loop {
-                            line.clear();
-                            let n = reader.read_line(&mut line)?;
-                            if n == 0 {
-                                break;
-                            }
-                            append_line(&err_log, &line)?;
-                        }
-                        Ok(())
-                    });
-                }
-                read_captures(stdout, step, id, &mut state.env, &log_path)?;
+                let stderr = child.stderr.take().context("take child stderr")?;
+                let (tx, rx) = mpsc::channel();
+                stdout_pump = Some(spawn_pipe_pump(
+                    stdout,
+                    logs.stdout.clone(),
+                    format!("[{device}:out]"),
+                    state.verbose,
+                    Some(tx),
+                ));
+                stderr_pump = Some(spawn_pipe_pump(
+                    stderr,
+                    logs.stderr.clone(),
+                    format!("[{device}:err]"),
+                    state.verbose,
+                    None,
+                ));
+                read_captures(rx, step, id, &mut state.env)?;
+            } else if state.verbose {
+                let stdout = child.stdout.take().context("take child stdout")?;
+                let stderr = child.stderr.take().context("take child stderr")?;
+                stdout_pump = Some(spawn_pipe_pump(
+                    stdout,
+                    logs.stdout.clone(),
+                    format!("[{device}:out]"),
+                    state.verbose,
+                    None,
+                ));
+                stderr_pump = Some(spawn_pipe_pump(
+                    stderr,
+                    logs.stderr.clone(),
+                    format!("[{device}:err]"),
+                    state.verbose,
+                    None,
+                ));
             }
 
-            let parser = build_parser_config(step, device, &log_path)?;
-            state
-                .spawned
-                .insert(id.to_string(), GenericProcess { child, parser });
+            let parser = build_parser_config(step, device, &logs.stdout)?;
+            state.spawned.insert(
+                id.to_string(),
+                GenericProcess {
+                    child,
+                    parser,
+                    stdout_pump,
+                    stderr_pump,
+                },
+            );
         }
 
         // ── wait ─────────────────────────────────────────────────────────
@@ -1259,6 +1332,14 @@ fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
                     }
                     sp.parser.clone()
                 };
+                if let Some(sp) = state.spawned.get_mut(id) {
+                    if let Some(h) = sp.stdout_pump.take() {
+                        join_pump(h, "spawn stdout pump")?;
+                    }
+                    if let Some(h) = sp.stderr_pump.take() {
+                        join_pump(h, "spawn stderr pump")?;
+                    }
+                }
                 if let Some(parser_cfg) = parser {
                     apply_parser_result(state, parser_cfg)?;
                 }
@@ -1505,11 +1586,10 @@ fn apply_parser_result(state: &mut SimState, parser: ParserConfig) -> Result<()>
 }
 
 fn read_captures(
-    stdout: std::process::ChildStdout,
+    rx: mpsc::Receiver<String>,
     step: &Step,
     step_id: &str,
     env: &mut SimEnv,
-    log_path: &Path,
 ) -> Result<()> {
     let mut pending: HashMap<String, regex::Regex> = step
         .captures
@@ -1527,10 +1607,7 @@ fn read_captures(
         return Ok(());
     }
 
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let line = line.context("read spawn stdout")?;
-        append_line(log_path, &format!("{}\n", line))?;
+    for line in rx {
         let mut matched = vec![];
         for (name, re) in &pending {
             if let Some(caps) = re.captures(&line) {
@@ -1561,16 +1638,50 @@ fn read_captures(
     Ok(())
 }
 
-fn append_line(path: &Path, line: &str) -> Result<()> {
-    use std::io::Write;
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open append log {}", path.display()))?;
-    f.write_all(line.as_bytes())
-        .with_context(|| format!("append log {}", path.display()))?;
-    Ok(())
+fn spawn_pipe_pump<R: Read + Send + 'static>(
+    reader: R,
+    path: PathBuf,
+    prefix: String,
+    verbose: bool,
+    line_tx: Option<mpsc::Sender<String>>,
+) -> thread::JoinHandle<Result<()>> {
+    thread::spawn(move || -> Result<()> {
+        let mut out = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("open append log {}", path.display()))?;
+        let mut reader = BufReader::new(reader);
+        let mut buf = Vec::new();
+        loop {
+            buf.clear();
+            let n = reader
+                .read_until(b'\n', &mut buf)
+                .with_context(|| format!("read pipe for {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            out.write_all(&buf)
+                .with_context(|| format!("append log {}", path.display()))?;
+            let line = String::from_utf8_lossy(&buf)
+                .trim_end_matches('\n')
+                .to_string();
+            if verbose {
+                println!("{prefix} {line}");
+            }
+            if let Some(tx) = &line_tx {
+                let _ = tx.send(line);
+            }
+        }
+        Ok(())
+    })
+}
+
+fn join_pump(handle: thread::JoinHandle<Result<()>>, label: &str) -> Result<()> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("{label} panicked"))?
+        .with_context(|| label.to_string())
 }
 
 fn shell_join(parts: &[String]) -> String {
@@ -1596,11 +1707,19 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\"'\"'"))
 }
 
-fn node_out_log_path(work_dir: &Path, node: &str) -> Result<PathBuf> {
+struct NodeStdioLogs {
+    stdout: PathBuf,
+    stderr: PathBuf,
+}
+
+fn node_stdio_log_paths(work_dir: &Path, node: &str) -> Result<NodeStdioLogs> {
     let node_dir = work_dir.join("nodes").join(sanitize_for_filename(node));
     std::fs::create_dir_all(&node_dir)
         .with_context(|| format!("create node log dir {}", node_dir.display()))?;
-    Ok(node_dir.join("out.log"))
+    Ok(NodeStdioLogs {
+        stdout: node_dir.join("stdout.log"),
+        stderr: node_dir.join("stderr.log"),
+    })
 }
 
 fn collect_sim_logs(sim_dir: &Path) -> Result<Vec<SimLogEntry>> {

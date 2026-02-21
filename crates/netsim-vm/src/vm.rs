@@ -54,6 +54,7 @@ pub struct RunVmArgs {
     pub sim_inputs: Vec<PathBuf>,
     pub work_dir: PathBuf,
     pub binary_overrides: Vec<String>,
+    pub verbose: bool,
     pub recreate: bool,
     pub netsim_version: String,
 }
@@ -459,6 +460,9 @@ fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
     for ov in &staged_overrides {
         parts.push("--binary".to_string());
         parts.push(ov.clone());
+    }
+    if args.verbose {
+        parts.push("-v".to_string());
     }
     for sim in &args.sim_inputs {
         parts.push(to_guest_sim_path(&vm.workspace, sim)?);
