@@ -182,6 +182,12 @@ after confirmation commit with "feat: short description" etc and some details af
   - Sim perf now includes a per-node transfer throughput table (`up/down`) derived from transfer results, with detailed transfer rows retained below.
   - Log viewer no longer attempts to fetch/render qlog files; qlog entries remain discoverable in metadata but are ignored by `LogsTab`/timeline fetch paths.
 - VM env forwarding now passes `NETSIM_RUST_LOG` (and `RUST_LOG`) into guest `netsim run` execution (`crates/netsim-vm/src/vm.rs`) so transfer/process logging controls work in VM runs as expected.
+- Embedded UI server now supports log-oriented HTTP features (`src/serve.rs`):
+  - Byte range requests (`Range: bytes=...`) for artifact files with `206 Partial Content` and `Content-Range` responses.
+  - Per-file metadata query via `?__meta=1` returning JSON with `size_bytes` and `line_count`.
+- UI log viewer now uses metadata-first + explicit preview loading (`ui/src/components/LogsTab.tsx`):
+  - Shows size/line-count before reading content and only loads log previews on user action.
+  - Uses range fetches for log/timeline preview reads to avoid full-file loads for large artifacts (`ui/src/components/TimelineTab.tsx`).
 - Ported sim file naming cleanup:
   - `iroh-integration/sims-ported/ported-*.toml` files were renamed in-place to remove the `ported-` prefix while keeping them in the same folder; manifest docs and in-file `name` values were updated accordingly.
 - Ported legacy iroh/chuck JSON suites from `resources/iroh-sims` into current TOML format under `iroh-integration/sims-ported/` (63 case files) with conversion notes in `iroh-integration/sims-ported/PORTED_FROM_RESOURCES.md`.

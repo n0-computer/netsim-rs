@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SimLogEntry } from '../types'
+const PREVIEW_BYTES = 256 * 1024
 
 type EventRow = {
   node: string
@@ -46,7 +47,11 @@ export default function TimelineTab({ base, logs }: Props) {
     const transferLogs = logs.filter((l) => l.kind === 'transfer')
     Promise.all(
       transferLogs.map(async (log) => {
-        const r = await fetch(`${base}${log.path}`)
+        const r = await fetch(`${base}${log.path}`, {
+          headers: {
+            Range: `bytes=-${PREVIEW_BYTES}`,
+          },
+        })
         if (!r.ok) return [] as EventRow[]
         const text = await r.text()
         return parseTransferEvents(log.node, text)
