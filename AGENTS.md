@@ -125,6 +125,9 @@ when a task is ready run the checks then ask to commit, don't commit without ask
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
 
 ## Recent Changes
+- Relay/QAD runtime wiring improved for transfer sims:
+  - Sim runner now auto-provisions per-sim relay runtime assets for relay spawn steps (self-signed cert/key + generated `relay.cfg` with `enable_quic_addr_discovery = true` and manual TLS paths) and auto-appends `--config-path` when spawning the configured `relay` binary (`src/sim/runner.rs`).
+  - Transfer steps now pass `--env dev` unconditionally for provider/fetcher so local self-signed relay certs work in netsim runs without changing sim relay URLs (`src/sim/transfer.rs`).
 - Added interactive inspect/debug CLI workflow in `netsim`:
   - New `netsim inspect <sim-or-topology.toml> [--work-dir ...]` builds only topology (no run steps), writes inspect session metadata to `<work-dir>/inspect/<prefix>.json`, and prints shell exports (`NETSIM_INSPECT`, per-node `NETSIM_NS_*` and `NETSIM_IP_*`).
   - `netsim inspect` now stays running until Ctrl-C; it spawns per-node namespace keepers and writes their PIDs into the inspect session so follow-up commands can enter namespaces while inspect is active.

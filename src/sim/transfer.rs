@@ -68,13 +68,11 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         .stderr(Stdio::from(p_log2));
 
     add_env_to_cmd(&mut provider_cmd, state, &format!("{}_provider", step_id));
+    provider_cmd.args(["--env", "dev"]);
+    provider_args.push("--env".to_string());
+    provider_args.push("dev".to_string());
     if let Some(relay_url) = &step.relay_url {
         let url = state.env.interpolate_str(relay_url)?;
-        if should_use_transfer_dev_env(&url) {
-            provider_cmd.args(["--env", "dev"]);
-            provider_args.push("--env".to_string());
-            provider_args.push("dev".to_string());
-        }
         provider_cmd.args(["--relay-url", &url]);
         provider_args.push("--relay-url".to_string());
         provider_args.push(url);
@@ -137,13 +135,11 @@ pub fn start_transfer(state: &mut SimState, step: &Step, binary: &Path) -> Resul
         }
         fetcher_cmd.arg(&bound.endpoint_id);
         fetcher_args.push(bound.endpoint_id.clone());
+        fetcher_cmd.args(["--env", "dev"]);
+        fetcher_args.push("--env".to_string());
+        fetcher_args.push("dev".to_string());
         if let Some(relay_url) = &step.relay_url {
             let url = state.env.interpolate_str(relay_url)?;
-            if should_use_transfer_dev_env(&url) {
-                fetcher_cmd.args(["--env", "dev"]);
-                fetcher_args.push("--env".to_string());
-                fetcher_args.push("dev".to_string());
-            }
             fetcher_cmd.args(["--remote-relay-url", &url]);
             fetcher_cmd.args(["--relay-url", &url]);
             fetcher_args.push("--remote-relay-url".to_string());
@@ -259,7 +255,8 @@ fn add_env_to_cmd(cmd: &mut std::process::Command, state: &SimState, keylog_suff
         cmd.env(k, v);
     }
     cmd.env("RUST_LOG_STYLE", "never");
-    let rust_log = std::env::var("NETSIM_RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let rust_log = std::env::var("NETSIM_RUST_LOG")
+        .unwrap_or_else(|_| "iroh=info,iroh::_events=debug".to_string());
     cmd.env("RUST_LOG", rust_log);
     let keylog = state
         .work_dir
@@ -407,10 +404,6 @@ fn node_transfer_dir(work_dir: &Path, node: &str, step_id: &str, role: &str) -> 
         ))
 }
 
-fn should_use_transfer_dev_env(relay_url: &str) -> bool {
-    relay_url.trim_start().starts_with("http://")
-}
-
 fn sanitize_for_file(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -451,13 +444,6 @@ mod tests {
         let parsed = parse_endpoint_bound_line(line).expect("endpoint bound");
         assert_eq!(parsed.endpoint_id, "abc");
         assert!(parsed.direct_addr.is_none());
-    }
-
-    #[test]
-    fn transfer_dev_env_selected_for_plain_http_relay_url() {
-        assert!(should_use_transfer_dev_env("http://203.0.1.2:3340"));
-        assert!(should_use_transfer_dev_env("  http://localhost:3340"));
-        assert!(!should_use_transfer_dev_env("https://relay.example.com"));
     }
 
     #[test]

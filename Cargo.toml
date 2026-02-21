@@ -31,6 +31,7 @@ dirs        = "5"
 ctrlc       = "3"
 webbrowser  = "1"
 sha2        = "0.10"
+rcgen       = "0.13"
 
 [dev-dependencies]
 serial_test = "3"
