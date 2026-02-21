@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 
 use netsim::check_caps;
-use netsim::serve::start_ui_server;
+use netsim::serve::{start_ui_server, DEFAULT_UI_BIND};
 
 #[derive(Parser)]
 #[command(name = "netsim", about = "Run a netsim simulation")]
@@ -42,7 +42,7 @@ enum Command {
         open: bool,
 
         /// Bind address for embedded UI server.
-        #[arg(long, default_value = "127.0.0.1:0")]
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
     },
     /// Serve embedded UI + work directory over HTTP.
@@ -51,7 +51,7 @@ enum Command {
         #[arg(long, default_value = ".netsim-work")]
         work_dir: PathBuf,
         /// Bind address for HTTP server.
-        #[arg(long, default_value = "127.0.0.1:8080")]
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
         /// Open browser after server start.
         #[arg(long, default_value_t = false)]

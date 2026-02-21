@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use netsim::serve::start_ui_server;
+use netsim::serve::{start_ui_server, DEFAULT_UI_BIND};
 
 #[derive(Parser)]
 #[command(name = "netsim-vm", about = "Standalone VM runner for netsim")]
@@ -47,14 +47,14 @@ enum Command {
         netsim_version: String,
         #[arg(long, default_value_t = false)]
         open: bool,
-        #[arg(long, default_value = "127.0.0.1:0")]
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
     },
     /// Serve embedded UI + work directory over HTTP.
     Serve {
         #[arg(long, default_value = ".netsim-work")]
         work_dir: PathBuf,
-        #[arg(long, default_value = "127.0.0.1:8080")]
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
         #[arg(long, default_value_t = false)]
         open: bool,
