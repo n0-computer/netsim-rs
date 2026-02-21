@@ -13,7 +13,7 @@ type EventRow = {
   details: string
   fields: string
   timeLabel: string
-  timeMs: number | null
+  timeMs: number
 }
 
 interface Props {
@@ -22,7 +22,7 @@ interface Props {
   onJumpToLog?: (target: { node: string; path: string; timeLabel: string }) => void
 }
 
-function tryParseJsonEvent(line: string): { kind: string; fields: string; timeLabel: string } | null {
+function tryParseJsonEvent(line: string): { kind: string; fields: string; timeLabel: string; timeMs: number } | null {
   try {
     const v = JSON.parse(line) as Record<string, unknown>
     if (typeof v.kind !== 'string') return null
@@ -30,8 +30,12 @@ function tryParseJsonEvent(line: string): { kind: string; fields: string; timeLa
       .filter(([k]) => k !== 'kind')
       .map(([k, val]) => `${k}=${typeof val === 'string' ? val : JSON.stringify(val)}`)
       .join(' ')
-    const timeLabel = typeof v.time === 'number' ? String(v.time) : ''
-    return { kind: v.kind, fields, timeLabel }
+    const ts = typeof v.timestamp === 'string' ? v.timestamp : null
+    if (ts) {
+      const ms = parseIsoMs(ts)
+      if (ms != null) return { kind: v.kind, fields, timeLabel: ts, timeMs: ms }
+    }
+    return null
   } catch {
     return null
   }
@@ -85,7 +89,7 @@ function parseLogEvents(node: string, path: string, text: string, offset: number
         details: stripped,
         fields: jsonEv.fields,
         timeLabel: jsonEv.timeLabel,
-        timeMs: typeof jsonEv.timeLabel === 'string' && jsonEv.timeLabel ? Number(jsonEv.timeLabel) : null,
+        timeMs: jsonEv.timeMs,
       })
       continue
     }
@@ -98,6 +102,8 @@ function parseLogEvents(node: string, path: string, text: string, offset: number
     const kind = parseIrohEventKind(fragment)
     if (!kind) continue
     const kv = parseIrohFields(fragment)
+    const parsedMs = parseIsoMs(m[1])
+    if (parsedMs == null) continue
     out.push({
       order: offset + idx++,
       node,
@@ -106,7 +112,7 @@ function parseLogEvents(node: string, path: string, text: string, offset: number
       details: stripped,
       fields: kv,
       timeLabel: m[1],
-      timeMs: parseIsoMs(m[1]),
+      timeMs: parsedMs,
     })
   }
   return out
@@ -137,7 +143,9 @@ export default function TimelineTab({ base, logs, onJumpToLog }: Props) {
       }),
     ).then((rows) => {
       if (!dead) {
-        const flat = rows.flat().sort((a, b) => a.order - b.order)
+        const flat = rows
+          .flat()
+          .sort((a, b) => a.timeMs - b.timeMs || a.order - b.order || a.node.localeCompare(b.node) || a.kind.localeCompare(b.kind))
         setEvents(flat)
         if (!flat.length) {
           setSelected(null)
@@ -160,8 +168,7 @@ export default function TimelineTab({ base, logs, onJumpToLog }: Props) {
 
   const nodes = useMemo(() => [...new Set(events.map((e) => e.node))].sort(), [events])
   const firstTimeMs = useMemo(() => {
-    const withTime = events.map((e) => e.timeMs).filter((v): v is number => v != null)
-    return withTime.length ? Math.min(...withTime) : null
+    return events.length ? Math.min(...events.map((e) => e.timeMs)) : null
   }, [events])
 
   const displayTime = (ev: EventRow): string => {
