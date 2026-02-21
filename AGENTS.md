@@ -127,8 +127,8 @@ after confirmation commit with "feat: short description" etc and some details af
 ## Recent Changes
 - Added interactive inspect/debug CLI workflow in `netsim`:
   - New `netsim inspect <sim-or-topology.toml> [--work-dir ...]` builds only topology (no run steps), writes inspect session metadata to `<work-dir>/inspect/<prefix>.json`, and prints shell exports (`NETSIM_INSPECT`, per-node `NETSIM_NS_*` and `NETSIM_IP_*`).
-  - New `netsim run-in <node> <cmd...>` runs a command inside a node namespace resolved from the active inspect session (via `--inspect` or `$NETSIM_INSPECT`).
-  - Inspect mode forces named netns backend and disables panic/atexit auto-cleanup for that process so labs remain available for interactive debugging until explicit `netsim cleanup --prefix <id>`.
+  - `netsim inspect` now stays running until Ctrl-C; it spawns per-node namespace keepers and writes their PIDs into the inspect session so follow-up commands can enter namespaces while inspect is active.
+  - New `netsim run-in <node> <cmd...>` uses inspect session metadata (via `--inspect` or `$NETSIM_INSPECT`) and executes commands through `nsenter -t <keeper-pid> -n -- ...`.
 - VM invocation ergonomics tightened in `Makefile.toml`:
   - `cargo make run-vm -- <sims...>` now prebuilds musl release artifacts for `netsim` and `examples/transfer`, then runs VM with `--netsim-version path:<target>/x86_64-unknown-linux-musl/release/netsim`.
   - `cargo make test-vm -- ...` now forwards args directly to `netsim-vm test` so flags like `--package` / `--test` are usable without awkward separator handling.

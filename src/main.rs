@@ -205,6 +205,7 @@ struct InspectSession {
     root_ns: String,
     node_namespaces: HashMap<String, String>,
     node_ips_v4: HashMap<String, String>,
+    node_keeper_pids: HashMap<String, u32>,
 }
 
 fn inspect_dir(work_dir: &std::path::Path) -> PathBuf {
@@ -241,11 +242,20 @@ fn load_topology_for_inspect(input: &std::path::Path) -> Result<(netsim::config:
     }
 }
 
+fn spawn_keeper_in_namespace(ns: &str) -> Result<u32> {
+    let mut cmd = ProcessCommand::new("sh");
+    cmd.args(["-lc", "while :; do sleep 3600; done"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = netsim::core::spawn_command_in_namespace(ns, cmd)
+        .with_context(|| format!("spawn namespace keeper in '{ns}'"))?;
+    Ok(child.id())
+}
+
 async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     check_caps()?;
-    std::env::set_var("NETSIM_NETNS_BACKEND", "named");
-    let resources = netsim::core::resources();
-    resources.set_cleanup_enabled(false);
+    install_signal_cleanup_handler(vec![])?;
 
     let (topo, is_sim) = load_topology_for_inspect(&input)?;
     let mut lab = netsim::Lab::from_config(topo.clone())
@@ -254,12 +264,14 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
 
     let mut node_namespaces = HashMap::new();
     let mut node_ips_v4 = HashMap::new();
+    let mut node_keeper_pids = HashMap::new();
 
     for router in &topo.router {
         let name = router.name.clone();
         let ns = lab
             .router_ns_name(&name)
             .with_context(|| format!("resolve router namespace for '{name}'"))?;
+        node_keeper_pids.insert(name.clone(), spawn_keeper_in_namespace(&ns)?);
         node_namespaces.insert(name.clone(), ns);
         if let Some(id) = lab.router_id(&name) {
             node_ips_v4.insert(name, lab.router_uplink_ip(id)?.to_string());
@@ -269,6 +281,7 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
         let ns = lab
             .device_ns_name(name)
             .with_context(|| format!("resolve device namespace for '{name}'"))?;
+        node_keeper_pids.insert(name.clone(), spawn_keeper_in_namespace(&ns)?);
         node_namespaces.insert(name.clone(), ns);
         if let Some(id) = lab.device_id(name) {
             node_ips_v4.insert(name.clone(), lab.device_ip(id)?.to_string());
@@ -281,7 +294,9 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
         root_ns: lab.root_namespace_name().to_string(),
         node_namespaces,
         node_ips_v4,
+        node_keeper_pids,
     };
+
     let session_dir = inspect_dir(&work_dir);
     std::fs::create_dir_all(&session_dir)
         .with_context(|| format!("create {}", session_dir.display()))?;
@@ -289,12 +304,12 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     std::fs::write(&session_path, serde_json::to_vec_pretty(&session)?)
         .with_context(|| format!("write {}", session_path.display()))?;
 
-    let mut ns_keys = session
+    let mut keys = session
         .node_namespaces
         .keys()
         .map(|k| k.to_string())
         .collect::<Vec<_>>();
-    ns_keys.sort();
+    keys.sort();
 
     println!(
         "inspect ready: {} ({})",
@@ -304,7 +319,7 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     println!("session file: {}", session_path.display());
     println!("export NETSIM_INSPECT={}", session.prefix);
     println!("export NETSIM_INSPECT_FILE={}", session_path.display());
-    for key in &ns_keys {
+    for key in &keys {
         if let Some(ns) = session.node_namespaces.get(key) {
             println!("export NETSIM_NS_{}={ns}", env_key_suffix(key));
         }
@@ -313,24 +328,27 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
         }
     }
     println!("cleanup: netsim cleanup --prefix {}", session.prefix);
-    Ok(())
+    println!("inspect active; press Ctrl-C to stop and clean up");
+    loop {
+        std::thread::sleep(Duration::from_secs(60));
+    }
 }
 
 fn resolve_inspect_ref(inspect: Option<String>) -> Result<String> {
     if let Some(value) = inspect {
-        let trimmed = value.trim().to_string();
+        let trimmed = value.trim();
         if trimmed.is_empty() {
             bail!("--inspect must not be empty");
         }
-        return Ok(trimmed);
+        return Ok(trimmed.to_string());
     }
     let from_env = std::env::var("NETSIM_INSPECT")
         .context("missing inspect session; set --inspect or NETSIM_INSPECT")?;
-    let trimmed = from_env.trim().to_string();
+    let trimmed = from_env.trim();
     if trimmed.is_empty() {
         bail!("NETSIM_INSPECT is set but empty");
     }
-    Ok(trimmed)
+    Ok(trimmed.to_string())
 }
 
 fn load_inspect_session(work_dir: &std::path::Path, inspect_ref: &str) -> Result<InspectSession> {
@@ -360,22 +378,26 @@ fn run_in_command(
     }
     let inspect_ref = resolve_inspect_ref(inspect)?;
     let session = load_inspect_session(&work_dir, &inspect_ref)?;
-    let ns = session
-        .node_namespaces
-        .get(&node)
-        .ok_or_else(|| {
-            anyhow!(
-                "node '{}' is not in inspect session '{}'",
-                node,
-                session.prefix
-            )
-        })?
-        .to_string();
-    let mut proc = ProcessCommand::new(&cmd[0]);
+    let pid = *session.node_keeper_pids.get(&node).ok_or_else(|| {
+        anyhow!(
+            "node '{}' is not in inspect session '{}'",
+            node,
+            session.prefix
+        )
+    })?;
+
+    let mut proc = ProcessCommand::new("nsenter");
+    proc.arg("-t")
+        .arg(pid.to_string())
+        .arg("-n")
+        .arg("--")
+        .arg(&cmd[0]);
     if cmd.len() > 1 {
         proc.args(&cmd[1..]);
     }
-    let status = netsim::core::run_command_in_namespace(&ns, proc)?;
+    let status = proc
+        .status()
+        .context("run command with nsenter for inspect session")?;
     if !status.success() {
         bail!("run-in command exited with status {}", status);
     }
