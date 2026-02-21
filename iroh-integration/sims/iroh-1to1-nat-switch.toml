@@ -1,0 +1,49 @@
+[sim]
+name     = "iroh-1to1-nat-switch"
+topology = "1to1-nat-switch"
+binaries = "iroh-defaults.toml"
+
+[[step]]
+action      = "spawn"
+id          = "relay"
+device      = "relay"
+cmd         = ["${binary.relay}", "--dev"]
+env         = { RUST_LOG = "iroh_relay=trace,iroh=trace,iroh_quinn=trace" }
+ready_after = "2s"
+
+[[step]]
+action = "link-down"
+device = "fetcher"
+interface = "eth1"
+
+[[step]]
+action    = "spawn"
+kind      = "iroh-transfer"
+id        = "xfer"
+provider  = "provider"
+fetcher   = "fetcher"
+relay_url = "http://$NETSIM_IP_relay:3340"
+
+[[step]]
+action   = "wait"
+duration = "5s"
+
+[[step]]
+action = "link-up"
+device = "fetcher"
+interface = "eth1"
+
+[[step]]
+action = "switch-route"
+device = "fetcher"
+to     = "eth1"
+
+[[step]]
+action = "link-down"
+device = "fetcher"
+interface = "eth0"
+
+[[step]]
+action = "wait-for"
+id     = "xfer"
+timeout = "45s"

@@ -268,7 +268,7 @@ pub async fn run_sims(
             item.runtime_ms = Some(outcome.summary.runtime_ms);
             item.sim_json = Some(format!("{}/sim.json", outcome.summary.sim_dir));
             item.sim = outcome.summary.sim.clone();
-            item.error = outcome.summary.error_line.clone();
+            item.error = summarized_sim_error(&outcome.summary);
         }
         progress.completed = outcomes.len() + 1;
         if outcome.success {
@@ -310,11 +310,22 @@ pub async fn run_sims(
         &outcomes,
     )?;
     write_run_manifest(&run_root, &run_manifest).await?;
-    if outcomes.iter().any(|outcome| !outcome.success) {
-        bail!(
-            "one or more simulations failed; see {}",
+    let failed: Vec<&SimRunOutcome> = outcomes.iter().filter(|outcome| !outcome.success).collect();
+    if !failed.is_empty() {
+        let mut msg = String::from("one or more simulations failed:");
+        for outcome in failed {
+            let detail = summarized_sim_error(&outcome.summary)
+                .unwrap_or_else(|| "unknown error".to_string());
+            msg.push_str(&format!(
+                "\n- {} ({}): {}",
+                outcome.summary.sim, outcome.summary.sim_dir, detail
+            ));
+        }
+        msg.push_str(&format!(
+            "\nsee {}",
             run_root.join("manifest.json").display()
-        );
+        ));
+        bail!("{msg}");
     }
     Ok(())
 }
@@ -754,7 +765,7 @@ fn build_run_manifest(
                     sim.sim_dir
                         .as_deref()
                         .and_then(|dir| by_sim_dir.get(dir))
-                        .and_then(|outcome| outcome.summary.error_line.clone())
+                        .and_then(|outcome| summarized_sim_error(&outcome.summary))
                 }),
             }
         })
@@ -882,6 +893,13 @@ fn extract_failure_info(err: &anyhow::Error) -> SimFailureInfo {
         message: format!("{err:#}"),
         step,
     }
+}
+
+fn summarized_sim_error(summary: &SimSummary) -> Option<String> {
+    summary
+        .error_line
+        .clone()
+        .or_else(|| summary.error.as_ref().map(|e| e.message.clone()))
 }
 
 fn find_last_error_line_in_out_logs(run_work_dir: &Path) -> Option<String> {
