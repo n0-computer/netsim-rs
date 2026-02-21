@@ -303,7 +303,7 @@ impl ResourceList {
 
     /// Removes links and namespaces that match `prefix`.
     pub fn cleanup_everything_with_prefix(&self, prefix: &str) {
-        println!("netsim cleanup: scanning prefix '{prefix}'");
+        debug!("netsim cleanup: scanning prefix '{prefix}'");
         cleanup_links_with_prefix_ip(prefix);
 
         let output = std::process::Command::new("ip")
@@ -319,7 +319,7 @@ impl ResourceList {
                 }
             }
         }
-        println!("netsim cleanup: drop fd-registry entries with prefix '{prefix}'");
+        debug!("netsim cleanup: drop fd-registry entries with prefix '{prefix}'");
         netns::cleanup_registry_prefix(prefix);
     }
 
@@ -329,7 +329,7 @@ impl ResourceList {
             let st = self.state.lock().unwrap();
             st.prefixes.clone()
         };
-        println!(
+        debug!(
             "netsim cleanup: registered prefixes: {}",
             prefixes
                 .iter()
@@ -386,7 +386,7 @@ fn cleanup_links_with_prefix_ip(prefix: &str) {
 }
 
 fn delete_link_logged(name: &str) {
-    println!("netsim cleanup: ip link del {name}");
+    debug!("netsim cleanup: ip link del {name}");
     let out = std::process::Command::new("ip")
         .args(["link", "del", name])
         .output();
@@ -394,9 +394,9 @@ fn delete_link_logged(name: &str) {
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
             if msg.contains("Cannot find device") {
-                println!("netsim cleanup: link '{name}' already gone");
+                debug!("netsim cleanup: link '{name}' already gone");
             } else {
-                eprintln!("netsim cleanup: failed ip link del {name}: {msg}");
+                warn!("netsim cleanup: failed ip link del {name}: {msg}");
             }
         }
     }

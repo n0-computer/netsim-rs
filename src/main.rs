@@ -185,13 +185,13 @@ fn perform_cleanup(prefixes: &[String]) -> Result<()> {
     if !prefixes.is_empty() {
         resources.cleanup_everything();
     }
-    tracing::debug!("netsim cleanup: done");
+    tracing::info!("netsim cleanup: complete");
     Ok(())
 }
 
 fn install_signal_cleanup_handler(prefixes: Vec<String>) -> Result<()> {
     ctrlc::set_handler(move || {
-        eprintln!("netsim: received interrupt, running cleanup...");
+        tracing::debug!("netsim: received interrupt, running cleanup");
         let _ = perform_cleanup(&prefixes);
         // SAFETY: immediate process termination after best-effort cleanup in signal path.
         unsafe { nix::libc::_exit(130) };
