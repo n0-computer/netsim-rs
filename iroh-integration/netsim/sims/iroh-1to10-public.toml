@@ -1,5 +1,5 @@
 [[extends]]
-file = "iroh-defaults.toml"
+file = "../iroh-defaults.toml"
 
 [sim]
 name     = "iroh-1to10-public"

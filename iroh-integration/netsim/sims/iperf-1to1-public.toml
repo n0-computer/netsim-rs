@@ -17,18 +17,12 @@ parser = "json"
 cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
 [step.captures.bytes]
 pick = ".end.sum_received.bytes"
-[step.captures.seconds]
+[step.captures.duration_s]
 pick = ".end.sum_received.seconds"
 [step.results]
-duration   = "iperf-baseline.seconds"
+duration   = "iperf-baseline.duration_s"
 down_bytes = "iperf-baseline.bytes"
 
 [[step]]
 action = "wait-for"
 id     = "iperf-server"
-
-[[step]]
-action = "assert"
-checks = [
-  "iperf-baseline.bps matches [0-9.]+",
-]

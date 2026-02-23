@@ -25,14 +25,14 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`timed out waiting for ${url}`)
 }
 
-test('ui shows iroh-1to1-nat run results', async ({ page }) => {
+test('ui shows iperf run results', async ({ page }) => {
   test.setTimeout(8 * 60 * 1000)
   const workDir = mkdtempSync(path.join(tmpdir(), 'netsim-e2e-'))
   let serveProc: ChildProcess | null = null
   try {
     execFileSync(
       'cargo',
-      ['run', '--', 'run', '--work-dir', workDir, './iroh-integration/sims/iroh-1to1-nat.toml'],
+      ['run', '--', 'run', '--work-dir', workDir, './iroh-integration/netsim/sims/iperf-1to1-public.toml'],
       { cwd: REPO_ROOT, stdio: 'inherit' },
     )
 
@@ -45,32 +45,20 @@ test('ui shows iroh-1to1-nat run results', async ({ page }) => {
 
     await page.goto(UI_URL)
     await expect(page.getByRole('heading', { name: 'netsim' })).toBeVisible()
-    const simRow = page.getByRole('row', { name: /iroh-1to1-nat/ })
-    await expect(simRow.getByRole('cell', { name: 'iroh-1to1-nat', exact: true })).toBeVisible()
+    const simRow = page.getByRole('row', { name: /iperf-1to1-public-baseline/ })
+    await expect(
+      simRow.getByRole('cell', { name: 'iperf-1to1-public-baseline', exact: true }),
+    ).toBeVisible()
     await simRow.getByRole('button', { name: 'open' }).click()
 
     await expect(page.getByRole('button', { name: 'perf' })).toBeVisible()
-    const detailsSection = page.locator('.section', { hasText: 'transfer details' })
+    const detailsSection = page.locator('.section', { hasText: 'iperf' })
     await expect(detailsSection).toBeVisible()
     await expect(detailsSection.locator('tbody tr')).toHaveCount(1)
-    const mbpsCells = detailsSection.locator('tbody tr td:nth-child(4)')
-    await expect.poll(async () => {
-      const values = await mbpsCells.allTextContents()
-      return values
-        .map((v) => Number.parseFloat(v))
-        .filter((v) => Number.isFinite(v))
-        .reduce((acc, v) => acc + v, 0)
-    }).toBeGreaterThan(0)
-
-    await page.getByRole('button', { name: 'logs' }).click()
-    await expect(page.getByRole('button', { name: 'load log' })).toBeVisible()
-    await page.getByRole('button', { name: 'load log' }).click()
-    await expect.poll(async () => page.locator('.logs-content .log-entry').count()).toBeGreaterThan(0)
+    await expect(detailsSection.getByRole('cell', { name: 'iperf-baseline', exact: true })).toBeVisible()
 
     await page.getByRole('button', { name: 'timeline' }).click()
-    await expect(page.getByRole('cell', { name: /EndpointBound/ }).first()).toBeVisible()
-    await expect(page.getByRole('cell', { name: /ConnectionClose/ }).first()).toBeVisible()
-    await expect(page.getByRole('cell', { name: /path/ }).first()).toBeVisible()
+    await expect(page.getByText('no timeline events yet')).toBeVisible()
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')

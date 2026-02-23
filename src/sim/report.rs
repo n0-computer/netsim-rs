@@ -18,11 +18,13 @@ pub struct StepResultRecord {
 }
 
 impl StepResultRecord {
-    /// Parse duration as microseconds → seconds.
+    /// Parse duration as either microseconds (legacy) or seconds (float).
     pub fn elapsed_s(&self) -> Option<f64> {
         let s = self.duration_raw.as_deref()?;
-        let us: u64 = s.parse().ok()?;
-        Some(us as f64 / 1_000_000.0)
+        if let Ok(us) = s.parse::<u64>() {
+            return Some(us as f64 / 1_000_000.0);
+        }
+        s.parse::<f64>().ok()
     }
 
     /// Parse down_bytes as u64.

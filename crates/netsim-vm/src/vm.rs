@@ -1,5 +1,8 @@
 use crate::util::{set_executable, stage_binary_overrides};
 use anyhow::{anyhow, bail, Context, Result};
+use netsim::assets::parse_binary_overrides;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs::File;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -431,6 +434,7 @@ fn down(vm: &VmConfig) -> Result<()> {
 
 fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
     let guest_exe = ensure_guest_runner_binary(vm, &args.netsim_version)?;
+    let auto_build_overrides = assemble_guest_build_overrides(vm, args)?;
     let staged_overrides = stage_binary_overrides(
         &args.binary_overrides,
         &vm.work_dir,
@@ -457,6 +461,10 @@ fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
         "/work".to_string(),
     ]);
 
+    for ov in &auto_build_overrides {
+        parts.push("--binary".to_string());
+        parts.push(ov.clone());
+    }
     for ov in &staged_overrides {
         parts.push("--binary".to_string());
         parts.push(ov.clone());
@@ -470,6 +478,334 @@ fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
 
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
     ssh_cmd(vm, &refs)
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+struct VmBinarySpec {
+    name: String,
+    mode: Option<String>,
+    path: Option<PathBuf>,
+    url: Option<String>,
+    repo: Option<String>,
+    commit: Option<String>,
+    example: Option<String>,
+    bin: Option<String>,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default, rename = "all-features")]
+    all_features: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct VmExtends {
+    file: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct VmSimMeta {
+    binaries: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct VmSimFile {
+    #[serde(default)]
+    sim: VmSimMeta,
+    #[serde(default)]
+    extends: Vec<VmExtends>,
+    #[serde(default, rename = "binary")]
+    binaries: Vec<VmBinarySpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VmBuildRequest {
+    source_dir: PathBuf,
+    example: Option<String>,
+    bin: Option<String>,
+    features: Vec<String>,
+    all_features: bool,
+}
+
+fn assemble_guest_build_overrides(vm: &VmConfig, args: &RunVmArgs) -> Result<Vec<String>> {
+    let user_override_names = parse_binary_overrides(&args.binary_overrides)?
+        .into_keys()
+        .collect::<std::collections::HashSet<_>>();
+    let sim_files = expand_vm_sim_inputs(&args.sim_inputs)?;
+    let mut requested: HashMap<String, VmBuildRequest> = HashMap::new();
+    let mut first_seen: HashMap<String, PathBuf> = HashMap::new();
+
+    for sim_path in sim_files {
+        let (sim, sim_root) = load_vm_sim(&sim_path)?;
+        let merged = merged_vm_binary_specs(&sim, &sim_path)?;
+        for spec in merged.into_values() {
+            if user_override_names.contains(&spec.name) {
+                continue;
+            }
+            if vm_binary_mode(&spec)? != "build" {
+                continue;
+            }
+            if spec.repo.is_some() {
+                bail!(
+                    "VM auto-override does not support repo-based build spec '{}' in {}",
+                    spec.name,
+                    sim_path.display()
+                );
+            }
+            let source_dir = resolve_vm_build_source_dir(&spec, &sim_root)?;
+            let req = VmBuildRequest {
+                source_dir,
+                example: spec.example.clone(),
+                bin: spec.bin.clone(),
+                features: spec.features.clone(),
+                all_features: spec.all_features,
+            };
+            if let Some(existing) = requested.get(&spec.name) {
+                if existing != &req {
+                    let first = first_seen
+                        .get(&spec.name)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    bail!(
+                        "duplicate build spec '{}' differs across sims: {} vs {}",
+                        spec.name,
+                        first,
+                        sim_path.display()
+                    );
+                }
+                continue;
+            }
+            first_seen.insert(spec.name.clone(), sim_path.clone());
+            requested.insert(spec.name.clone(), req);
+        }
+    }
+
+    let mut names: Vec<String> = requested.keys().cloned().collect();
+    names.sort();
+    let mut out = Vec::new();
+    for name in names {
+        let req = requested
+            .get(&name)
+            .ok_or_else(|| anyhow!("missing build request for '{}'", name))?;
+        let guest_path = build_vm_binary_and_guest_path(vm, &name, req)?;
+        out.push(format!("{name}:path:{guest_path}"));
+    }
+    Ok(out)
+}
+
+fn expand_vm_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut sims = Vec::new();
+    for input in inputs {
+        if input.is_file() {
+            if input.extension().and_then(|s| s.to_str()) == Some("toml") {
+                sims.push(input.clone());
+            }
+            continue;
+        }
+        if input.is_dir() {
+            for entry in std::fs::read_dir(input)
+                .with_context(|| format!("read sim dir {}", input.display()))?
+            {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                    sims.push(path);
+                }
+            }
+            continue;
+        }
+        bail!("sim input path does not exist: {}", input.display());
+    }
+    sims.sort();
+    sims.dedup();
+    Ok(sims)
+}
+
+fn load_vm_sim(sim_path: &Path) -> Result<(VmSimFile, PathBuf)> {
+    let text = std::fs::read_to_string(sim_path)
+        .with_context(|| format!("read sim {}", sim_path.display()))?;
+    let sim: VmSimFile =
+        toml::from_str(&text).with_context(|| format!("parse sim {}", sim_path.display()))?;
+    let root = find_ancestor_with_file(sim_path, "Cargo.toml")
+        .unwrap_or_else(|| sim_path.parent().unwrap_or(Path::new(".")).to_path_buf());
+    Ok((sim, root))
+}
+
+fn merged_vm_binary_specs(
+    sim: &VmSimFile,
+    sim_path: &Path,
+) -> Result<HashMap<String, VmBinarySpec>> {
+    let mut merged = HashMap::new();
+    for spec in load_vm_extends_binaries(sim, sim_path)?
+        .into_iter()
+        .chain(load_vm_shared_binaries(sim, sim_path)?)
+        .chain(sim.binaries.clone())
+    {
+        merged.insert(spec.name.clone(), spec);
+    }
+    Ok(merged)
+}
+
+fn load_vm_extends_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBinarySpec>> {
+    let sim_dir = sim_path.parent().unwrap_or(Path::new("."));
+    let mut out = Vec::new();
+    for ext in &sim.extends {
+        let path = sim_dir.join(&ext.file);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("read extends file {}", path.display()))?;
+        let parsed: VmSimFile = toml::from_str(&text)
+            .with_context(|| format!("parse extends file {}", path.display()))?;
+        out.extend(parsed.binaries);
+    }
+    Ok(out)
+}
+
+fn load_vm_shared_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBinarySpec>> {
+    #[derive(Deserialize, Default)]
+    struct BinaryFile {
+        #[serde(default, rename = "binary")]
+        binaries: Vec<VmBinarySpec>,
+    }
+
+    let Some(ref_name) = sim.sim.binaries.as_deref() else {
+        return Ok(vec![]);
+    };
+    let sim_dir = sim_path.parent().unwrap_or(Path::new("."));
+    let path = sim_dir.join(ref_name);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("read shared binaries file {}", path.display()))?;
+    let parsed: BinaryFile = toml::from_str(&text).context("parse shared binaries file")?;
+    Ok(parsed.binaries)
+}
+
+fn vm_binary_mode(spec: &VmBinarySpec) -> Result<&str> {
+    if let Some(mode) = spec.mode.as_deref() {
+        return Ok(mode);
+    }
+    if spec.path.is_some() {
+        return Ok("path");
+    }
+    if spec.url.is_some() {
+        return Ok("fetch");
+    }
+    if spec.repo.is_some() || spec.example.is_some() || spec.bin.is_some() {
+        return Ok("build");
+    }
+    bail!(
+        "binary '{}' has no mode and no source fields (expected build|path|fetch)",
+        spec.name
+    )
+}
+
+fn resolve_vm_build_source_dir(spec: &VmBinarySpec, default_root: &Path) -> Result<PathBuf> {
+    if let Some(path) = &spec.path {
+        let resolved = if path.is_absolute() {
+            path.clone()
+        } else {
+            default_root.join(path)
+        };
+        if resolved.is_file() {
+            bail!(
+                "binary '{}' mode=build path must be a directory, got file {}",
+                spec.name,
+                resolved.display()
+            );
+        }
+        return Ok(resolved);
+    }
+    Ok(default_root.to_path_buf())
+}
+
+fn build_vm_binary_and_guest_path(
+    vm: &VmConfig,
+    name: &str,
+    req: &VmBuildRequest,
+) -> Result<String> {
+    let mut base_args: Vec<String> = vec![
+        "build".into(),
+        "--release".into(),
+        "--target".into(),
+        DEFAULT_MUSL_TARGET.into(),
+    ];
+    if req.all_features {
+        base_args.push("--all-features".into());
+    } else if !req.features.is_empty() {
+        base_args.push("--features".into());
+        base_args.push(req.features.join(","));
+    }
+
+    if let Some(example) = req.example.as_deref() {
+        let mut args = base_args.clone();
+        args.push("--example".into());
+        args.push(example.to_string());
+        run_checked(
+            Command::new("cargo")
+                .args(args)
+                .env("CARGO_TARGET_DIR", &vm.target_dir)
+                .current_dir(&req.source_dir),
+            "build VM example binary",
+        )?;
+        return Ok(format!(
+            "/target/{}/release/examples/{}",
+            DEFAULT_MUSL_TARGET, example
+        ));
+    }
+
+    if let Some(bin) = req.bin.as_deref() {
+        let mut args = base_args;
+        args.push("--bin".into());
+        args.push(bin.to_string());
+        run_checked(
+            Command::new("cargo")
+                .args(args)
+                .env("CARGO_TARGET_DIR", &vm.target_dir)
+                .current_dir(&req.source_dir),
+            "build VM bin binary",
+        )?;
+        return Ok(format!("/target/{}/release/{}", DEFAULT_MUSL_TARGET, bin));
+    }
+
+    let mut example_args = base_args.clone();
+    example_args.push("--example".into());
+    example_args.push(name.to_string());
+    let example_status = Command::new("cargo")
+        .args(example_args)
+        .env("CARGO_TARGET_DIR", &vm.target_dir)
+        .current_dir(&req.source_dir)
+        .status()
+        .context("spawn cargo build --example for VM")?;
+    if example_status.success() {
+        return Ok(format!(
+            "/target/{}/release/examples/{}",
+            DEFAULT_MUSL_TARGET, name
+        ));
+    }
+
+    let mut bin_args = base_args;
+    bin_args.push("--bin".into());
+    bin_args.push(name.to_string());
+    run_checked(
+        Command::new("cargo")
+            .args(bin_args)
+            .env("CARGO_TARGET_DIR", &vm.target_dir)
+            .current_dir(&req.source_dir),
+        "build VM fallback bin",
+    )?;
+    Ok(format!("/target/{}/release/{}", DEFAULT_MUSL_TARGET, name))
+}
+
+fn find_ancestor_with_file(path: &Path, file_name: &str) -> Option<PathBuf> {
+    let mut cur = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    loop {
+        if cur.join(file_name).is_file() {
+            return Some(cur);
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
 }
 
 fn ensure_guest_runner_binary(vm: &VmConfig, version: &str) -> Result<String> {

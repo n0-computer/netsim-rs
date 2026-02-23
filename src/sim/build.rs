@@ -1,48 +1,90 @@
-use anyhow::{bail, Context, Result};
-use netsim::assets::{resolve_binary_source_path, PathResolveMode};
+use anyhow::{anyhow, bail, Context, Result};
+use netsim::assets::{
+    resolve_binary_source_path, resolve_target_artifact, resolve_target_dir, PathResolveMode,
+};
 use netsim::binary_cache::cached_binary_for_url;
 use std::path::{Path, PathBuf};
 
 use crate::sim::BinarySpec;
 
 /// Resolve a binary spec to a local path, building or downloading as needed.
-pub async fn build_or_fetch_binary(spec: &BinarySpec, work_dir: &Path) -> Result<PathBuf> {
-    if let Some(path) = &spec.path {
-        let resolved = resolve_binary_source_path(path, PathResolveMode::from_env())?;
-        if !resolved.exists() {
-            bail!("binary path does not exist: {}", resolved.display());
+pub async fn build_or_fetch_binary(
+    spec: &BinarySpec,
+    work_dir: &Path,
+    build_root: &Path,
+    no_build: bool,
+) -> Result<PathBuf> {
+    let mode = binary_mode(spec)?;
+    match mode {
+        "path" => {
+            let path = spec
+                .path
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("binary '{}' mode=path requires path", spec.name))?;
+            let resolved = resolve_binary_source_path(path, PathResolveMode::from_env())?;
+            if !resolved.exists() {
+                bail!("binary path does not exist: {}", resolved.display());
+            }
+            Ok(resolved)
         }
-        return Ok(resolved);
+        "fetch" => {
+            let url = spec
+                .url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("binary '{}' mode=fetch requires url", spec.name))?;
+            download_binary(url, work_dir).await
+        }
+        "target" => {
+            let (name, is_example) = artifact_name_kind(&BuildArtifact::from_spec(spec));
+            let kind = if is_example { "examples" } else { "bin" };
+            let path = resolve_target_artifact(kind, &name, PathResolveMode::from_env())?;
+            if !path.exists() {
+                bail!(
+                    "target artifact for '{}' not found at {}",
+                    spec.name,
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        "build" => {
+            let artifact = BuildArtifact::from_spec(spec);
+            if no_build {
+                return expected_existing_build_artifact(spec, build_root);
+            }
+            if let Some(repo) = &spec.repo {
+                let commit = spec.commit.as_deref().unwrap_or("main");
+                build_from_git(repo, commit, &artifact, work_dir).await
+            } else {
+                let source_dir = if let Some(path) = &spec.path {
+                    resolve_binary_source_path(path, PathResolveMode::from_env())?
+                } else {
+                    build_root.to_path_buf()
+                };
+                build_local_binary(&artifact, &source_dir, work_dir).await
+            }
+        }
+        other => bail!(
+            "unsupported binary mode '{}' for '{}'; expected build|path|fetch|target",
+            other,
+            spec.name
+        ),
     }
-
-    if let Some(url) = &spec.url {
-        return download_binary(url, work_dir).await;
-    }
-
-    if let Some(repo) = &spec.repo {
-        let commit = spec.commit.as_deref().unwrap_or("main");
-        return build_from_git(
-            repo,
-            commit,
-            spec.example.as_deref(),
-            spec.bin.as_deref(),
-            work_dir,
-        )
-        .await;
-    }
-
-    bail!("binary spec must have url, path, or repo");
 }
 
 /// Build a named binary from a local checkout directory.
 ///
 /// Tries `cargo build --example <name>` first, then falls back to
 /// `cargo build --bin <name>`.
-pub async fn build_local_binary(name: &str, source_dir: &Path, work_dir: &Path) -> Result<PathBuf> {
+pub async fn build_local_binary(
+    artifact: &BuildArtifact,
+    source_dir: &Path,
+    work_dir: &Path,
+) -> Result<PathBuf> {
     let source = source_dir.to_path_buf();
     let work = work_dir.to_path_buf();
-    let name = name.to_string();
-    tokio::task::spawn_blocking(move || build_local_binary_blocking(&name, &source, &work))
+    let artifact = artifact.clone();
+    tokio::task::spawn_blocking(move || build_local_binary_blocking(&artifact, &source, &work))
         .await
         .context("join local binary build task")?
 }
@@ -55,66 +97,76 @@ async fn download_binary(url: &str, work_dir: &Path) -> Result<PathBuf> {
         .context("join cached URL binary task")?
 }
 
-fn build_local_binary_blocking(name: &str, source_dir: &Path, work_dir: &Path) -> Result<PathBuf> {
+#[derive(Debug, Clone)]
+pub struct BuildArtifact {
+    pub name: String,
+    pub example: Option<String>,
+    pub bin: Option<String>,
+    pub features: Vec<String>,
+    pub all_features: bool,
+}
+
+impl BuildArtifact {
+    fn from_spec(spec: &BinarySpec) -> Self {
+        Self {
+            name: spec.name.clone(),
+            example: spec.example.clone(),
+            bin: spec.bin.clone(),
+            features: spec.features.clone(),
+            all_features: spec.all_features,
+        }
+    }
+}
+
+fn build_local_binary_blocking(
+    artifact: &BuildArtifact,
+    source_dir: &Path,
+    work_dir: &Path,
+) -> Result<PathBuf> {
     if !source_dir.is_dir() {
         bail!(
             "local binary source is not a directory: {}",
             source_dir.display()
         );
     }
-    let target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
     let target_base = work_dir.join("build-target");
     std::fs::create_dir_all(&target_base).context("create local build target dir")?;
-
-    let mut example_args = vec!["build", "--release", "--example", name];
-    if let Some(t) = target.as_deref() {
-        example_args.extend(["--target", t]);
-    }
-    let example_status = std::process::Command::new("cargo")
-        .args(&example_args)
-        .env("CARGO_TARGET_DIR", &target_base)
-        .current_dir(source_dir)
-        .status()
-        .context("spawn cargo build --example")?;
-    if example_status.success() {
-        return Ok(local_target_artifact_path(
-            &target_base,
-            name,
-            true,
-            target.as_deref(),
-        ));
+    if artifact.example.is_some() || artifact.bin.is_some() {
+        return build_in_workspace(source_dir, Some(&target_base), artifact);
     }
 
-    let mut bin_args = vec!["build", "--release", "--bin", name];
-    if let Some(t) = target.as_deref() {
-        bin_args.extend(["--target", t]);
+    // Legacy fallback for specs without explicit bin/example.
+    let fallback = BuildArtifact {
+        name: artifact.name.clone(),
+        example: Some(artifact.name.clone()),
+        bin: Some(artifact.name.clone()),
+        features: artifact.features.clone(),
+        all_features: artifact.all_features,
+    };
+    if let Ok(path) = build_local_binary_blocking(
+        &BuildArtifact {
+            bin: None,
+            ..fallback.clone()
+        },
+        source_dir,
+        work_dir,
+    ) {
+        return Ok(path);
     }
-    let bin_status = std::process::Command::new("cargo")
-        .args(&bin_args)
-        .env("CARGO_TARGET_DIR", &target_base)
-        .current_dir(source_dir)
-        .status()
-        .context("spawn cargo build --bin")?;
-    if !bin_status.success() {
-        bail!(
-            "failed to build '{}' as example or bin in {}",
-            name,
-            source_dir.display()
-        );
-    }
-    Ok(local_target_artifact_path(
-        &target_base,
-        name,
-        false,
-        target.as_deref(),
-    ))
+    build_local_binary_blocking(
+        &BuildArtifact {
+            example: None,
+            ..fallback
+        },
+        source_dir,
+        work_dir,
+    )
 }
 
 async fn build_from_git(
     repo: &str,
     commit: &str,
-    example: Option<&str>,
-    bin: Option<&str>,
+    artifact: &BuildArtifact,
     work_dir: &Path,
 ) -> Result<PathBuf> {
     let src_dir = work_dir.join("src").join(
@@ -130,64 +182,116 @@ async fn build_from_git(
     let src = src_dir.clone();
     let repo = repo.to_owned();
     let commit = commit.to_owned();
-    let example_owned = example.map(|s| s.to_owned());
-    let bin_owned = bin.map(|s| s.to_owned());
+    let artifact = artifact.clone();
 
     tokio::task::spawn_blocking(move || {
         git_clone_or_update(&repo, &commit, &src)?;
-
-        let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
-        let mut args = vec!["build", "--release"];
-        if let Some(t) = rust_target.as_deref() {
-            args.extend(["--target", t]);
-        }
-        if let Some(ex) = example_owned.as_deref() {
-            args.extend(["--example", ex]);
-        }
-        if let Some(b) = bin_owned.as_deref() {
-            args.extend(["--bin", b]);
-        }
-        let status = std::process::Command::new("cargo")
-            .args(&args)
-            .current_dir(&src)
-            .status()
-            .context("spawn cargo build")?;
-        if !status.success() {
-            bail!("cargo build failed");
-        }
-
-        // Find the produced binary.
-        let meta = std::process::Command::new("cargo")
-            .args(["metadata", "--format-version", "1", "--no-deps"])
-            .current_dir(&src)
-            .output()
-            .context("cargo metadata")?;
-        let json: serde_json::Value =
-            serde_json::from_slice(&meta.stdout).context("parse cargo metadata")?;
-        let target_dir = json["target_directory"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing target_directory"))?;
-
-        if let Some(ex) = example_owned.as_deref() {
-            Ok(artifact_path_from_target_dir(
-                target_dir,
-                ex,
-                true,
-                rust_target.as_deref(),
-            ))
-        } else if let Some(b) = bin_owned.as_deref() {
-            Ok(artifact_path_from_target_dir(
-                target_dir,
-                b,
-                false,
-                rust_target.as_deref(),
-            ))
-        } else {
-            bail!("binary spec must specify example or bin for git source");
-        }
+        build_in_workspace(&src, None, &artifact)
     })
     .await
     .context("join build task")?
+}
+
+fn build_in_workspace(
+    source_dir: &Path,
+    target_dir_override: Option<&Path>,
+    artifact: &BuildArtifact,
+) -> Result<PathBuf> {
+    let args = cargo_build_args(artifact);
+    tracing::info!("Building: cargo {}", args.join(" "));
+    let mut cmd = std::process::Command::new("cargo");
+    cmd.args(&args).current_dir(source_dir);
+    if let Some(target_dir) = target_dir_override {
+        cmd.env("CARGO_TARGET_DIR", target_dir);
+    }
+    let status = cmd.status().context("spawn cargo build")?;
+    if !status.success() {
+        bail!("cargo build failed in {}", source_dir.display());
+    }
+
+    let target_dir = match target_dir_override {
+        Some(dir) => dir.to_path_buf(),
+        None => metadata_target_dir(source_dir)?,
+    };
+    let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
+    let (name, is_example) = artifact_name_kind(artifact);
+    Ok(local_target_artifact_path(
+        &target_dir,
+        &name,
+        is_example,
+        rust_target.as_deref(),
+    ))
+}
+
+fn cargo_build_args(artifact: &BuildArtifact) -> Vec<String> {
+    let mut args: Vec<String> = vec!["build".into(), "--release".into()];
+    if let Ok(target) = std::env::var("RUST_TARGET") {
+        if !target.trim().is_empty() {
+            args.push("--target".into());
+            args.push(target.trim().to_string());
+        }
+    }
+    if artifact.all_features {
+        args.push("--all-features".into());
+    } else if !artifact.features.is_empty() {
+        args.push("--features".into());
+        args.push(artifact.features.join(","));
+    }
+    let (name, is_example) = artifact_name_kind(artifact);
+    if is_example {
+        args.push("--example".into());
+        args.push(name);
+    } else {
+        args.push("--bin".into());
+        args.push(name);
+    }
+    args
+}
+
+fn artifact_name_kind(artifact: &BuildArtifact) -> (String, bool) {
+    if let Some(example) = artifact.example.clone() {
+        return (example, true);
+    }
+    if let Some(bin) = artifact.bin.clone() {
+        return (bin, false);
+    }
+    (artifact.name.clone(), true)
+}
+
+fn metadata_target_dir(source_dir: &Path) -> Result<PathBuf> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(source_dir)
+        .output()
+        .context("cargo metadata")?;
+    if !out.status.success() {
+        bail!("cargo metadata failed in {}", source_dir.display());
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("parse cargo metadata")?;
+    let target_dir = json["target_directory"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing target_directory"))?;
+    Ok(PathBuf::from(target_dir))
+}
+
+fn binary_mode(spec: &BinarySpec) -> Result<&str> {
+    if let Some(mode) = spec.mode.as_deref() {
+        return Ok(mode);
+    }
+    if spec.path.is_some() {
+        return Ok("path");
+    }
+    if spec.url.is_some() {
+        return Ok("fetch");
+    }
+    if spec.repo.is_some() || spec.example.is_some() || spec.bin.is_some() {
+        return Ok("build");
+    }
+    bail!(
+        "binary '{}' has no mode and no source fields (expected mode=build|path|fetch)",
+        spec.name
+    )
 }
 
 fn git_clone_or_update(repo: &str, commit: &str, dir: &Path) -> Result<()> {
@@ -221,24 +325,6 @@ fn git_clone_or_update(repo: &str, commit: &str, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn artifact_path_from_target_dir(
-    target_dir: &str,
-    binary_name: &str,
-    is_example: bool,
-    rust_target: Option<&str>,
-) -> PathBuf {
-    let mut path = PathBuf::from(target_dir);
-    if let Some(t) = rust_target {
-        path.push(t);
-    }
-    path.push("release");
-    if is_example {
-        path.push("examples");
-    }
-    path.push(binary_name);
-    path
-}
-
 fn local_target_artifact_path(
     target_base: &Path,
     binary_name: &str,
@@ -255,6 +341,33 @@ fn local_target_artifact_path(
     }
     path.push(binary_name);
     path
+}
+
+fn expected_existing_build_artifact(spec: &BinarySpec, build_root: &Path) -> Result<PathBuf> {
+    if spec.repo.is_some() {
+        bail!(
+            "--no-build is not supported for repo-based build spec '{}'; use prepare first",
+            spec.name
+        );
+    }
+    let source_dir = if let Some(path) = &spec.path {
+        resolve_binary_source_path(path, PathResolveMode::from_env())?
+    } else {
+        build_root.to_path_buf()
+    };
+    let target_dir = metadata_target_dir(&source_dir).or_else(|_| resolve_target_dir())?;
+    let artifact = BuildArtifact::from_spec(spec);
+    let (name, is_example) = artifact_name_kind(&artifact);
+    let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
+    let path = local_target_artifact_path(&target_dir, &name, is_example, rust_target.as_deref());
+    if !path.exists() {
+        bail!(
+            "--no-build: expected artifact for '{}' not found at {}",
+            spec.name,
+            path.display()
+        );
+    }
+    Ok(path)
 }
 
 #[cfg(test)]

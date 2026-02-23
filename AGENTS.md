@@ -117,6 +117,13 @@ when a task is ready run the checks then ask to commit, don't commit without ask
 after confirmation commit with "feat: short description" etc and some details afterwards. elaborate open issues a little, explain decisions taken concisely
 
 ## Recent Changes
+- Added config-driven sim project flow and iroh layout refactor:
+  - `netsim run` now supports config discovery via `netsim.toml` (current dir or parent dirs) and executes all `.toml` sims matching `simulations` glob when no explicit sim paths are passed.
+  - Added `netsim run --repo <url> [--ref <branch|tag|commit>]`: clones/updates repo under `<work-dir>/clones/...`, checks out the requested ref (or remote default head), then runs via discovered `netsim.toml`.
+  - Sim binaries are now pre-assembled once per run before sim execution; conflicting duplicate binary specs across sims now fail fast.
+  - Binary specs now support `mode = "build"` with `example`/`bin`, `features`, and `all-features`, while `mode = "path"` and `mode = "fetch"` remain supported.
+  - `iroh-integration` moved to `iroh-integration/netsim/...` with `iroh-integration/netsim.toml`, `netsim/iroh-defaults.toml`, `netsim/sims/`, and `netsim/topos/`.
+  - `netsim-vm run` now prebuilds sim `mode=build` binaries on the host for musl and injects `--binary name:path:/target/...` overrides into guest `netsim run`.
 - Relay/QAD runtime wiring improved for transfer sims:
   - Sim runner now auto-provisions per-sim relay runtime assets for relay spawn steps (self-signed cert/key + generated `relay.cfg` with `enable_quic_addr_discovery = true` and manual TLS paths) and auto-appends `--config-path` when spawning the configured `relay` binary (`src/sim/runner.rs`).
   - Transfer steps now pass `--env dev` unconditionally for provider/fetcher so local self-signed relay certs work in netsim runs without changing sim relay URLs (`src/sim/transfer.rs`).

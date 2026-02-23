@@ -1,10 +1,18 @@
-[[binary]]
-name    = "transfer"
-path    = "target:examples/transfer"
+[prepare]
+mode         = "build"
+all-features = true
+examples     = ["transfer"]
+bins         = ["iroh-relay"]
 
 [[binary]]
-name = "relay"
-url  = "https://github.com/n0-computer/iroh/releases/download/v0.96.0/iroh-relay-v0.96.0-x86_64-unknown-linux-musl.tar.gz"
+name    = "transfer"
+mode    = "target"
+example = "transfer"
+
+[[binary]]
+name     = "relay"
+mode     = "target"
+bin      = "iroh-relay"
 
 # ── Relay setup ───────────────────────────────────────────────────────────────
 # Step-group that expands to: gen-certs, gen-file (relay config), spawn relay.

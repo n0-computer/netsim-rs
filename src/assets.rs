@@ -158,7 +158,7 @@ fn target_artifact_path(
     Ok(out)
 }
 
-fn resolve_target_dir() -> Result<PathBuf> {
+pub fn resolve_target_dir() -> Result<PathBuf> {
     if let Ok(v) = std::env::var("NETSIM_TARGET_DIR") {
         let trimmed = v.trim();
         if !trimmed.is_empty() {
@@ -184,4 +184,17 @@ fn resolve_target_dir() -> Result<PathBuf> {
         bail!("cargo metadata returned an empty target_directory");
     }
     Ok(PathBuf::from(meta.target_directory))
+}
+
+/// Resolve a concrete artifact path under cargo target dir.
+pub fn resolve_target_artifact(kind: &str, name: &str, mode: PathResolveMode) -> Result<PathBuf> {
+    let target_dir = resolve_target_dir()?;
+    let target = if mode == PathResolveMode::Vm {
+        Some("x86_64-unknown-linux-musl".to_string())
+    } else {
+        std::env::var("RUST_TARGET")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+    };
+    target_artifact_path(&target_dir, target.as_deref(), kind, name)
 }

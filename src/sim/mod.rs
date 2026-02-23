@@ -7,6 +7,7 @@ pub mod runner;
 pub mod steps;
 pub mod topology;
 
+pub use runner::prepare_sims;
 pub use runner::run_sims;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,9 @@ pub struct SimFile {
     /// Named binary sources — `${binary.<name>}` in step commands.
     #[serde(default, rename = "binary")]
     pub binaries: Vec<BinarySpec>,
+
+    /// Optional bulk build preparation configuration.
+    pub prepare: Option<PrepareSpec>,
 
     /// Named step templates — `[[step-template]]`.
     #[serde(default, rename = "step-template")]
@@ -68,11 +72,32 @@ pub struct ExtendsEntry {
     pub file: String,
 }
 
+/// Optional `[prepare]` block for prebuilding workspace binaries.
+#[derive(Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct PrepareSpec {
+    /// Preparation mode (currently supports `build`).
+    pub mode: Option<String>,
+    /// Optional cargo feature list for prepare builds.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Build with all features for prepare builds.
+    #[serde(default, rename = "all-features")]
+    pub all_features: bool,
+    /// Examples to prebuild in release mode.
+    #[serde(default)]
+    pub examples: Vec<String>,
+    /// Binaries to prebuild in release mode.
+    #[serde(default)]
+    pub bins: Vec<String>,
+}
+
 /// Binary source specification inside a `[[binary]]` entry.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, PartialEq, Eq)]
 pub struct BinarySpec {
     /// Identifier used in `${binary.<name>}` substitutions.
     pub name: String,
+    /// Source mode (`build`, `path`, `fetch`), optional for backward compatibility.
+    pub mode: Option<String>,
     /// Local (possibly relative) path to a prebuilt binary.
     pub path: Option<PathBuf>,
     /// HTTP(S) URL to a tar.gz archive or bare binary.
@@ -85,6 +110,12 @@ pub struct BinarySpec {
     pub example: Option<String>,
     /// `cargo --bin <name>` to build.
     pub bin: Option<String>,
+    /// Optional cargo feature list for build mode.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Build with all features enabled for build mode.
+    #[serde(default, rename = "all-features")]
+    pub all_features: bool,
 }
 
 /// `[[step-template]]` entry: name + raw TOML table for merge-then-parse.

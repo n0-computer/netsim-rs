@@ -5,6 +5,7 @@ use netsim::assets::{
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -12,8 +13,7 @@ use netsim::config::LabConfig;
 use netsim::Lab;
 use serde::Serialize;
 
-use crate::sim::build::build_local_binary;
-use crate::sim::build::build_or_fetch_binary;
+use crate::sim::build::{build_local_binary, build_or_fetch_binary, BuildArtifact};
 use crate::sim::capture::CaptureStore;
 use crate::sim::env::SimEnv;
 use crate::sim::progress::{
@@ -27,7 +27,8 @@ use crate::sim::report::{
 use crate::sim::steps::{execute_step, join_pump, step_action, step_device, step_id};
 use crate::sim::topology::load_topology;
 use crate::sim::{
-    BinarySpec, SimFile, Step, StepEntry, StepGroupDef, StepResults, StepTemplateDef, UseStep,
+    BinarySpec, PrepareSpec, SimFile, Step, StepEntry, StepGroupDef, StepResults, StepTemplateDef,
+    UseStep,
 };
 
 // ─────────────────────────────────────────────
@@ -140,12 +141,22 @@ pub async fn run_sims(
     work_dir: PathBuf,
     binary_overrides: Vec<String>,
     verbose: bool,
+    project_root: Option<PathBuf>,
+    no_build: bool,
 ) -> Result<()> {
     let sims = expand_sim_inputs(&sim_inputs)?;
     if sims.is_empty() {
         bail!("no sim files found");
     }
+    let build_root = match project_root {
+        Some(root) => root,
+        None => std::env::current_dir().context("resolve current directory for build root")?,
+    };
     let run_root = prepare_run_root(&work_dir)?;
+    let assembled_binary_paths = Arc::new(
+        assemble_binaries_for_run(&sims, &run_root, &binary_overrides, &build_root, no_build)
+            .await?,
+    );
     let run_start = SystemTime::now();
     let run_start_instant = Instant::now();
     let run_name = run_root
@@ -199,8 +210,13 @@ pub async fn run_sims(
         progress.updated_at = format_timestamp(SystemTime::now());
         write_progress(&run_root, &progress).await?;
 
-        let outcome =
-            run_single_sim(sim, run_root.clone(), binary_overrides.clone(), verbose).await?;
+        let outcome = run_single_sim(
+            sim,
+            run_root.clone(),
+            Arc::clone(&assembled_binary_paths),
+            verbose,
+        )
+        .await?;
         sim_dir_names.push(outcome.sim_dir_name.clone());
         if let Some(item) = progress.simulations.get_mut(idx) {
             item.status = outcome.summary.status.clone();
@@ -270,10 +286,40 @@ pub async fn run_sims(
     Ok(())
 }
 
+/// Resolve sims and build assets only (no lab/network execution).
+pub async fn prepare_sims(
+    sim_inputs: Vec<PathBuf>,
+    work_dir: PathBuf,
+    binary_overrides: Vec<String>,
+    project_root: Option<PathBuf>,
+    no_build: bool,
+) -> Result<()> {
+    let sims = expand_sim_inputs(&sim_inputs)?;
+    if sims.is_empty() {
+        bail!("no sim files found");
+    }
+    let build_root = match project_root {
+        Some(root) => root,
+        None => std::env::current_dir().context("resolve current directory for build root")?,
+    };
+    let run_root = prepare_run_root(&work_dir)?;
+    let assembled =
+        assemble_binaries_for_run(&sims, &run_root, &binary_overrides, &build_root, no_build)
+            .await?;
+    build_prepare_assets_for_run(&sims, &build_root, &run_root, no_build).await?;
+    println!(
+        "prepared {} simulations and {} binaries under {}",
+        sims.len(),
+        assembled.len(),
+        run_root.display()
+    );
+    Ok(())
+}
+
 async fn run_single_sim(
     sim_path: PathBuf,
     run_root: PathBuf,
-    binary_overrides: Vec<String>,
+    assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
     verbose: bool,
 ) -> Result<SimRunOutcome> {
     let started_at = SystemTime::now();
@@ -340,7 +386,7 @@ async fn run_single_sim(
         &sim_name,
         parsed_sim,
         setup.clone(),
-        binary_overrides,
+        assembled_binary_paths,
         verbose,
     )
     .await;
@@ -432,6 +478,175 @@ fn expand_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     Ok(sims)
 }
 
+async fn assemble_binaries_for_run(
+    sims: &[PathBuf],
+    run_root: &Path,
+    binary_overrides: &[String],
+    build_root: &Path,
+    no_build: bool,
+) -> Result<HashMap<String, PathBuf>> {
+    let overrides = parse_binary_overrides(binary_overrides)
+        .with_context(|| "step=parse-binary-overrides".to_string())?;
+    let mut merged_specs: HashMap<String, BinarySpec> = HashMap::new();
+    let mut first_seen: HashMap<String, PathBuf> = HashMap::new();
+
+    for sim_path in sims {
+        let sim_text = std::fs::read_to_string(sim_path)
+            .with_context(|| format!("read sim {}", sim_path.display()))?;
+        let sim: SimFile = toml::from_str(&sim_text)
+            .with_context(|| format!("parse sim {}", sim_path.display()))?;
+        let (_, _, extends_binaries, _) = load_extends(&sim, sim_path)
+            .with_context(|| format!("resolve extends for {}", sim_path.display()))?;
+        let shared_binaries = load_shared_binaries(&sim, sim_path)
+            .with_context(|| format!("resolve shared binaries for {}", sim_path.display()))?;
+        let local_specs = merge_binary_specs(
+            extends_binaries
+                .into_iter()
+                .chain(shared_binaries)
+                .collect::<Vec<_>>(),
+            sim.binaries.clone(),
+        );
+
+        for (name, spec) in local_specs {
+            if overrides.contains_key(&name) {
+                continue;
+            }
+            if let Some(existing) = merged_specs.get(&name) {
+                if existing != &spec {
+                    let first = first_seen
+                        .get(&name)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    bail!(
+                        "duplicate binary spec '{}' differs across sims: {} vs {}",
+                        name,
+                        first,
+                        sim_path.display()
+                    );
+                }
+                continue;
+            }
+            first_seen.insert(name.clone(), sim_path.clone());
+            merged_specs.insert(name, spec);
+        }
+    }
+
+    let assemble_dir = run_root.join(".assemble");
+    tokio::fs::create_dir_all(&assemble_dir)
+        .await
+        .with_context(|| format!("create {}", assemble_dir.display()))?;
+
+    let binary_names = merged_binary_names(&merged_specs, &overrides);
+    let mut out = HashMap::new();
+    for name in binary_names {
+        let path = resolve_binary_path(
+            &name,
+            &merged_specs,
+            &overrides,
+            &assemble_dir,
+            build_root,
+            no_build,
+        )
+        .await
+        .with_context(|| format!("assemble binary '{}'", name))?;
+        tracing::info!(name = %name, path = %path.display(), "binary assembled");
+        out.insert(name, path);
+    }
+    Ok(out)
+}
+
+async fn build_prepare_assets_for_run(
+    sims: &[PathBuf],
+    build_root: &Path,
+    run_root: &Path,
+    no_build: bool,
+) -> Result<()> {
+    let mut requests: Vec<BuildArtifact> = Vec::new();
+    for sim_path in sims {
+        let sim_text = std::fs::read_to_string(sim_path)
+            .with_context(|| format!("read sim {}", sim_path.display()))?;
+        let sim: SimFile = toml::from_str(&sim_text)
+            .with_context(|| format!("parse sim {}", sim_path.display()))?;
+        let (_, _, _, extends_prepares) = load_extends(&sim, sim_path)
+            .with_context(|| format!("resolve extends for {}", sim_path.display()))?;
+        for prep in extends_prepares.into_iter().chain(sim.prepare.clone()) {
+            if prepare_mode(&prep)? != "build" {
+                continue;
+            }
+            for ex in &prep.examples {
+                requests.push(BuildArtifact {
+                    name: ex.clone(),
+                    example: Some(ex.clone()),
+                    bin: None,
+                    features: prep.features.clone(),
+                    all_features: prep.all_features,
+                });
+            }
+            for bin in &prep.bins {
+                requests.push(BuildArtifact {
+                    name: bin.clone(),
+                    example: None,
+                    bin: Some(bin.clone()),
+                    features: prep.features.clone(),
+                    all_features: prep.all_features,
+                });
+            }
+        }
+    }
+    requests.sort_by_key(|r| {
+        format!(
+            "{}|{}|{}|{}|{}",
+            r.example.clone().unwrap_or_default(),
+            r.bin.clone().unwrap_or_default(),
+            r.all_features,
+            r.features.join(","),
+            r.name
+        )
+    });
+    requests.dedup_by(|a, b| {
+        a.example == b.example
+            && a.bin == b.bin
+            && a.features == b.features
+            && a.all_features == b.all_features
+    });
+
+    if requests.is_empty() {
+        return Ok(());
+    }
+
+    let prep_dir = run_root.join(".prepare");
+    tokio::fs::create_dir_all(&prep_dir)
+        .await
+        .with_context(|| format!("create {}", prep_dir.display()))?;
+    for req in requests {
+        if no_build {
+            let spec = BinarySpec {
+                name: req.name.clone(),
+                mode: Some("target".to_string()),
+                path: None,
+                url: None,
+                repo: None,
+                commit: None,
+                example: req.example.clone(),
+                bin: req.bin.clone(),
+                features: vec![],
+                all_features: false,
+            };
+            let _ = build_or_fetch_binary(&spec, &prep_dir, build_root, true).await?;
+            continue;
+        }
+        let _ = build_local_binary(&req, build_root, &prep_dir).await?;
+    }
+    Ok(())
+}
+
+fn prepare_mode(prep: &PrepareSpec) -> Result<&str> {
+    match prep.mode.as_deref() {
+        Some(mode) => Ok(mode),
+        None => Ok("build"),
+    }
+}
+
 fn prepare_run_root(work_root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(work_root)
         .with_context(|| format!("create work root {}", work_root.display()))?;
@@ -489,35 +704,12 @@ async fn execute_single_sim(
     sim_name: &str,
     sim: SimFile,
     setup_base: SimSetupSummary,
-    binary_overrides: Vec<String>,
+    assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
     verbose: bool,
 ) -> Result<SimSetupSummary> {
     // ── Load extends (templates, groups, binaries) ───────────────────────
-    let (templates, groups, extends_binaries) =
+    let (templates, groups, _extends_binaries, _extends_prepare) =
         load_extends(&sim, sim_path).with_context(|| "step=load-extends".to_string())?;
-
-    // ── Resolve binaries ─────────────────────────────────────────────────
-    // Order of precedence (highest last wins): extends < legacy-shared < inline-sim.
-    let shared_binaries = load_shared_binaries(&sim, sim_path)
-        .with_context(|| "step=resolve-binaries".to_string())?;
-    let all_binaries: Vec<BinarySpec> = extends_binaries
-        .into_iter()
-        .chain(shared_binaries)
-        .chain(sim.binaries.clone())
-        .collect();
-    let merged_specs = merge_binary_specs(all_binaries, vec![]);
-    let overrides = parse_binary_overrides(&binary_overrides)
-        .with_context(|| "step=parse-binary-overrides".to_string())?;
-    let binary_names = merged_binary_names(&merged_specs, &overrides);
-
-    let mut binary_paths: HashMap<String, PathBuf> = HashMap::new();
-    for name in binary_names {
-        let path = resolve_binary_path(&name, &merged_specs, &overrides, run_work_dir)
-            .await
-            .with_context(|| format!("step=resolve-binary name={name}"))?;
-        tracing::info!(name = %name, path = %path.display(), "binary ready");
-        binary_paths.insert(name, path);
-    }
 
     // ── Load topology ────────────────────────────────────────────────────
     let topo = load_topology(&sim, sim_path).with_context(|| "step=load-topology".to_string())?;
@@ -528,7 +720,7 @@ async fn execute_single_sim(
     lab.build().await.context("step=build-lab-network")?;
 
     // ── Build env vars ───────────────────────────────────────────────────
-    let bin_strs: HashMap<String, String> = binary_paths
+    let bin_strs: HashMap<String, String> = assembled_binary_paths
         .iter()
         .map(|(k, v)| (k.clone(), v.to_string_lossy().into_owned()))
         .collect();
@@ -903,21 +1095,39 @@ async fn resolve_binary_path(
     specs: &HashMap<String, BinarySpec>,
     overrides: &HashMap<String, BinaryOverride>,
     work_dir: &Path,
+    build_root: &Path,
+    no_build: bool,
 ) -> Result<PathBuf> {
     if let Some(override_mode) = overrides.get(name) {
         return match override_mode {
-            BinaryOverride::Build(src) => build_local_binary(name, src, work_dir).await,
+            BinaryOverride::Build(src) => {
+                if no_build {
+                    resolve_no_build_override_artifact(name, src)
+                } else {
+                    let artifact = BuildArtifact {
+                        name: name.to_string(),
+                        example: None,
+                        bin: None,
+                        features: vec![],
+                        all_features: false,
+                    };
+                    build_local_binary(&artifact, src, work_dir).await
+                }
+            }
             BinaryOverride::Fetch(url) => {
                 let spec = BinarySpec {
                     name: name.to_string(),
+                    mode: Some("fetch".to_string()),
                     path: None,
                     url: Some(url.clone()),
                     repo: None,
                     commit: None,
                     example: None,
                     bin: None,
+                    features: vec![],
+                    all_features: false,
                 };
-                build_or_fetch_binary(&spec, work_dir).await
+                build_or_fetch_binary(&spec, work_dir, build_root, no_build).await
             }
             BinaryOverride::Path(src) => stage_override_binary(name, src, work_dir).await,
         };
@@ -926,7 +1136,7 @@ async fn resolve_binary_path(
     let spec = specs
         .get(name)
         .ok_or_else(|| anyhow!("no binary source configured for '{}'", name))?;
-    build_or_fetch_binary(spec, work_dir).await
+    build_or_fetch_binary(spec, work_dir, build_root, no_build).await
 }
 
 async fn stage_override_binary(name: &str, source: &Path, work_dir: &Path) -> Result<PathBuf> {
@@ -969,6 +1179,46 @@ async fn stage_override_binary(name: &str, source: &Path, work_dir: &Path) -> Re
         std::fs::set_permissions(&staged, perms).context("chmod staged override binary")?;
     }
     Ok(staged)
+}
+
+fn resolve_no_build_override_artifact(name: &str, source_dir: &Path) -> Result<PathBuf> {
+    let target_dir = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .current_dir(source_dir)
+        .output()
+        .context("cargo metadata for --no-build override")?;
+    if !target_dir.status.success() {
+        bail!(
+            "--no-build: cargo metadata failed for override source {}",
+            source_dir.display()
+        );
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&target_dir.stdout).context("parse cargo metadata output")?;
+    let target = meta["target_directory"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing target_directory for {}", source_dir.display()))?;
+    let mut base = PathBuf::from(target);
+    if let Ok(rt) = std::env::var("RUST_TARGET") {
+        if !rt.trim().is_empty() {
+            base.push(rt.trim());
+        }
+    }
+    base.push("release");
+    let example = base.join("examples").join(name);
+    if example.exists() {
+        return Ok(example);
+    }
+    let bin = base.join(name);
+    if bin.exists() {
+        return Ok(bin);
+    }
+    bail!(
+        "--no-build: expected override artifact '{}' not found at {} or {}",
+        name,
+        example.display(),
+        bin.display()
+    )
 }
 
 fn collect_sim_logs(sim_dir: &Path) -> Result<Vec<SimLogEntry>> {
@@ -1042,10 +1292,12 @@ fn load_extends(
     HashMap<String, StepTemplateDef>,
     HashMap<String, StepGroupDef>,
     Vec<BinarySpec>,
+    Vec<PrepareSpec>,
 )> {
     let mut templates: HashMap<String, StepTemplateDef> = HashMap::new();
     let mut groups: HashMap<String, StepGroupDef> = HashMap::new();
     let mut binaries: Vec<BinarySpec> = Vec::new();
+    let mut prepares: Vec<PrepareSpec> = Vec::new();
 
     let sim_dir = sim_path.parent().unwrap_or(Path::new("."));
     for entry in &sim.extends {
@@ -1083,6 +1335,9 @@ fn load_extends(
         for b in parsed.binaries {
             binaries.push(b);
         }
+        if let Some(prepare) = parsed.prepare {
+            prepares.push(prepare);
+        }
     }
 
     // Inline definitions override extends.
@@ -1093,7 +1348,7 @@ fn load_extends(
         groups.insert(g.name.clone(), g.clone());
     }
 
-    Ok((templates, groups, binaries))
+    Ok((templates, groups, binaries, prepares))
 }
 
 /// Normalize a raw TOML table so it uses `action` as the tag key.

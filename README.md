@@ -43,22 +43,22 @@ capability requirements automatically:
 
 ```bash
 # Run a single sim
-netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml
+netsim run-vm ./iroh-integration/netsim/sims/iroh-1to1-nat.toml
 
 # Run a whole directory and get combined results
-netsim run-vm ./iroh-integration/sims/
+netsim run-vm ./iroh-integration/netsim/sims/
 
 # Keep a log
-netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml |& tee run.log
+netsim run-vm ./iroh-integration/netsim/sims/iroh-1to1-nat.toml |& tee run.log
 
 # Open the results in the UI after the run
-netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml --open
+netsim run-vm ./iroh-integration/netsim/sims/iroh-1to1-nat.toml --open
 ```
 
 To test against a local iroh checkout with uncommitted changes:
 
 ```bash
-netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml \
+netsim run-vm ./iroh-integration/netsim/sims/iroh-1to1-nat.toml \
   --binary "transfer:build:../iroh"
 ```
 

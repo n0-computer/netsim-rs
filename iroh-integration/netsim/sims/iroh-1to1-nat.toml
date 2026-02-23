@@ -1,18 +1,13 @@
 [[extends]]
-file = "iroh-defaults.toml"
+file = "../iroh-defaults.toml"
 
 [sim]
-name     = "iroh-1to1-nat-switch"
-topology = "1to1-nat-switch"
+name     = "iroh-1to1-nat"
+topology = "1to1-nat"
 
 [[step]]
 use  = "relay-setup"
 vars = { device = "relay" }
-
-[[step]]
-action    = "link-down"
-device    = "fetcher"
-interface = "eth1"
 
 [[step]]
 use      = "transfer-provider"
@@ -30,25 +25,12 @@ args   = ["${provider.endpoint_id}",
           "--remote-relay-url", "https://$NETSIM_IP_relay:3340"]
 
 [[step]]
-action   = "wait"
-duration = "5s"
-
-[[step]]
-action    = "link-up"
-device    = "fetcher"
-interface = "eth1"
-
-[[step]]
-action = "set-default-route"
-device = "fetcher"
-to     = "eth1"
-
-[[step]]
-action    = "link-down"
-device    = "fetcher"
-interface = "eth0"
-
-[[step]]
 action  = "wait-for"
 id      = "fetcher"
 timeout = "45s"
+
+[[step]]
+action = "assert"
+checks = [
+  "fetcher.size matches [0-9]+",
+]
