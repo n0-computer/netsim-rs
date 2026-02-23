@@ -15,8 +15,6 @@ id     = "iperf-baseline"
 device = "fetcher"
 parser = "json"
 cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
-[step.captures.bps]
-pick = ".end.sum_received.bits_per_second"
 [step.captures.bytes]
 pick = ".end.sum_received.bytes"
 [step.captures.seconds]
