@@ -1,203 +1,200 @@
 # netsim-rs
 
-Rust network namespace simulator for NAT/routing/link-impairment labs, plus an iroh simulation runner.
+A Linux network namespace simulator for writing repeatable network condition
+tests. Define a topology and a sequence of steps in TOML, run a binary, get
+structured results.
 
-## What You Get
+## Usage
 
-- Linux netns topology builder (`router`, `device`, NAT modes, impairments)
-- Simulation runner for TOML scenarios (`run`, `spawn`, `wait-for`, `switch-route`, etc.)
-- Built-in `kind = "iroh-transfer"` workflow plus parser-driven generic metrics:
-  - `results.json`
-  - `results.md`
-  - `combined-results.json` / `combined-results.md` (across runs in one work root)
-  - per-step logs in `logs/`
+### Requirements
 
-## Prerequisites
+- Linux (bare metal or VM)
+- `ip`, `tc`, `nft` in PATH
+- Unprivileged user namespaces enabled -- this is the default on most modern
+  distros. If you're not sure:
 
-- Linux host (or Linux VM) with:
-  - `ip`, `tc`, `nft`
-  - unprivileged user namespaces enabled (`kernel.unprivileged_userns_clone=1`)
+  ```bash
+  # Check:
+  sysctl kernel.unprivileged_userns_clone
 
-## Local Dev Commands
+  # Enable (temporary):
+  sudo sysctl -w kernel.unprivileged_userns_clone=1
 
-Build/check:
+  # Enable (permanent):
+  echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf
+  sudo sysctl --system
+  ```
 
-```bash
-cargo check
-cargo fmt
-```
+  On systems using AppArmor (Ubuntu 24.04+), you may also need:
+  ```bash
+  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+  ```
 
-Cleanup leaked lab resources and stop VM:
-
-```bash
-netsim cleanup
-```
-
-Run tests locally (if your host policy allows it):
+### Installation
 
 ```bash
-cargo test
+cargo install --git https://github.com/n0-computer/netsim-rs
 ```
 
-## VM Workflow (Recommended)
+### Running a sim
 
-The QEMU VM flow is built into `netsim run-vm`.
-From the repo, use `cargo run -- run-vm ...` (or `cargo make run-vm ...`).
-
-### VM mounts
-
-- `/app` -> repo workspace (read-only)
-- `/target` -> host target dir (read-only)
-- `/work` -> host `.netsim-work` (read-write)
-
-Simulation outputs are written per run under `/work`, with:
-
-- run directory: `/work/<sim-name>-YYMMDD-HHMMSS/`
-- symlink: `/work/latest` -> most recent run
-
-On host this is:
-
-- `.netsim-work/latest/results.json`
-- `.netsim-work/latest/results.md`
-- `.netsim-work/combined-results.json`
-- `.netsim-work/combined-results.md`
-- `.netsim-work/latest/logs/*`
-
-For `kind = "iroh-transfer"` with `id = "xfer"`, logs are grouped as:
-
-- `.netsim-work/latest/logs/xfer/provider/` (`--logs-path` dir)
-- `.netsim-work/latest/logs/xfer/fetcher-0/` (or `fetcher-1`, …)
-- `.netsim-work/latest/logs/xfer/provider.log`
-- `.netsim-work/latest/logs/xfer/fetcher-0.log`
-
-### Start and run
+The recommended way to run sims is inside the included QEMU VM, which handles
+capability requirements automatically:
 
 ```bash
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-public.toml
+# Run a single sim
+netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml
 
-# run a whole directory and produce combined results
-cargo run -- run-vm ./iroh-integration/sims
+# Run a whole directory and get combined results
+netsim run-vm ./iroh-integration/sims/
+
+# Keep a log
+netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml |& tee run.log
+
+# Open the results in the UI after the run
+netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml --open
 ```
 
-### Run and tee output
+To test against a local iroh checkout with uncommitted changes:
 
 ```bash
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-public.toml |& tee run-1to1
+netsim run-vm ./iroh-integration/sims/iroh-1to1-nat.toml \
+  --binary "transfer:build:../iroh"
 ```
 
-If mount paths or runner-binary location changed since the last VM boot, recreate once:
+The `--binary` flag overrides any binary defined in the sim file:
 
-```bash
-cargo run -- run-vm --recreate ./iroh-integration/sims/iroh-1to1-public.toml
 ```
-
-### Run tests in VM
-
-```bash
-cargo make test-vm
-```
-
-### Shut down VM
-
-```bash
-cargo make vm-down
-```
-
-## Iroh Simulations
-
-Included sims:
-
-- `./iroh-integration/sims/iroh-1to1-public.toml`
-- `./iroh-integration/sims/iroh-1to1-nat.toml`
-- `./iroh-integration/sims/iroh-switch-direct.toml`
-- `./iroh-integration/sims/iperf-1to1-public-baseline.toml`
-- `./iroh-integration/sims/iperf-1to1-public-compare.toml`
-
-Shared binary defaults are in:
-
-- `iroh-integration/iroh-defaults.toml`
-
-Ported legacy Chuck/iroh suites are available in:
-
-- `./iroh-integration/sims-ported/` (63 converted cases from `resources/iroh-sims`)
-
-## Iperf Parser
-
-Use `parser = "iperf3-json"` on a `run` or `spawn` step to parse `iperf3 -J`
-output from the step log into `results.json`/`combined-results.json`.
-
-Example (baseline + impaired comparison):
-
-```toml
-[[step]]
-action = "run"
-id     = "iperf-baseline"
-device = "fetcher"
-cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
-parser = "iperf3-json"
-
-[[step]]
-action   = "run"
-id       = "iperf-impaired"
-device   = "fetcher"
-cmd      = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
-parser   = "iperf3-json"
-baseline = "iperf-baseline"
-```
-
-When `baseline` is set, report rows include `delta_mbps` and `delta_pct`.
-
-## Chuck-Compatible Reports (Optional)
-
-Set `chuck_compat = true` in `[sim]` to additionally emit Chuck-style artifacts:
-
-- `<work_dir>/latest/report/<sim-name>__transfer.json`
-- `<work_dir>/latest/report/integration_<sim-name>__transfer.json`
-
-This is enabled in all generated files under `iroh-integration/sims-ported/`.
-
-## Binary Overrides
-
-You can override binaries at runtime with repeatable `--binary`:
-
-```text
 --binary "<name>:<mode>:<value>"
 ```
 
-Modes:
+| Mode    | Source |
+|---------|--------|
+| `build` | Build from a local checkout directory with `cargo build` |
+| `fetch` | Download from a URL |
+| `path`  | Copy a local binary into the work directory and use that |
 
-- `build`: build from local checkout directory
-- `fetch`: download from URL
-- `path`: copy local file into workdir bins and use copied file
+#### Output files
 
-Examples:
+Sim results land under `.netsim-work/` in the current directory:
 
-```bash
-# Build transfer from checkout path
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-public.toml \
-  --binary "transfer:build:../iroh"
-
-# Force relay URL
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-nat.toml \
-  --binary "relay:fetch:https://github.com/n0-computer/iroh/releases/download/v0.96.0/iroh-relay-v0.96.0-x86_64-unknown-linux-musl.tar.gz"
-
-# Use prebuilt transfer binary from host path
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-public.toml \
-  --binary "transfer:path:./target/x86_64-unknown-linux-musl/release/examples/transfer"
+```
+.netsim-work/
+  latest/                        # symlink to the most recent run
+  <sim-name>-YYMMDD-HHMMSS/
+    results.json
+    results.md
+    nodes/<device>/stdout.log
+    nodes/<device>/stderr.log
+  combined-results.json          # aggregated across all runs in this work root
+  combined-results.md
 ```
 
-## Testing Uncommitted Iroh Changes
+Inside the VM the work root is `/work`, which maps to `.netsim-work/` on the host.
 
-If you have an iroh checkout with local uncommitted changes, run the sim against that source directly:
+#### VM management
 
 ```bash
-cargo run -- run-vm ./iroh-integration/sims/iroh-1to1-public.toml \
-  --binary "transfer:build:../iroh"
+# Recreate the VM (needed when binary paths change)
+netsim run-vm --recreate ./netsim/sims/iroh-1to1-nat.toml
+
+# Shut down the VM
+netsim vm-down
+
+# Clean up leaked kernel resources from aborted runs
+netsim cleanup
 ```
 
-Notes:
+---
 
-- Build artifacts are written under `/work/latest/build-target` (host `.netsim-work/latest/build-target`).
-- `run-vm` always executes a Linux x86_64 guest binary:
-  - on Linux host, it stages the current `netsim` binary into `/work/.netsim-bin/netsim`
-  - on macOS host, it downloads `netsim-x86_64-unknown-linux-musl.tar.gz` from the latest GitHub release and stages that into `/work/.netsim-bin/netsim`.
+## Architecture
+
+netsim builds isolated network environments using Linux network namespaces. Each
+simulated node (device or router) runs in its own namespace, which gives it a
+completely private network stack -- its own interfaces, routing table, and
+firewall rules. Processes launched on a node inherit that namespace, so they
+behave exactly as if they were running on a separate machine.
+
+**Topology construction.** When a sim starts, netsim reads the topology table
+and calls `rtnetlink` (no external `ip` binary needed) to create virtual ethernet
+pairs between namespaces, assign addresses, add routes, and configure NAT rules
+with `nft`. All of this runs as the current user, without `sudo`, because the
+namespace operations are performed inside a user namespace (each namespace is
+owned by the process's user).
+
+**Link impairment.** After the topology is built, steps can apply `tc netem`
+and `tc tbf` rules to introduce packet loss, delay, and rate limits on
+individual interfaces. These run via the `tc` and `ip` binaries inside the
+appropriate namespace.
+
+**The step runner.** Steps execute sequentially in a single loop. `spawn` steps
+launch processes in the background; the runner continues to the next step while
+those processes run. Pump threads tee the stdout/stderr of each process to log
+files and optionally forward lines to a capture reader thread, which applies
+regex or JSON patterns and writes matches to a shared `CaptureStore`. When a
+later step references `${id.capture_name}`, it blocks on the `CaptureStore`
+condvar until the value appears or a timeout fires.
+
+**No root required.** The user namespace trick means the kernel allows creating
+and configuring namespaces without elevated privileges, as long as
+`unprivileged_userns_clone` is enabled. The VM path adds another layer: a QEMU
+microVM handles the namespace work inside a proper Linux guest, which is useful
+when the host OS or container environment restricts namespace creation.
+
+---
+
+## Writing simulations
+
+A simulation file defines three things: a topology, a set of binaries, and a
+sequence of steps. Steps can spawn processes, run commands, wait for captures,
+apply impairments, bring interfaces up or down, and assert on outputs.
+
+The full syntax is documented in [docs/reference.md](docs/reference.md).
+
+Quick example:
+
+```toml
+[sim]
+name     = "iperf-baseline"
+topology = "1to1-public"
+
+[[step]]
+action      = "spawn"
+id          = "server"
+device      = "provider"
+cmd         = ["iperf3", "-s", "-1"]
+ready_after = "1s"
+
+[[step]]
+action = "run"
+id     = "client"
+device = "fetcher"
+parser = "json"
+cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
+[step.captures.bytes]
+pick = ".end.sum_received.bytes"
+[step.results]
+down_bytes = "client.bytes"
+
+[[step]]
+action = "wait-for"
+id     = "server"
+
+[[step]]
+action = "assert"
+checks = ["client.bytes matches [0-9]+"]
+```
+
+The included iroh integration lives in `iroh-integration/`:
+
+```
+iroh-integration/
+  iroh-defaults.toml            # shared binary defs, relay/transfer templates
+  topos/                        # topology files
+  sims/
+    iroh-1to1-public.toml       # direct transfer, two public nodes
+    iroh-1to1-nat.toml          # transfer through NAT, relay-assisted
+    iroh-1to1-nat-switch.toml   # route switch mid-transfer test
+    iroh-1to10-public.toml      # 1 provider, 10 concurrent fetchers
+    iperf-1to1-public.toml      # iperf3 baseline on a public topology
+```
