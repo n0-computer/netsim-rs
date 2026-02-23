@@ -2,6 +2,7 @@
 name = "netsim"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [workspace]
 members = [".", "crates/netsim-vm"]

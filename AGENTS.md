@@ -178,6 +178,7 @@ after confirmation commit with "feat: short description" etc and some details af
   - Qlog tab: JSON-seq parser, virtualised event table, filter, expand-on-click.
   - Dev server (`npm run dev`) serves `<repo_root>/.netsim-work` by default; `NETSIMS=/path` overrides. Vite plugin exposes `GET /__netsim/runs` for run-dir listing. Run picker auto-selects newest run.
   - See `plans/ui.md` for full design and remaining TODOs.
+- Added `build.rs` to build the UI (npm install + npm run build) so the embedded `ui/dist/index.html` stays up to date during builds.
 
 - Added standalone workspace binary crate `crates/netsim-vm` with CLI commands: `up`, `down`, `status`, `cleanup`, `ssh`, `run`, and `test`.
 - `netsim-vm run` now supports `--netsim-version` sources: `latest`, release tags (e.g. `0.10.0`), and git refs via `git:<ref>` (e.g. `git:feat/foo`), staging guest runner binary under `/work/.netsim-bin/netsim`.
