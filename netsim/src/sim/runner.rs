@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use netsim::assets::{
+use netsim_utils::assets::{
     parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use netsim::config::LabConfig;
-use netsim::Lab;
+use netsim_core::config::LabConfig;
+use netsim_core::Lab;
 use serde::Serialize;
 
 use crate::sim::build::{
@@ -687,7 +687,7 @@ fn prepare_run_root(work_root: &Path) -> Result<PathBuf> {
 }
 
 fn prepare_sim_dir(run_root: &Path, sim_name: &str) -> Result<PathBuf> {
-    let sim_base = netsim::util::sanitize_for_path_component(sim_name);
+    let sim_base = netsim_core::util::sanitize_for_path_component(sim_name);
     create_unique_dir(run_root, &sim_base)
 }
 

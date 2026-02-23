@@ -181,7 +181,7 @@ struct IfaceBuild {
 }
 
 /// Stores mutable topology state and build-time allocators.
-pub struct LabCore {
+pub struct NetworkCore {
     cfg: CoreConfig,
     netns: netns::NetnsManager,
     next_id: u64,
@@ -369,7 +369,7 @@ fn delete_link_logged(name: &str) {
         }
     }
 }
-impl LabCore {
+impl NetworkCore {
     /// Constructs a new topology core and pre-creates the IX switch.
     pub fn new(cfg: CoreConfig) -> Self {
         let mut core = Self {

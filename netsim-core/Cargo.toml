@@ -1,0 +1,24 @@
+[package]
+name    = "netsim-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow               = "1"
+tokio                = { version = "1", features = ["rt", "macros", "sync", "time", "fs"] }
+rtnetlink            = "0.20"
+netlink-packet-route = "0.28"
+futures              = "0.3"
+nix                  = { version = "0.30", features = ["sched", "mount", "fs", "signal", "process", "user"] }
+serde                = { version = "1", features = ["derive"] }
+toml                 = "0.8"
+tracing              = "0.1"
+ipnet                = "2.11"
+libc                 = "0.2"
+chrono               = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+serial_test      = "3"
+n0-tracing-test  = "0.3.0"
+ctor             = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

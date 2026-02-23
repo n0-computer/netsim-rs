@@ -1,8 +1,8 @@
 use anyhow::{bail, Context, Result};
-use netsim::assets::{
+use netsim_utils::assets::{
     parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode,
 };
-use netsim::binary_cache::{cached_binary_for_url, set_executable};
+use netsim_utils::binary_cache::{cached_binary_for_url, set_executable};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

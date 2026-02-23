@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const UI_INDEX: &str = include_str!("../ui/dist/index.html");
+const UI_INDEX: &str = include_str!("../../ui/dist/index.html");
 /// Default bind address for the embedded UI server.
 pub const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
 

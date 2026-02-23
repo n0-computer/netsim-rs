@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use netsim::serve::{start_ui_server, DEFAULT_UI_BIND};
+use netsim_utils::ui::{start_ui_server, DEFAULT_UI_BIND};
 
 #[derive(Parser)]
 #[command(name = "netsim-vm", about = "Standalone VM runner for netsim")]

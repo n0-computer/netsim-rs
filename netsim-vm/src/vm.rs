@@ -1,7 +1,7 @@
 use crate::util::stage_binary_overrides;
-use netsim::binary_cache::set_executable;
+use netsim_utils::binary_cache::set_executable;
 use anyhow::{anyhow, bail, Context, Result};
-use netsim::assets::{infer_binary_mode, parse_binary_overrides, BinarySpec};
+use netsim_utils::assets::{infer_binary_mode, parse_binary_overrides, BinarySpec};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;

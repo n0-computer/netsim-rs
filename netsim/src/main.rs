@@ -12,8 +12,8 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use netsim::check_caps;
-use netsim::serve::{start_ui_server, DEFAULT_UI_BIND};
+use netsim_core::check_caps;
+use netsim_utils::ui::{start_ui_server, DEFAULT_UI_BIND};
 
 #[derive(Parser)]
 #[command(name = "netsim", about = "Run a netsim simulation")]
@@ -134,13 +134,13 @@ enum Command {
 }
 
 fn main() -> Result<()> {
-    netsim::bootstrap_userns()?;
+    netsim_core::init_userns()?;
     tokio_main()
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn tokio_main() -> Result<()> {
-    netsim::Lab::init_tracing();
+    netsim_core::Lab::init_tracing();
     let cli = Cli::parse();
     match cli.command {
         Command::Run {
@@ -561,7 +561,7 @@ fn perform_cleanup(prefixes: &[String]) -> Result<()> {
             prefixes.join(", ")
         );
     }
-    let resources = netsim::core::resources();
+    let resources = netsim_core::core::resources();
     if !prefixes.is_empty() {
         for prefix in prefixes {
             resources.cleanup_by_prefix(prefix);
@@ -604,10 +604,10 @@ fn inspect_session_path(work_dir: &std::path::Path, prefix: &str) -> PathBuf {
 }
 
 fn env_key_suffix(name: &str) -> String {
-    netsim::util::sanitize_for_env_key(name)
+    netsim_core::util::sanitize_for_env_key(name)
 }
 
-fn load_topology_for_inspect(input: &std::path::Path) -> Result<(netsim::config::LabConfig, bool)> {
+fn load_topology_for_inspect(input: &std::path::Path) -> Result<(netsim_core::config::LabConfig, bool)> {
     let text =
         std::fs::read_to_string(input).with_context(|| format!("read {}", input.display()))?;
     let value: toml::Value =
@@ -621,7 +621,7 @@ fn load_topology_for_inspect(input: &std::path::Path) -> Result<(netsim::config:
             .with_context(|| format!("load topology from sim {}", input.display()))?;
         Ok((topo, true))
     } else {
-        let topo: netsim::config::LabConfig =
+        let topo: netsim_core::config::LabConfig =
             toml::from_str(&text).with_context(|| format!("parse topology {}", input.display()))?;
         Ok((topo, false))
     }
@@ -633,7 +633,7 @@ fn spawn_keeper_in_namespace(ns: &str) -> Result<u32> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let child = netsim::core::spawn_command_in_namespace(ns, cmd)
+    let child = netsim_core::core::spawn_command_in_namespace(ns, cmd)
         .with_context(|| format!("spawn namespace keeper in '{ns}'"))?;
     Ok(child.id())
 }
@@ -904,8 +904,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("create temp workdir");
-        let sim_path = PathBuf::from("./iroh-integration/netsim/sims/iperf-1to1-public.toml");
-        let project_root = std::env::current_dir().expect("resolve current directory");
+        let workspace_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let sim_path = workspace_root.join("iroh-integration/netsim/sims/iperf-1to1-public.toml");
+        let project_root = workspace_root;
         sim::run_sims(
             vec![sim_path],
             root.clone(),

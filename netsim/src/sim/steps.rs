@@ -13,7 +13,7 @@ use crate::sim::capture::CaptureStore;
 use crate::sim::env::SimEnv;
 use crate::sim::report::StepResultRecord;
 use crate::sim::{CaptureSpec, Parser, Step, StepResults};
-use netsim::Impair;
+use netsim_core::Impair;
 
 use crate::sim::runner::SimState;
 
@@ -395,7 +395,7 @@ pub(crate) fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
             san,
         } => {
             let device_name = device.as_deref().unwrap_or(id.as_str());
-            let key_suffix = netsim::util::sanitize_for_env_key(device_name);
+            let key_suffix = netsim_core::util::sanitize_for_env_key(device_name);
             let relay_ip = state
                 .env
                 .interpolate_str(&format!("$NETSIM_IP_{key_suffix}"))
@@ -407,7 +407,7 @@ pub(crate) fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
             let certs_dir = state
                 .work_dir
                 .join("certs")
-                .join(netsim::util::sanitize_for_path_component(id));
+                .join(netsim_core::util::sanitize_for_path_component(id));
             std::fs::create_dir_all(&certs_dir)
                 .with_context(|| format!("create certs dir {}", certs_dir.display()))?;
 
@@ -469,7 +469,7 @@ pub(crate) fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
             let files_dir = state
                 .work_dir
                 .join("files")
-                .join(netsim::util::sanitize_for_path_component(id));
+                .join(netsim_core::util::sanitize_for_path_component(id));
             std::fs::create_dir_all(&files_dir)
                 .with_context(|| format!("create files dir {}", files_dir.display()))?;
             let file_path = files_dir.join("content");
@@ -857,7 +857,7 @@ struct NodeStdioLogs {
 fn node_stdio_log_paths(work_dir: &Path, node: &str) -> Result<NodeStdioLogs> {
     let node_dir = work_dir
         .join("nodes")
-        .join(netsim::util::sanitize_for_path_component(node));
+        .join(netsim_core::util::sanitize_for_path_component(node));
     std::fs::create_dir_all(&node_dir)
         .with_context(|| format!("create node logs dir {}", node_dir.display()))?;
     Ok(NodeStdioLogs {

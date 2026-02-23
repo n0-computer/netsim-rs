@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-use netsim::config::LabConfig;
+use netsim_core::config::LabConfig;
 
 use crate::sim::SimFile;
 
@@ -107,12 +107,12 @@ gateway = "r1"
                 topology: Some("a".into()),
                 binaries: None,
             },
-            topology: netsim::config::LabConfig {
-                router: vec![netsim::config::RouterCfg {
+            topology: netsim_core::config::LabConfig {
+                router: vec![netsim_core::config::RouterConfig {
                     name: "r1".into(),
                     region: None,
                     upstream: None,
-                    nat: netsim::NatMode::None,
+                    nat: netsim_core::NatMode::None,
                 }],
                 ..Default::default()
             },

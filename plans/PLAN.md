@@ -77,3 +77,18 @@ Status key: ✅ implemented, ⚠️ partially implemented, ❌ not implemented.
 | `ergonomics.md` | 5. Add `progress.json` + incremental `manifest.json` updates | ✅ | Runner now writes/updates `progress.json` and run `manifest.json` during execution (`src/sim/runner.rs`). |
 | `ergonomics.md` | 6. Simplify CLI summary table to status + up/down numbers | ✅ | Replaced verbose terminal output with concise run summary (`sim`, `status`, `down_mbps`, `up_mbps`) (`src/sim/report.rs`). |
 | `ergonomics.md` | 7. Migrate transfer binary path to `target:examples/transfer` | ✅ | Added `target:` shortcut expansion and migrated iroh default transfer path (`src/assets.rs`, `src/sim/build.rs`, `iroh-integration/iroh-defaults.toml`, `crates/netsim-vm/src/vm.rs`). |
+| `dns.md` | 1. DNS_REGISTRY + pre_exec resolv.conf bind-mount plumbing | ❌ | Not started. |
+| `dns.md` | 2. hickory-server dep + DnsServer struct + InMemoryAuthority zone | ❌ | Not started. |
+| `dns.md` | 3. Lab::spawn_dns_server (binds in root-ns worker) | ❌ | Not started. |
+| `dns.md` | 4. Lab::set_dns / set_dns_all + auto_populate_dns | ❌ | Not started. |
+| `dns.md` | 5. TOML [dns] section + from_config integration | ❌ | Not started. |
+| `dns.md` | 6. Tests (A/AAAA/TXT roundtrip, isolation, runtime mutation) | ❌ | Not started. |
+| `ipv6.md` | 1. Data model: v6 fields in CoreConfig, Router, Device, Switch | ❌ | Not started. |
+| `ipv6.md` | 2. Netlink v6 methods + sysctl ipv6 forwarding | ❌ | Not started. |
+| `ipv6.md` | 3. Allocators (ix_v6, private_v6, host_v6) | ❌ | Not started. |
+| `ipv6.md` | 4. wire_iface dual-stack provisioning | ❌ | Not started. |
+| `ipv6.md` | 5. Config/TOML schema (ip_version, nat_v6) + Lab::from_config routing | ❌ | Not started. |
+| `ipv6.md` | 6. apply_nat_v6 (NPTv6 + masquerade nftables) | ❌ | Not started. |
+| `ipv6.md` | 7. qdisc dual-protocol filters (IpNet branching) | ❌ | Not started. |
+| `ipv6.md` | 8. Test helpers (probe_v6_in_ns, dual reflector) | ❌ | Not started. |
+| `ipv6.md` | 9. Test matrix (combos 1–5 topology + A–I NAT × version) | ❌ | Not started. |

@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use netsim::assets::{
+use netsim_utils::assets::{
     infer_binary_mode, resolve_binary_source_path, resolve_target_artifact, resolve_target_dir,
     BinarySpec, PathResolveMode,
 };
-use netsim::binary_cache::cached_binary_for_url;
+use netsim_utils::binary_cache::cached_binary_for_url;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

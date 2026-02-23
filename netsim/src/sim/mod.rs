@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 // Re-export BinarySpec from the library so callers need only import one place.
-pub use netsim::assets::BinarySpec;
+pub use netsim_utils::assets::BinarySpec;
 
 // ── Sim TOML types ────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ pub struct SimFile {
     // ── Inline topology (flattened from LabConfig) ──────────────────────────
     /// Inline router/device/region topology; mutually exclusive with `sim.topology`.
     #[serde(flatten)]
-    pub topology: netsim::config::LabConfig,
+    pub topology: netsim_core::config::LabConfig,
 
     // ── Steps (`[[step]]` array) ───────────────────────────────────────────
     /// Raw step entries — either `UseTemplate` (has `use` key) or `Concrete` (has `kind`/`action`).

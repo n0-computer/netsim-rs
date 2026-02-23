@@ -1077,17 +1077,13 @@ dependencies = [
  "ctor",
  "ctrlc",
  "flate2",
- "futures",
  "glob",
- "ipnet",
- "libc",
  "n0-tracing-test",
- "netlink-packet-route",
+ "netsim-core",
+ "netsim-utils",
  "nix",
  "rcgen",
  "regex",
- "reqwest",
- "rtnetlink",
  "serde",
  "serde_json",
  "serial_test",
@@ -1097,6 +1093,43 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "netsim-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ctor",
+ "futures",
+ "ipnet",
+ "libc",
+ "n0-tracing-test",
+ "netlink-packet-route",
+ "nix",
+ "rtnetlink",
+ "serde",
+ "serial_test",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "netsim-utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "glob",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tracing",
  "webbrowser",
 ]
 
@@ -1108,7 +1141,7 @@ dependencies = [
  "clap",
  "dirs",
  "flate2",
- "netsim",
+ "netsim-utils",
  "nix",
  "serde",
  "serde_json",
@@ -1742,6 +1775,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "signal-hook-registry"
+version = "1.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+dependencies = [
+ "errno",
+ "libc",
+]
+
+[[package]]
 name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1932,6 +1975,7 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",

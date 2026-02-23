@@ -1,8 +1,8 @@
-//! netsim-rs — Linux network-namespace lab for NAT/routing experiments.
+//! netsim-core — Linux network-namespace lab for NAT/routing experiments.
 //!
 //! # Quick start (from TOML)
 //! ```no_run
-//! # use netsim::Lab;
+//! # use netsim_core::Lab;
 //! # use std::process::Command;
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> anyhow::Result<()> {
@@ -16,7 +16,7 @@
 //!
 //! # Builder API
 //! ```no_run
-//! # use netsim::{Lab, NatMode};
+//! # use netsim_core::{Lab, NatMode};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> anyhow::Result<()> {
 //! let mut lab = Lab::new();
@@ -28,7 +28,7 @@
 //! # }
 //! ```
 //!
-//! **Important**: namespace transitions are executed inside dedicated worker
+//! namespace transitions are executed inside dedicated worker
 //! threads in the netns manager; callers can use any Tokio runtime flavor.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -46,24 +46,23 @@ use std::{
 };
 use tracing::debug;
 
-/// Shared binary/source path parsing and target shortcut resolution helpers.
-pub mod assets;
-/// Shared URL-binary cache helpers.
-pub mod binary_cache;
 /// Exposes low-level topology and namespace construction primitives.
 pub mod core;
 mod netlink;
 mod netns;
 mod qdisc;
-/// Embedded UI HTTP serving helpers.
-pub mod serve;
+/// Probe and reflector helpers for integration tests.
+pub mod test_utils;
 mod userns;
 /// Shared string sanitizers.
 pub mod util;
+
+pub use crate::userns::{init_userns, init_userns_for_ctor};
+
 use crate::core::{
     apply_impair_in, cleanup_netns, resources, run_closure_in_namespace, run_command_in_namespace,
     spawn_closure_in_namespace_thread, spawn_command_in_namespace, CoreConfig, DownstreamPool,
-    LabCore, RouterConfig, TaskHandle,
+    NetworkCore, RouterConfig, TaskHandle,
 };
 
 static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -100,43 +99,6 @@ pub fn check_caps() -> Result<()> {
     } else {
         bail!("missing capabilities: {}", missing.join(", "))
     }
-}
-
-/// Bootstraps an unprivileged user namespace and maps current UID/GID to root.
-///
-/// Call this once before spawning threads or starting Tokio when running as a
-/// non-root user. The function is a no-op when already running as UID 0.
-#[cfg(target_os = "linux")]
-pub fn bootstrap_userns() -> Result<()> {
-    use nix::sched::{unshare, CloneFlags};
-
-    if nix::unistd::Uid::effective().is_root() {
-        return Ok(());
-    }
-
-    let uid = nix::unistd::Uid::current().as_raw();
-    let gid = nix::unistd::Gid::current().as_raw();
-
-    unshare(CloneFlags::CLONE_NEWUSER)
-        .context("unshare(CLONE_NEWUSER) failed; ensure user namespaces are enabled and no threads are running yet")?;
-
-    std::fs::write("/proc/self/setgroups", "deny\n").context("write /proc/self/setgroups")?;
-    std::fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))
-        .context("write /proc/self/uid_map")?;
-    std::fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))
-        .context("write /proc/self/gid_map")?;
-
-    if nix::unistd::Uid::effective().is_root() {
-        Ok(())
-    } else {
-        bail!("userns bootstrap finished without UID 0 mapping")
-    }
-}
-
-/// Bootstraps user namespaces on Linux; no-op on other platforms.
-#[cfg(not(target_os = "linux"))]
-pub fn bootstrap_userns() -> Result<()> {
-    Ok(())
 }
 
 // ─────────────────────────────────────────────
@@ -218,7 +180,7 @@ pub struct ObservedAddr {
 // Lab
 // ─────────────────────────────────────────────
 
-/// High-level lab API built on top of `LabCore`.
+/// High-level lab API built on top of `NetworkCore`.
 pub struct Lab {
     /// Short process-unique prefix used on root-namespace interface names.
     prefix: String,
@@ -234,7 +196,7 @@ pub struct Lab {
     children: Vec<ChildTask>,
 
     /// Low-level topology model.
-    core: LabCore,
+    core: NetworkCore,
 }
 
 enum ChildTask {
@@ -259,7 +221,7 @@ impl Lab {
         let bridge_tag = format!("p{}{}", pid_tag, uniq);
         let ix_gw = Ipv4Addr::new(203, 0, 113, 1);
         resources().register_prefix(&prefix);
-        let core = LabCore::new(CoreConfig {
+        let core = NetworkCore::new(CoreConfig {
             prefix: prefix.clone(),
             root_ns,
             ix_br: format!("br-{}-1", bridge_tag),
@@ -290,11 +252,19 @@ impl Lab {
 
     /// Initializes tracing for this crate (idempotent).
     ///
-    /// Honors `RUST_LOG`; defaults to `netsim=debug` if unset.
+    /// Honors `RUST_LOG`; defaults to `netsim_core=debug` if unset.
     pub fn init_tracing() {
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("netsim=info"));
-        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+        #[cfg(test)]
+        {
+            let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("netsim_core=info"));
+            let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+        }
+        #[cfg(not(test))]
+        {
+            // netsim-core is a library; callers are responsible for tracing setup.
+            // This is a no-op outside of tests.
+        }
     }
 
     /// Returns the unique resource prefix associated with this lab instance.
@@ -330,7 +300,7 @@ impl Lab {
         }
 
         // Routers: topological sort — process any router whose upstream is already resolved.
-        let mut pending: HashMap<&str, &config::RouterCfg> =
+        let mut pending: HashMap<&str, &config::RouterConfig> =
             cfg.router.iter().map(|r| (r.name.as_str(), r)).collect();
         loop {
             let ready: Vec<&str> = pending
@@ -362,7 +332,10 @@ impl Lab {
         if !pending.is_empty() {
             let mut names: Vec<_> = pending.keys().copied().collect();
             names.sort();
-            bail!("unresolvable router upstreams (cycle?): {}", names.join(", "));
+            bail!(
+                "unresolvable router upstreams (cycle?): {}",
+                names.join(", ")
+            );
         }
 
         // Devices — parse raw TOML, pre-resolve router IDs, then build.
@@ -571,18 +544,6 @@ impl Lab {
     }
 
     /// Runs a command inside a device namespace and waits for exit.
-    ///
-    /// ```no_run
-    /// # use netsim::Lab;
-    /// # use std::process::Command;
-    /// # fn main() -> anyhow::Result<()> {
-    /// # let lab = Lab::new();
-    /// let mut cmd = Command::new("ping");
-    /// cmd.args(["-c1", "1.1.1.1"]);
-    /// lab.run_on("home-eu1", cmd)?;
-    /// # Ok(())
-    /// # }
-    /// ```
     pub fn run_on(&self, name: &str, cmd: Command) -> Result<ExitStatus> {
         let id = self.resolve_device(name)?;
         let ns = self.core.device_ns(id)?;
@@ -637,8 +598,6 @@ impl Lab {
     }
 
     /// Builds a map of `NETSIM_*` environment variables from the current lab state.
-    ///
-    /// Keys use device/interface names normalised to uppercase with `-` → `_`.
     pub fn env_vars(&self) -> std::collections::HashMap<String, String> {
         let mut map = std::collections::HashMap::new();
         for (name, &id) in &self.device_by_name {
@@ -752,8 +711,6 @@ impl Lab {
     }
 
     /// Removes any resources whose names match the lab prefix.
-    ///
-    /// This is useful if a previous run crashed before it could clean up.
     pub fn cleanup_everything() {
         resources().cleanup_registered_prefixes();
     }
@@ -788,9 +745,6 @@ impl Lab {
     // ── Dynamic operations ────────────────────────────────────────────────
 
     /// Applies or removes a link-layer impairment on a device interface.
-    ///
-    /// `ifname = None` targets the `default_via` interface.
-    /// `impair = None` removes any existing qdisc.
     pub fn set_impair(
         &mut self,
         device: &str,
@@ -837,9 +791,6 @@ impl Lab {
     }
 
     /// Switches the active default route to a different interface.
-    ///
-    /// `to` is the interface name (e.g. `"eth1"`).  The impairment configured
-    /// for the new interface is re-applied after the route change.
     pub fn switch_route(&mut self, device: &str, to: &str) -> Result<()> {
         let id = self.resolve_device(device)?;
         let (ns, uplink, impair) = {
@@ -896,10 +847,6 @@ impl Drop for Lab {
 // ─────────────────────────────────────────────
 
 /// Builder for a device node; returned by [`Lab::add_device`].
-///
-/// Chain [`.iface()`][DeviceBuilder::iface] calls to attach one or more
-/// network interfaces, then call [`.build()`][DeviceBuilder::build] to
-/// finalize the device and obtain its [`NodeId`].
 pub struct DeviceBuilder<'lab> {
     lab: &'lab mut Lab,
     id: NodeId,
@@ -908,9 +855,6 @@ pub struct DeviceBuilder<'lab> {
 
 impl<'lab> DeviceBuilder<'lab> {
     /// Attach `ifname` inside the device namespace to `router`'s downstream switch.
-    ///
-    /// The first interface added becomes the default-route interface unless
-    /// overridden by [`default_via`][DeviceBuilder::default_via].
     pub fn iface(mut self, ifname: &str, router: NodeId, impair: Option<Impair>) -> Self {
         if self.result.is_ok() {
             self.result = self
@@ -923,8 +867,6 @@ impl<'lab> DeviceBuilder<'lab> {
     }
 
     /// Overrides which interface carries the default route.
-    ///
-    /// By default this is the first interface added via [`iface`][DeviceBuilder::iface].
     pub fn default_via(mut self, ifname: &str) -> Self {
         if self.result.is_ok() {
             self.result = self.lab.core.set_device_default_via(self.id, ifname);
@@ -956,11 +898,8 @@ pub mod config {
         pub region: Option<HashMap<String, RegionConfig>>,
         /// Router entries.
         #[serde(default)]
-        pub router: Vec<RouterCfg>,
+        pub router: Vec<RouterConfig>,
         /// Raw device tables; post-processed by [`Lab::from_config`].
-        ///
-        /// Format: `[device.<name>.<ifname>]` with a `gateway` field.
-        /// Device-level settings (e.g. `default_via`) live in `[device.<name>]`.
         #[serde(default)]
         pub device: HashMap<String, toml::Value>,
     }
@@ -975,7 +914,7 @@ pub mod config {
 
     /// Router configuration entry.
     #[derive(Deserialize, Clone)]
-    pub struct RouterCfg {
+    pub struct RouterConfig {
         /// Router name.
         pub name: String,
         /// Optional region tag (used for inter-region latency rules).
@@ -1069,11 +1008,10 @@ pub fn probe_in_ns(
 }
 
 // ─────────────────────────────────────────────
-// Tests
+// Helpers
 // ─────────────────────────────────────────────
 
 /// Normalise a device/interface name for use in an environment variable name.
-/// Converts to uppercase and replaces `-` with `_`.
 fn normalize_env_name(s: &str) -> String {
     s.to_uppercase().replace('-', "_")
 }
@@ -1094,6 +1032,18 @@ pub fn udp_rtt_in_ns(ns: &str, reflector: SocketAddr) -> Result<Duration> {
         let _ = sock.recv_from(&mut buf)?;
         Ok(start.elapsed())
     })
+}
+
+// ─────────────────────────────────────────────
+// Test ctor bootstrap
+// ─────────────────────────────────────────────
+
+#[cfg(test)]
+mod test_init {
+    #[ctor::ctor]
+    fn init() {
+        let _ = super::init_userns();
+    }
 }
 
 #[cfg(test)]
@@ -1501,13 +1451,10 @@ mod tests {
         Ok(())
     }
 
-    // ── Lab::load test ───────────────────────────────────────────────────
-
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     async fn load_from_toml() -> Result<()> {
         check_caps()?;
-        // Minimal inline TOML so the test is self-contained.
         let toml = r#"
 [[router]]
 name   = "isp1"
@@ -1532,8 +1479,6 @@ gateway = "lan1"
         assert!(lab.device_id("dev1").is_some());
         Ok(())
     }
-
-    // ── Smoke tests ─────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "current_thread")]
     #[serial]
@@ -2032,8 +1977,6 @@ gateway = "lan1"
         Ok(())
     }
 
-    // ── Dynamic-ops tests ────────────────────────────────────────────────
-
     #[tokio::test(flavor = "current_thread")]
     #[serial]
     #[traced_test]
@@ -2053,7 +1996,6 @@ gateway = "lan1"
         let dev_ns = lab.node_ns(dev)?.to_string();
         let base_rtt = udp_rtt_in_ns(&dev_ns, r)?;
 
-        // Apply Mobile impair (+50 ms one-way latency).
         lab.set_impair("dev1", None, Some(Impair::Mobile))?;
         let impaired_rtt = udp_rtt_in_ns(&dev_ns, r)?;
         assert!(
@@ -2061,7 +2003,6 @@ gateway = "lan1"
             "expected impaired RTT >= base + 40ms, base={base_rtt:?} impaired={impaired_rtt:?}"
         );
 
-        // Remove impair — RTT should drop back near baseline.
         lab.set_impair("dev1", None, None)?;
         let recovered_rtt = udp_rtt_in_ns(&dev_ns, r)?;
         assert!(
@@ -2084,15 +2025,12 @@ gateway = "lan1"
         let gw = lab.router_downlink_gw(dc)?;
         let dev_ns = lab.node_ns(dev)?.to_string();
 
-        // Connectivity should be OK initially.
         ping_in_ns(&dev_ns, &gw.to_string())?;
 
-        // Bring interface down — ping must fail.
         lab.link_down("dev1", "eth0")?;
         let result = ping_in_ns(&dev_ns, &gw.to_string());
         assert!(result.is_err(), "expected ping to fail after link_down");
 
-        // Bring interface back up — connectivity must be restored.
         lab.link_up("dev1", "eth0")?;
         ping_in_ns(&dev_ns, &gw.to_string())?;
         Ok(())
@@ -2104,10 +2042,8 @@ gateway = "lan1"
     async fn dynamic_switch_route_changes_path() -> Result<()> {
         check_caps()?;
         let mut lab = Lab::new();
-        // Two IX-attached public routers.
         let dc = lab.add_router("dc1", Some("eu"), None, NatMode::None)?;
         let isp = lab.add_router("isp1", Some("eu"), None, NatMode::None)?;
-        // Device: eth0 → dc (fast, no impair); eth1 → isp (slow, Mobile = +50 ms).
         let dev = lab
             .add_device("dev1")
             .iface("eth0", dc, None)
@@ -2125,7 +2061,6 @@ gateway = "lan1"
         let dev_ns = lab.node_ns(dev)?.to_string();
         let fast_rtt = udp_rtt_in_ns(&dev_ns, r)?;
 
-        // Switch to the Mobile path (eth1 → isp → ix → dc).
         lab.switch_route("dev1", "eth1")?;
         let slow_rtt = udp_rtt_in_ns(&dev_ns, r)?;
 
