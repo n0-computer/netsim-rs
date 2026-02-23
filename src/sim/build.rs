@@ -111,12 +111,18 @@ async fn download_binary(url: &str, work_dir: &Path) -> Result<PathBuf> {
         .context("join cached URL binary task")?
 }
 
+/// Identifies a single cargo artifact to build (example or binary).
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
+    /// Logical name used in diagnostics and output path derivation.
     pub name: String,
+    /// `--example <name>` target, if set.
     pub example: Option<String>,
+    /// `--bin <name>` target, if set.
     pub bin: Option<String>,
+    /// Feature flags passed to `--features`.
     pub features: Vec<String>,
+    /// If true, passes `--all-features` instead of `--features`.
     pub all_features: bool,
 }
 
@@ -300,11 +306,11 @@ fn cargo_build_args(artifacts: &[BuildArtifact]) -> Result<Vec<String>> {
 }
 
 fn artifact_name_kind(artifact: &BuildArtifact) -> (String, bool) {
-    if let Some(example) = artifact.example.clone() {
-        return (example, true);
+    if let Some(example) = &artifact.example {
+        return (example.clone(), true);
     }
-    if let Some(bin) = artifact.bin.clone() {
-        return (bin, false);
+    if let Some(bin) = &artifact.bin {
+        return (bin.clone(), false);
     }
     (artifact.name.clone(), true)
 }

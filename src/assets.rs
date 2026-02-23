@@ -158,6 +158,9 @@ fn target_artifact_path(
     Ok(out)
 }
 
+/// Resolve the cargo `target/` directory for the current workspace.
+///
+/// Checks `NETSIM_TARGET_DIR` first; falls back to `cargo metadata`.
 pub fn resolve_target_dir() -> Result<PathBuf> {
     if let Ok(v) = std::env::var("NETSIM_TARGET_DIR") {
         let trimmed = v.trim();

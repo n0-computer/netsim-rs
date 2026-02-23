@@ -1110,8 +1110,10 @@ dependencies = [
  "flate2",
  "netsim",
  "nix",
+ "serde",
  "serde_json",
  "tar",
+ "toml",
 ]
 
 [[package]]

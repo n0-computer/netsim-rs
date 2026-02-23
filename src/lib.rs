@@ -487,12 +487,10 @@ impl Lab {
         let ns = self.ns_name();
         let downlink_bridge = self.next_bridge_name();
 
-        let downstream_pool = match nat {
-            NatMode::None => DownstreamPool::Public,
-            NatMode::Cgnat => DownstreamPool::Private,
-            NatMode::DestinationIndependent | NatMode::DestinationDependent => {
-                DownstreamPool::Private
-            }
+        let downstream_pool = if nat == NatMode::None {
+            DownstreamPool::Public
+        } else {
+            DownstreamPool::Private
         };
         let cfg = RouterConfig {
             nat,

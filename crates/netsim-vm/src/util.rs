@@ -2,10 +2,13 @@ use anyhow::{bail, Context, Result};
 use netsim::assets::{
     parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode,
 };
-use netsim::binary_cache::cached_binary_for_url;
+use netsim::binary_cache::{cached_binary_for_url, set_executable};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Resolve `--binary` override arguments, copy the resulting binaries into
+/// `<work_dir>/binaries/`, and return rewritten `"name:path:/work/binaries/..."` overrides
+/// for forwarding to the in-VM netsim invocation.
 pub fn stage_binary_overrides(
     raw: &[String],
     work_dir: &Path,
@@ -114,16 +117,3 @@ fn stage_build_binary(
     Ok(dest)
 }
 
-pub fn set_executable(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)
-            .with_context(|| format!("stat {}", path.display()))?
-            .permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(path, perms)
-            .with_context(|| format!("chmod {}", path.display()))?;
-    }
-    Ok(())
-}

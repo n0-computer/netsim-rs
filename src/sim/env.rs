@@ -13,6 +13,7 @@ pub struct SimEnv {
 }
 
 impl SimEnv {
+    /// Creates a new environment from lab-derived variables and resolved binary paths.
     pub fn new(lab_vars: HashMap<String, String>, binaries: HashMap<String, String>) -> Self {
         Self {
             lab_vars,

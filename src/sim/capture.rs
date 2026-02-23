@@ -28,7 +28,14 @@ pub struct CaptureStore {
     inner: Arc<(Mutex<CaptureInner>, Condvar)>,
 }
 
+impl Default for CaptureStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CaptureStore {
+    /// Creates an empty capture store.
     pub fn new() -> Self {
         Self {
             inner: Arc::new((Mutex::new(CaptureInner::default()), Condvar::new())),

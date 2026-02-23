@@ -62,16 +62,12 @@ pub fn cached_binary_for_url(url: &str, work_dir: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-/// Compute stable cache key from URL.
+/// Compute a stable 32-character hex cache key from a URL (first 16 bytes of SHA-256).
 pub fn url_cache_key(url: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
     let digest = hasher.finalize();
-    let mut out = String::with_capacity(32);
-    for b in digest.iter().take(16) {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn shared_cache_root(work_dir: &Path) -> PathBuf {
@@ -116,7 +112,8 @@ fn extract_first_binary(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {
     bail!("no executable binary found in {}", archive.display())
 }
 
-fn set_executable(path: &Path) -> Result<()> {
+/// Sets the executable bit on `path` (no-op on non-Unix).
+pub fn set_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

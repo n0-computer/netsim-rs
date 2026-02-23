@@ -59,6 +59,7 @@ pub struct SimFile {
 /// Metadata block at `[sim]`.
 #[derive(Deserialize, Default)]
 pub struct SimMeta {
+    /// Human-readable name for this simulation (used in reports and logs).
     #[serde(default)]
     pub name: String,
     /// If set, the topology is loaded from `../topos/<topology>.toml` relative to the sim file.
@@ -192,9 +193,11 @@ pub struct UseStep {
 /// Normalized result mapping for a step.
 #[derive(Deserialize, Clone, Default)]
 pub struct StepResults {
-    /// `"step_id.capture_name"` or `".capture_name"` (relative to this step's id).
+    /// Capture key for the step duration (`"step_id.capture_name"` or `".capture_name"`).
     pub duration: Option<String>,
+    /// Capture key for bytes uploaded.
     pub up_bytes: Option<String>,
+    /// Capture key for bytes downloaded.
     pub down_bytes: Option<String>,
 }
 

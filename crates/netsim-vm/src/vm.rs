@@ -1,4 +1,5 @@
-use crate::util::{set_executable, stage_binary_overrides};
+use crate::util::stage_binary_overrides;
+use netsim::binary_cache::set_executable;
 use anyhow::{anyhow, bail, Context, Result};
 use netsim::assets::parse_binary_overrides;
 use serde::Deserialize;
