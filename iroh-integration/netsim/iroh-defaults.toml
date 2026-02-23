@@ -1,4 +1,4 @@
-[prepare]
+[[prepare]]
 mode         = "build"
 all-features = true
 examples     = ["transfer"]

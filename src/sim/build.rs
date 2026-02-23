@@ -3,6 +3,7 @@ use netsim::assets::{
     resolve_binary_source_path, resolve_target_artifact, resolve_target_dir, PathResolveMode,
 };
 use netsim::binary_cache::cached_binary_for_url;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::sim::BinarySpec;
@@ -81,10 +82,23 @@ pub async fn build_local_binary(
     source_dir: &Path,
     work_dir: &Path,
 ) -> Result<PathBuf> {
+    let paths = build_local_binaries(std::slice::from_ref(artifact), source_dir, work_dir).await?;
+    paths
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no artifact path returned for '{}'", artifact.name))
+}
+
+/// Build multiple local artifacts in one cargo invocation when possible.
+pub async fn build_local_binaries(
+    artifacts: &[BuildArtifact],
+    source_dir: &Path,
+    work_dir: &Path,
+) -> Result<Vec<PathBuf>> {
     let source = source_dir.to_path_buf();
     let work = work_dir.to_path_buf();
-    let artifact = artifact.clone();
-    tokio::task::spawn_blocking(move || build_local_binary_blocking(&artifact, &source, &work))
+    let artifacts = artifacts.to_vec();
+    tokio::task::spawn_blocking(move || build_local_binaries_blocking(&artifacts, &source, &work))
         .await
         .context("join local binary build task")?
 }
@@ -123,6 +137,20 @@ fn build_local_binary_blocking(
     source_dir: &Path,
     work_dir: &Path,
 ) -> Result<PathBuf> {
+    let mut out =
+        build_local_binaries_blocking(std::slice::from_ref(artifact), source_dir, work_dir)?;
+    out.pop()
+        .ok_or_else(|| anyhow!("no artifact path returned for '{}'", artifact.name))
+}
+
+fn build_local_binaries_blocking(
+    artifacts: &[BuildArtifact],
+    source_dir: &Path,
+    work_dir: &Path,
+) -> Result<Vec<PathBuf>> {
+    if artifacts.is_empty() {
+        return Ok(Vec::new());
+    }
     if !source_dir.is_dir() {
         bail!(
             "local binary source is not a directory: {}",
@@ -131,11 +159,18 @@ fn build_local_binary_blocking(
     }
     let target_base = work_dir.join("build-target");
     std::fs::create_dir_all(&target_base).context("create local build target dir")?;
-    if artifact.example.is_some() || artifact.bin.is_some() {
-        return build_in_workspace(source_dir, Some(&target_base), artifact);
+    let explicit = artifacts
+        .iter()
+        .all(|artifact| artifact.example.is_some() || artifact.bin.is_some());
+    if explicit {
+        return build_in_workspace(source_dir, Some(&target_base), artifacts);
     }
 
     // Legacy fallback for specs without explicit bin/example.
+    if artifacts.len() != 1 {
+        bail!("building multiple artifacts requires explicit example or bin for each entry");
+    }
+    let artifact = &artifacts[0];
     let fallback = BuildArtifact {
         name: artifact.name.clone(),
         example: Some(artifact.name.clone()),
@@ -151,7 +186,7 @@ fn build_local_binary_blocking(
         source_dir,
         work_dir,
     ) {
-        return Ok(path);
+        return Ok(vec![path]);
     }
     build_local_binary_blocking(
         &BuildArtifact {
@@ -161,6 +196,7 @@ fn build_local_binary_blocking(
         source_dir,
         work_dir,
     )
+    .map(|path| vec![path])
 }
 
 async fn build_from_git(
@@ -186,7 +222,10 @@ async fn build_from_git(
 
     tokio::task::spawn_blocking(move || {
         git_clone_or_update(&repo, &commit, &src)?;
-        build_in_workspace(&src, None, &artifact)
+        let mut paths = build_in_workspace(&src, None, std::slice::from_ref(&artifact))?;
+        paths
+            .pop()
+            .ok_or_else(|| anyhow!("no artifact path returned for '{}'", artifact.name))
     })
     .await
     .context("join build task")?
@@ -195,9 +234,9 @@ async fn build_from_git(
 fn build_in_workspace(
     source_dir: &Path,
     target_dir_override: Option<&Path>,
-    artifact: &BuildArtifact,
-) -> Result<PathBuf> {
-    let args = cargo_build_args(artifact);
+    artifacts: &[BuildArtifact],
+) -> Result<Vec<PathBuf>> {
+    let args = cargo_build_args(artifacts)?;
     tracing::info!("Building: cargo {}", args.join(" "));
     let mut cmd = std::process::Command::new("cargo");
     cmd.args(&args).current_dir(source_dir);
@@ -214,16 +253,19 @@ fn build_in_workspace(
         None => metadata_target_dir(source_dir)?,
     };
     let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
-    let (name, is_example) = artifact_name_kind(artifact);
-    Ok(local_target_artifact_path(
-        &target_dir,
-        &name,
-        is_example,
-        rust_target.as_deref(),
-    ))
+    Ok(artifacts
+        .iter()
+        .map(|artifact| {
+            let (name, is_example) = artifact_name_kind(artifact);
+            local_target_artifact_path(&target_dir, &name, is_example, rust_target.as_deref())
+        })
+        .collect())
 }
 
-fn cargo_build_args(artifact: &BuildArtifact) -> Vec<String> {
+fn cargo_build_args(artifacts: &[BuildArtifact]) -> Result<Vec<String>> {
+    if artifacts.is_empty() {
+        bail!("no artifacts to build");
+    }
     let mut args: Vec<String> = vec!["build".into(), "--release".into()];
     if let Ok(target) = std::env::var("RUST_TARGET") {
         if !target.trim().is_empty() {
@@ -231,21 +273,42 @@ fn cargo_build_args(artifact: &BuildArtifact) -> Vec<String> {
             args.push(target.trim().to_string());
         }
     }
-    if artifact.all_features {
+    let all_features = artifacts[0].all_features;
+    if artifacts
+        .iter()
+        .any(|artifact| artifact.all_features != all_features)
+    {
+        bail!("all artifacts in one build call must share all-features setting");
+    }
+    let features = artifacts[0].features.clone();
+    if artifacts
+        .iter()
+        .any(|artifact| artifact.features != features)
+    {
+        bail!("all artifacts in one build call must share feature list");
+    }
+    if all_features {
         args.push("--all-features".into());
-    } else if !artifact.features.is_empty() {
+    } else if !features.is_empty() {
         args.push("--features".into());
-        args.push(artifact.features.join(","));
+        args.push(features.join(","));
     }
-    let (name, is_example) = artifact_name_kind(artifact);
-    if is_example {
-        args.push("--example".into());
-        args.push(name);
-    } else {
-        args.push("--bin".into());
-        args.push(name);
+    let mut seen = BTreeSet::new();
+    for artifact in artifacts {
+        let (name, is_example) = artifact_name_kind(artifact);
+        let key = format!("{}:{}", if is_example { "example" } else { "bin" }, name);
+        if !seen.insert(key) {
+            continue;
+        }
+        if is_example {
+            args.push("--example".into());
+            args.push(name);
+        } else {
+            args.push("--bin".into());
+            args.push(name);
+        }
     }
-    args
+    Ok(args)
 }
 
 fn artifact_name_kind(artifact: &BuildArtifact) -> (String, bool) {

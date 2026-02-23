@@ -13,7 +13,9 @@ use netsim::config::LabConfig;
 use netsim::Lab;
 use serde::Serialize;
 
-use crate::sim::build::{build_local_binary, build_or_fetch_binary, BuildArtifact};
+use crate::sim::build::{
+    build_local_binaries, build_local_binary, build_or_fetch_binary, BuildArtifact,
+};
 use crate::sim::capture::CaptureStore;
 use crate::sim::env::SimEnv;
 use crate::sim::progress::{
@@ -618,8 +620,8 @@ async fn build_prepare_assets_for_run(
     tokio::fs::create_dir_all(&prep_dir)
         .await
         .with_context(|| format!("create {}", prep_dir.display()))?;
-    for req in requests {
-        if no_build {
+    if no_build {
+        for req in requests {
             let spec = BinarySpec {
                 name: req.name.clone(),
                 mode: Some("target".to_string()),
@@ -633,9 +635,17 @@ async fn build_prepare_assets_for_run(
                 all_features: false,
             };
             let _ = build_or_fetch_binary(&spec, &prep_dir, build_root, true).await?;
-            continue;
         }
-        let _ = build_local_binary(&req, build_root, &prep_dir).await?;
+        return Ok(());
+    }
+
+    let mut grouped: HashMap<(bool, String), Vec<BuildArtifact>> = HashMap::new();
+    for req in requests {
+        let key = (req.all_features, req.features.join(","));
+        grouped.entry(key).or_default().push(req);
+    }
+    for group in grouped.values() {
+        let _ = build_local_binaries(group, build_root, &prep_dir).await?;
     }
     Ok(())
 }
@@ -1335,9 +1345,7 @@ fn load_extends(
         for b in parsed.binaries {
             binaries.push(b);
         }
-        if let Some(prepare) = parsed.prepare {
-            prepares.push(prepare);
-        }
+        prepares.extend(parsed.prepare);
     }
 
     // Inline definitions override extends.

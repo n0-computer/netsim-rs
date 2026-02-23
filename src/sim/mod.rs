@@ -10,7 +10,7 @@ pub mod topology;
 pub use runner::prepare_sims;
 pub use runner::run_sims;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -31,7 +31,8 @@ pub struct SimFile {
     pub binaries: Vec<BinarySpec>,
 
     /// Optional bulk build preparation configuration.
-    pub prepare: Option<PrepareSpec>,
+    #[serde(default, deserialize_with = "deserialize_prepare_specs")]
+    pub prepare: Vec<PrepareSpec>,
 
     /// Named step templates — `[[step-template]]`.
     #[serde(default, rename = "step-template")]
@@ -72,7 +73,7 @@ pub struct ExtendsEntry {
     pub file: String,
 }
 
-/// Optional `[prepare]` block for prebuilding workspace binaries.
+/// Optional `[[prepare]]` entries for prebuilding workspace binaries.
 #[derive(Deserialize, Clone, PartialEq, Eq, Default)]
 pub struct PrepareSpec {
     /// Preparation mode (currently supports `build`).
@@ -89,6 +90,25 @@ pub struct PrepareSpec {
     /// Binaries to prebuild in release mode.
     #[serde(default)]
     pub bins: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PrepareField {
+    One(PrepareSpec),
+    Many(Vec<PrepareSpec>),
+}
+
+fn deserialize_prepare_specs<'de, D>(deserializer: D) -> Result<Vec<PrepareSpec>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let parsed = Option::<PrepareField>::deserialize(deserializer)?;
+    Ok(match parsed {
+        None => Vec::new(),
+        Some(PrepareField::One(spec)) => vec![spec],
+        Some(PrepareField::Many(specs)) => specs,
+    })
 }
 
 /// Binary source specification inside a `[[binary]]` entry.
