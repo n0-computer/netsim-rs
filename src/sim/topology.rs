@@ -11,7 +11,7 @@ use crate::sim::SimFile;
 /// with a fallback to `<cwd>/topos/<name>.toml`.
 pub fn load_topology(sim: &SimFile, sim_path: &Path) -> Result<LabConfig> {
     if let Some(name) = &sim.sim.topology {
-        if !sim.router.is_empty() || !sim.device.is_empty() || sim.region.is_some() {
+        if !sim.topology.router.is_empty() || !sim.topology.device.is_empty() || sim.topology.region.is_some() {
             bail!(
                 "sim.topology is set to '{}'; inline router/device/region tables are not allowed",
                 name
@@ -44,11 +44,7 @@ pub fn load_topology(sim: &SimFile, sim_path: &Path) -> Result<LabConfig> {
             .with_context(|| format!("read topology file {}", chosen.display()))?;
         toml::from_str::<LabConfig>(&text).context("parse topology file")
     } else {
-        Ok(LabConfig {
-            router: sim.router.clone(),
-            device: sim.device.clone(),
-            region: sim.region.clone(),
-        })
+        Ok(sim.topology.clone())
     }
 }
 
@@ -111,12 +107,15 @@ gateway = "r1"
                 topology: Some("a".into()),
                 binaries: None,
             },
-            router: vec![netsim::config::RouterCfg {
-                name: "r1".into(),
-                region: None,
-                upstream: None,
-                nat: netsim::NatMode::None,
-            }],
+            topology: netsim::config::LabConfig {
+                router: vec![netsim::config::RouterCfg {
+                    name: "r1".into(),
+                    region: None,
+                    upstream: None,
+                    nat: netsim::NatMode::None,
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         };
         let err = match load_topology(&sim, Path::new("sims/sim.toml")) {

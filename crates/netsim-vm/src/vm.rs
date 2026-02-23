@@ -1,7 +1,7 @@
 use crate::util::stage_binary_overrides;
 use netsim::binary_cache::set_executable;
 use anyhow::{anyhow, bail, Context, Result};
-use netsim::assets::parse_binary_overrides;
+use netsim::assets::{infer_binary_mode, parse_binary_overrides, BinarySpec};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -481,22 +481,6 @@ fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
     ssh_cmd(vm, &refs)
 }
 
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-struct VmBinarySpec {
-    name: String,
-    mode: Option<String>,
-    path: Option<PathBuf>,
-    url: Option<String>,
-    repo: Option<String>,
-    commit: Option<String>,
-    example: Option<String>,
-    bin: Option<String>,
-    #[serde(default)]
-    features: Vec<String>,
-    #[serde(default, rename = "all-features")]
-    all_features: bool,
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 struct VmExtends {
     file: String,
@@ -514,7 +498,7 @@ struct VmSimFile {
     #[serde(default)]
     extends: Vec<VmExtends>,
     #[serde(default, rename = "binary")]
-    binaries: Vec<VmBinarySpec>,
+    binaries: Vec<BinarySpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -541,7 +525,7 @@ fn assemble_guest_build_overrides(vm: &VmConfig, args: &RunVmArgs) -> Result<Vec
             if user_override_names.contains(&spec.name) {
                 continue;
             }
-            if vm_binary_mode(&spec)? != "build" {
+            if infer_binary_mode(&spec)? != "build" {
                 continue;
             }
             if spec.repo.is_some() {
@@ -633,7 +617,7 @@ fn load_vm_sim(sim_path: &Path) -> Result<(VmSimFile, PathBuf)> {
 fn merged_vm_binary_specs(
     sim: &VmSimFile,
     sim_path: &Path,
-) -> Result<HashMap<String, VmBinarySpec>> {
+) -> Result<HashMap<String, BinarySpec>> {
     let mut merged = HashMap::new();
     for spec in load_vm_extends_binaries(sim, sim_path)?
         .into_iter()
@@ -645,7 +629,7 @@ fn merged_vm_binary_specs(
     Ok(merged)
 }
 
-fn load_vm_extends_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBinarySpec>> {
+fn load_vm_extends_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<BinarySpec>> {
     let sim_dir = sim_path.parent().unwrap_or(Path::new("."));
     let mut out = Vec::new();
     for ext in &sim.extends {
@@ -659,11 +643,11 @@ fn load_vm_extends_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBi
     Ok(out)
 }
 
-fn load_vm_shared_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBinarySpec>> {
+fn load_vm_shared_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<BinarySpec>> {
     #[derive(Deserialize, Default)]
     struct BinaryFile {
         #[serde(default, rename = "binary")]
-        binaries: Vec<VmBinarySpec>,
+        binaries: Vec<BinarySpec>,
     }
 
     let Some(ref_name) = sim.sim.binaries.as_deref() else {
@@ -677,26 +661,8 @@ fn load_vm_shared_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<VmBin
     Ok(parsed.binaries)
 }
 
-fn vm_binary_mode(spec: &VmBinarySpec) -> Result<&str> {
-    if let Some(mode) = spec.mode.as_deref() {
-        return Ok(mode);
-    }
-    if spec.path.is_some() {
-        return Ok("path");
-    }
-    if spec.url.is_some() {
-        return Ok("fetch");
-    }
-    if spec.repo.is_some() || spec.example.is_some() || spec.bin.is_some() {
-        return Ok("build");
-    }
-    bail!(
-        "binary '{}' has no mode and no source fields (expected build|path|fetch)",
-        spec.name
-    )
-}
 
-fn resolve_vm_build_source_dir(spec: &VmBinarySpec, default_root: &Path) -> Result<PathBuf> {
+fn resolve_vm_build_source_dir(spec: &BinarySpec, default_root: &Path) -> Result<PathBuf> {
     if let Some(path) = &spec.path {
         let resolved = if path.is_absolute() {
             path.clone()

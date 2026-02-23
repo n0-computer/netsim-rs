@@ -12,7 +12,9 @@ pub use runner::run_sims;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+
+// Re-export BinarySpec from the library so callers need only import one place.
+pub use netsim::assets::BinarySpec;
 
 // ── Sim TOML types ────────────────────────────────────────────────────────────
 
@@ -42,12 +44,10 @@ pub struct SimFile {
     #[serde(default, rename = "step-group")]
     pub step_groups: Vec<StepGroupDef>,
 
-    // ── Inline topology ────────────────────────────────────────────────────
-    #[serde(default)]
-    pub router: Vec<netsim::config::RouterCfg>,
-    #[serde(default)]
-    pub device: HashMap<String, toml::Value>,
-    pub region: Option<HashMap<String, netsim::config::RegionConfig>>,
+    // ── Inline topology (flattened from LabConfig) ──────────────────────────
+    /// Inline router/device/region topology; mutually exclusive with `sim.topology`.
+    #[serde(flatten)]
+    pub topology: netsim::config::LabConfig,
 
     // ── Steps (`[[step]]` array) ───────────────────────────────────────────
     /// Raw step entries — either `UseTemplate` (has `use` key) or `Concrete` (has `kind`/`action`).
@@ -112,32 +112,6 @@ where
     })
 }
 
-/// Binary source specification inside a `[[binary]]` entry.
-#[derive(Deserialize, Clone, PartialEq, Eq)]
-pub struct BinarySpec {
-    /// Identifier used in `${binary.<name>}` substitutions.
-    pub name: String,
-    /// Source mode (`build`, `path`, `fetch`), optional for backward compatibility.
-    pub mode: Option<String>,
-    /// Local (possibly relative) path to a prebuilt binary.
-    pub path: Option<PathBuf>,
-    /// HTTP(S) URL to a tar.gz archive or bare binary.
-    pub url: Option<String>,
-    /// Git repository URL (combined with `commit` and `example`/`bin`).
-    pub repo: Option<String>,
-    /// Branch, tag, or SHA to check out (default: `"main"`).
-    pub commit: Option<String>,
-    /// `cargo --example <name>` to build.
-    pub example: Option<String>,
-    /// `cargo --bin <name>` to build.
-    pub bin: Option<String>,
-    /// Optional cargo feature list for build mode.
-    #[serde(default)]
-    pub features: Vec<String>,
-    /// Build with all features enabled for build mode.
-    #[serde(default, rename = "all-features")]
-    pub all_features: bool,
-}
 
 /// `[[step-template]]` entry: name + raw TOML table for merge-then-parse.
 #[derive(Deserialize, Clone)]

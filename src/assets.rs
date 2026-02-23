@@ -201,3 +201,60 @@ pub fn resolve_target_artifact(kind: &str, name: &str, mode: PathResolveMode) ->
     };
     target_artifact_path(&target_dir, target.as_deref(), kind, name)
 }
+
+// ─────────────────────────────────────────────
+// Binary source specification (shared with netsim-vm)
+// ─────────────────────────────────────────────
+
+/// Binary source specification inside a `[[binary]]` entry.
+///
+/// Shared between the host CLI (`netsim`) and the VM runner (`netsim-vm`)
+/// so both can parse and operate on the same TOML format.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+pub struct BinarySpec {
+    /// Identifier used in `${binary.<name>}` substitutions.
+    pub name: String,
+    /// Source mode (`build`, `path`, `fetch`, `target`), optional for backward compatibility.
+    pub mode: Option<String>,
+    /// Local (possibly relative) path to a prebuilt binary or source directory.
+    pub path: Option<PathBuf>,
+    /// HTTP(S) URL to a tar.gz archive or bare binary.
+    pub url: Option<String>,
+    /// Git repository URL (combined with `commit` and `example`/`bin`).
+    pub repo: Option<String>,
+    /// Branch, tag, or SHA to check out (default: `"main"`).
+    pub commit: Option<String>,
+    /// `cargo --example <name>` to build.
+    pub example: Option<String>,
+    /// `cargo --bin <name>` to build.
+    pub bin: Option<String>,
+    /// Optional cargo feature list for build mode.
+    #[serde(default)]
+    pub features: Vec<String>,
+    /// Build with all features enabled for build mode.
+    #[serde(default, rename = "all-features")]
+    pub all_features: bool,
+}
+
+/// Infer the binary mode from a [`BinarySpec`] when no explicit `mode` is set.
+///
+/// Returns `"path"`, `"fetch"`, `"build"`, or `"target"` (if only `mode = "target"` is set),
+/// or an error if no source fields are present.
+pub fn infer_binary_mode(spec: &BinarySpec) -> Result<&str> {
+    if let Some(mode) = spec.mode.as_deref() {
+        return Ok(mode);
+    }
+    if spec.path.is_some() {
+        return Ok("path");
+    }
+    if spec.url.is_some() {
+        return Ok("fetch");
+    }
+    if spec.repo.is_some() || spec.example.is_some() || spec.bin.is_some() {
+        return Ok("build");
+    }
+    bail!(
+        "binary '{}' has no mode and no source fields (expected build|path|fetch|target)",
+        spec.name
+    )
+}

@@ -329,31 +329,40 @@ impl Lab {
             }
         }
 
-        // Routers: multi-pass until all upstream references resolve.
-        let mut remaining: Vec<&config::RouterCfg> = cfg.router.iter().collect();
-        let mut changed = true;
-        while changed && !remaining.is_empty() {
-            changed = false;
-            let mut next = Vec::new();
-            for rcfg in remaining {
-                let upstream = match &rcfg.upstream {
-                    None => None,
-                    Some(parent_name) => match lab.router_by_name.get(parent_name).copied() {
-                        Some(id) => Some(id),
-                        None => {
-                            next.push(rcfg);
-                            continue;
-                        }
-                    },
-                };
-                lab.add_router(&rcfg.name, rcfg.region.as_deref(), upstream, rcfg.nat)?;
-                changed = true;
+        // Routers: topological sort — process any router whose upstream is already resolved.
+        let mut pending: HashMap<&str, &config::RouterCfg> =
+            cfg.router.iter().map(|r| (r.name.as_str(), r)).collect();
+        loop {
+            let ready: Vec<&str> = pending
+                .keys()
+                .copied()
+                .filter(|&name| {
+                    pending[name]
+                        .upstream
+                        .as_deref()
+                        .map(|up| !pending.contains_key(up))
+                        .unwrap_or(true)
+                })
+                .collect();
+            if ready.is_empty() {
+                break;
             }
-            remaining = next;
+            // Sort for deterministic order (parent before child, stable within same depth).
+            let mut ready = ready;
+            ready.sort();
+            for name in ready {
+                let rcfg = pending.remove(name).unwrap();
+                let upstream = rcfg
+                    .upstream
+                    .as_deref()
+                    .and_then(|n| lab.router_by_name.get(n).copied());
+                lab.add_router(&rcfg.name, rcfg.region.as_deref(), upstream, rcfg.nat)?;
+            }
         }
-        if !remaining.is_empty() {
-            let names: Vec<_> = remaining.iter().map(|r| r.name.as_str()).collect();
-            bail!("unresolvable router upstreams: {}", names.join(", "));
+        if !pending.is_empty() {
+            let mut names: Vec<_> = pending.keys().copied().collect();
+            names.sort();
+            bail!("unresolvable router upstreams (cycle?): {}", names.join(", "));
         }
 
         // Devices — parse raw TOML, pre-resolve router IDs, then build.

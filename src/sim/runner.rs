@@ -19,8 +19,8 @@ use crate::sim::build::{
 use crate::sim::capture::CaptureStore;
 use crate::sim::env::SimEnv;
 use crate::sim::progress::{
-    collect_run_environment, format_timestamp, now_stamp, write_progress, write_run_manifest,
-    ManifestSimSummary, ProgressSim, RunManifest, RunProgress,
+    collect_run_environment, format_timestamp, now_stamp, write_json, write_progress,
+    write_run_manifest, ManifestSimSummary, ProgressSim, RunManifest, RunProgress,
 };
 use crate::sim::report::{
     print_run_summary_table_for_runs, write_combined_results_for_runs, write_results,
@@ -803,9 +803,9 @@ fn setup_summary_from_sim(sim_path: &Path, sim: &SimFile) -> SimSetupSummary {
     } else {
         "inline".to_string()
     };
-    setup.routers = sim.router.len();
-    setup.devices = sim.device.len();
-    setup.regions = sim.region.as_ref().map(|r| r.len()).unwrap_or(0);
+    setup.routers = sim.topology.router.len();
+    setup.devices = sim.topology.device.len();
+    setup.regions = sim.topology.region.as_ref().map(|r| r.len()).unwrap_or(0);
     setup.steps = sim.raw_steps.len();
     setup
 }
@@ -865,11 +865,7 @@ async fn finalize_failed_sim(
 }
 
 async fn write_sim_summary(run_work_dir: &Path, summary: &SimSummary) -> Result<()> {
-    let text = serde_json::to_string_pretty(summary).context("serialize sim summary")?;
-    tokio::fs::write(run_work_dir.join("sim.json"), text)
-        .await
-        .with_context(|| format!("write {}", run_work_dir.join("sim.json").display()))?;
-    Ok(())
+    write_json(run_work_dir.join("sim.json"), summary).await
 }
 
 fn build_run_manifest(

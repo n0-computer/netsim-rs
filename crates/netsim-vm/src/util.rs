@@ -54,7 +54,7 @@ fn stage_path_binary(name: &str, src: &Path, bins_dir: &Path) -> Result<PathBuf>
 }
 
 fn stage_fetch_binary(name: &str, url: &str, work_dir: &Path, bins_dir: &Path) -> Result<PathBuf> {
-    let cached = cached_binary_for_url(url, work_dir)?;
+    let cached = cached_binary_for_url(url, &work_dir.join(".binary-cache"))?;
     let file_name = cached
         .file_name()
         .and_then(|s| s.to_str())

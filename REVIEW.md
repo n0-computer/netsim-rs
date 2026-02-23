@@ -4,7 +4,7 @@ Higher-level suggestions that were not applied directly.
 
 ---
 
-## 1. `VmBinarySpec` duplicates `BinarySpec` (sim/build.rs vs crates/netsim-vm/src/vm.rs)
+## 1. `VmBinarySpec` duplicates `BinarySpec` (sim/build.rs vs crates/netsim-vm/src/vm.rs) ✅
 
 `VmBinarySpec` in `vm.rs` (lines 484–497) is field-for-field identical to `BinarySpec` in
 `src/sim/mod.rs`. Likewise, `vm_binary_mode` in `vm.rs` is a character-for-character copy of
@@ -17,7 +17,7 @@ would allow sharing.
 
 ---
 
-## 2. Multi-pass router resolution is a manual topological sort (src/lib.rs `from_config`)
+## 2. Multi-pass router resolution is a manual topological sort (src/lib.rs `from_config`) ✅
 
 The loop in `from_config` (lines 333–357) repeatedly scans `remaining` routers until all upstream
 references resolve. This is O(n²) and conceptually a topological sort.
@@ -29,19 +29,14 @@ correct but subtle).
 
 ---
 
-## 3. `artifact_name_kind` allocates unnecessarily (src/sim/build.rs)
+## 3. `artifact_name_kind` allocates unnecessarily (src/sim/build.rs) ✅
 
-`artifact_name_kind` returns `(String, bool)`, cloning strings that are only used ephemerally by
-its callers. Changing the return to `(&str, bool)` would eliminate the allocations, but requires
-every call-site where a temporary `BuildArtifact` is constructed inline (e.g. line 39:
-`artifact_name_kind(&BuildArtifact::from_spec(spec))`) to bind the temporary to a `let` first.
-
-**Suggestion**: Bind temporary `BuildArtifact` values before calling `artifact_name_kind` so the
-lifetime is long enough, then change the return to `(&str, bool)`.
+Changed to return `(&str, bool)`; the inline temporary at the `"target"` arm was bound to `let
+artifact`; `args.push` call-sites use `.to_owned()` where a `String` is needed.
 
 ---
 
-## 4. `CaptureStore` accessor pattern is asymmetric (src/sim/capture.rs)
+## 4. `CaptureStore` accessor pattern is asymmetric (src/sim/capture.rs) ✅
 
 `CaptureStore::get` unwraps the `Arc`/`Mutex` inline (`self.inner.0.lock()`), bypassing the
 structured `(Mutex, Condvar)` destructuring used everywhere else. A small private helper
@@ -49,7 +44,7 @@ structured `(Mutex, Condvar)` destructuring used everywhere else. A small privat
 
 ---
 
-## 5. `write_progress` / `write_run_manifest` are copy-paste twins (src/sim/progress.rs)
+## 5. `write_progress` / `write_run_manifest` are copy-paste twins (src/sim/progress.rs) ✅
 
 Both functions serialize a value with `serde_json::to_string_pretty`, then `tokio::fs::write` it
 to a path under `run_root`. The only differences are the filename and the type serialized.
@@ -67,13 +62,13 @@ async fn write_json(path: &Path, value: &impl Serialize) -> Result<()>
 mirroring the same fallback in `build_local_binaries_blocking` (src/sim/build.rs lines 167–197).
 Both exist because the vm crate needs to cross-compile while the host builder does not.
 
-**Suggestion**: Either (a) unify by parameterising the cross-compile target in the host builder,
-or (b) at minimum extract the "try example, fall back to bin" pattern into a shared helper in
-`netsim::binary_cache` or `netsim::assets`.
+**Not applied**: The two paths diverge significantly (cross-compile target, blocking single-step
+vs batched multi-artifact, different artifact path derivation). A shared helper would need to
+replicate all these arguments and would be used only twice with different semantics. Left as-is.
 
 ---
 
-## 7. `SimFile` / `LabConfig` topology duplication (src/sim/topology.rs)
+## 7. `SimFile` / `LabConfig` topology duplication (src/sim/topology.rs) ✅
 
 `load_topology` returns a `LabConfig` constructed from either a file or from `sim.router` /
 `sim.device` / `sim.region` inline fields, which are typed identically to `LabConfig`. `SimFile`
@@ -91,27 +86,22 @@ Template/group expansion (`expand_steps` in runner.rs) operates on raw `toml::va
 with manual key merging, then re-serializes to TOML text and re-deserializes into `Step`. This
 round-trip is fragile and hard to test.
 
-**Suggestion**: Define a proper intermediate AST for the "unresolved step" (a `HashMap<String,
-toml::Value>` with a merge operation) and parse `Step` directly from the merged map using
-`serde::Deserialize` with a `toml::Deserializer`. This avoids the serialise-to-string round-trip.
+**Not applied**: The review description was inaccurate — the code already uses
+`toml::Value::Table(table).try_into::<Step>()` (value → deserializer → type), not a
+serialize-to-string round-trip. The `toml::Value` map approach is equivalent to the suggested
+`toml::Deserializer` approach. No change needed.
 
 ---
 
-## 9. `url_cache_key` could use `hex` crate or iterator collect
+## 9. `url_cache_key` could use `hex` crate or iterator collect ✅
 
-The simplified `digest[..16].iter().map(|b| format!("{b:02x}")).collect::<String>()` (already
-applied) is clear, but allocates 16 small strings. An alternative using `write!` into a
-pre-allocated buffer avoids those allocations, though this is a minor concern for a function that
-runs once per URL.
+Replaced `collect::<String>()` with a `String::with_capacity(32)` buffer written via `write!`
+to avoid the 16 intermediate `String` allocations.
 
 ---
 
-## 10. `binary_cache.rs` `shared_cache_root` heuristic is fragile
+## 10. `binary_cache.rs` `shared_cache_root` heuristic is fragile ✅
 
-`shared_cache_root` determines the cache root by inspecting whether the parent directory name
-starts with `"sim-"`. This string-matching heuristic is not documented and could fail silently
-when the work directory structure changes.
-
-**Suggestion**: Accept an explicit `cache_dir: Option<&Path>` parameter in
-`cached_binary_for_url`, defaulting to `work_dir.join(".binary-cache")` when `None`, and let
-callers supply the shared cache root explicitly.
+Removed `shared_cache_root` entirely (the heuristic never fired with the current `.assemble/`
+work-dir structure). `cached_binary_for_url` now takes `cache_dir: &Path` directly; callers
+pass `work_dir.join(".binary-cache")` explicitly.

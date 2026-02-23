@@ -7,11 +7,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 
-/// Resolve (and cache) a URL-backed binary under a shared work-root cache.
-pub fn cached_binary_for_url(url: &str, work_dir: &Path) -> Result<PathBuf> {
-    let cache_root = shared_cache_root(work_dir).join(".binary-cache");
+/// Resolve (and cache) a URL-backed binary in `cache_dir`.
+///
+/// `cache_dir` should be a persistent directory shared across sim runs
+/// (e.g. `run_root.join(".binary-cache")`).  The caller is responsible for
+/// choosing a directory with an appropriate sharing scope.
+pub fn cached_binary_for_url(url: &str, cache_dir: &Path) -> Result<PathBuf> {
     let key = url_cache_key(url);
-    let entry_dir = cache_root.join(key);
+    let entry_dir = cache_dir.join(key);
     std::fs::create_dir_all(&entry_dir)
         .with_context(|| format!("create cache dir {}", entry_dir.display()))?;
 
@@ -64,26 +67,15 @@ pub fn cached_binary_for_url(url: &str, work_dir: &Path) -> Result<PathBuf> {
 
 /// Compute a stable 32-character hex cache key from a URL (first 16 bytes of SHA-256).
 pub fn url_cache_key(url: &str) -> String {
+    use std::fmt::Write as _;
     let mut hasher = Sha256::new();
     hasher.update(url.as_bytes());
     let digest = hasher.finalize();
-    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn shared_cache_root(work_dir: &Path) -> PathBuf {
-    if let Some(parent) = work_dir.parent() {
-        if parent
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(|s| s.starts_with("sim-"))
-            .unwrap_or(false)
-        {
-            if let Some(root) = parent.parent() {
-                return root.to_path_buf();
-            }
-        }
+    let mut key = String::with_capacity(32);
+    for b in &digest[..16] {
+        write!(key, "{b:02x}").unwrap();
     }
-    work_dir.to_path_buf()
+    key
 }
 
 fn extract_first_binary(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {

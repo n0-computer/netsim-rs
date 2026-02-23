@@ -1,12 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use netsim::assets::{
-    resolve_binary_source_path, resolve_target_artifact, resolve_target_dir, PathResolveMode,
+    infer_binary_mode, resolve_binary_source_path, resolve_target_artifact, resolve_target_dir,
+    BinarySpec, PathResolveMode,
 };
 use netsim::binary_cache::cached_binary_for_url;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-
-use crate::sim::BinarySpec;
 
 /// Resolve a binary spec to a local path, building or downloading as needed.
 pub async fn build_or_fetch_binary(
@@ -15,7 +14,7 @@ pub async fn build_or_fetch_binary(
     build_root: &Path,
     no_build: bool,
 ) -> Result<PathBuf> {
-    let mode = binary_mode(spec)?;
+    let mode = infer_binary_mode(spec)?;
     match mode {
         "path" => {
             let path = spec
@@ -36,9 +35,10 @@ pub async fn build_or_fetch_binary(
             download_binary(url, work_dir).await
         }
         "target" => {
-            let (name, is_example) = artifact_name_kind(&BuildArtifact::from_spec(spec));
+            let artifact = BuildArtifact::from_spec(spec);
+            let (name, is_example) = artifact_name_kind(&artifact);
             let kind = if is_example { "examples" } else { "bin" };
-            let path = resolve_target_artifact(kind, &name, PathResolveMode::from_env())?;
+            let path = resolve_target_artifact(kind, name, PathResolveMode::from_env())?;
             if !path.exists() {
                 bail!(
                     "target artifact for '{}' not found at {}",
@@ -105,8 +105,8 @@ pub async fn build_local_binaries(
 
 async fn download_binary(url: &str, work_dir: &Path) -> Result<PathBuf> {
     let url = url.to_string();
-    let work_dir = work_dir.to_path_buf();
-    tokio::task::spawn_blocking(move || cached_binary_for_url(&url, &work_dir))
+    let cache_dir = work_dir.join(".binary-cache");
+    tokio::task::spawn_blocking(move || cached_binary_for_url(&url, &cache_dir))
         .await
         .context("join cached URL binary task")?
 }
@@ -251,7 +251,7 @@ fn build_in_workspace(source_dir: &Path, artifacts: &[BuildArtifact]) -> Result<
         .iter()
         .map(|artifact| {
             let (name, is_example) = artifact_name_kind(artifact);
-            local_target_artifact_path(&target_dir, &name, is_example, rust_target.as_deref())
+            local_target_artifact_path(&target_dir, name, is_example, rust_target.as_deref())
         })
         .collect())
 }
@@ -296,23 +296,23 @@ fn cargo_build_args(artifacts: &[BuildArtifact]) -> Result<Vec<String>> {
         }
         if is_example {
             args.push("--example".into());
-            args.push(name);
+            args.push(name.to_owned());
         } else {
             args.push("--bin".into());
-            args.push(name);
+            args.push(name.to_owned());
         }
     }
     Ok(args)
 }
 
-fn artifact_name_kind(artifact: &BuildArtifact) -> (String, bool) {
+fn artifact_name_kind(artifact: &BuildArtifact) -> (&str, bool) {
     if let Some(example) = &artifact.example {
-        return (example.clone(), true);
+        return (example, true);
     }
     if let Some(bin) = &artifact.bin {
-        return (bin.clone(), false);
+        return (bin, false);
     }
-    (artifact.name.clone(), true)
+    (&artifact.name, true)
 }
 
 fn metadata_target_dir(source_dir: &Path) -> Result<PathBuf> {
@@ -332,24 +332,6 @@ fn metadata_target_dir(source_dir: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(target_dir))
 }
 
-fn binary_mode(spec: &BinarySpec) -> Result<&str> {
-    if let Some(mode) = spec.mode.as_deref() {
-        return Ok(mode);
-    }
-    if spec.path.is_some() {
-        return Ok("path");
-    }
-    if spec.url.is_some() {
-        return Ok("fetch");
-    }
-    if spec.repo.is_some() || spec.example.is_some() || spec.bin.is_some() {
-        return Ok("build");
-    }
-    bail!(
-        "binary '{}' has no mode and no source fields (expected mode=build|path|fetch)",
-        spec.name
-    )
-}
 
 fn git_clone_or_update(repo: &str, commit: &str, dir: &Path) -> Result<()> {
     if dir.join(".git").exists() {
@@ -416,7 +398,7 @@ fn expected_existing_build_artifact(spec: &BinarySpec, build_root: &Path) -> Res
     let artifact = BuildArtifact::from_spec(spec);
     let (name, is_example) = artifact_name_kind(&artifact);
     let rust_target = std::env::var("RUST_TARGET").ok().filter(|s| !s.is_empty());
-    let path = local_target_artifact_path(&target_dir, &name, is_example, rust_target.as_deref());
+    let path = local_target_artifact_path(&target_dir, name, is_example, rust_target.as_deref());
     if !path.exists() {
         bail!(
             "--no-build: expected artifact for '{}' not found at {}",

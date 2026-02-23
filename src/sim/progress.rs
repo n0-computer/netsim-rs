@@ -71,19 +71,21 @@ pub(crate) fn now_stamp() -> String {
 }
 
 pub(crate) async fn write_run_manifest(run_root: &Path, manifest: &RunManifest) -> Result<()> {
-    let text = serde_json::to_string_pretty(manifest).context("serialize run manifest")?;
-    tokio::fs::write(run_root.join("manifest.json"), text)
-        .await
-        .with_context(|| format!("write {}", run_root.join("manifest.json").display()))?;
-    Ok(())
+    write_json(run_root.join("manifest.json"), manifest).await
 }
 
 pub(crate) async fn write_progress(run_root: &Path, progress: &RunProgress) -> Result<()> {
-    let text = serde_json::to_string_pretty(progress).context("serialize run progress")?;
-    tokio::fs::write(run_root.join("progress.json"), text)
+    write_json(run_root.join("progress.json"), progress).await
+}
+
+/// Serialize `value` as pretty JSON and write it atomically to `path`.
+pub(crate) async fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<()> {
+    let path = path.as_ref();
+    let text =
+        serde_json::to_string_pretty(value).with_context(|| format!("serialize {}", path.display()))?;
+    tokio::fs::write(path, text)
         .await
-        .with_context(|| format!("write {}", run_root.join("progress.json").display()))?;
-    Ok(())
+        .with_context(|| format!("write {}", path.display()))
 }
 
 pub(crate) fn collect_run_environment() -> Result<RunEnvironment> {

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// A single named capture slot.
@@ -42,10 +42,18 @@ impl CaptureStore {
         }
     }
 
+    fn lock(&self) -> MutexGuard<'_, CaptureInner> {
+        self.inner.0.lock().unwrap()
+    }
+
+    fn lock_cvar(&self) -> (&Mutex<CaptureInner>, &Condvar) {
+        (&self.inner.0, &self.inner.1)
+    }
+
     /// Record a new value for a capture key `"step_id.capture_name"`.
     /// Appends to `history`, wakes all waiters.
     pub fn record(&self, key: &str, value: String) {
-        let (lock, cvar) = &*self.inner;
+        let (lock, cvar) = self.lock_cvar();
         let mut inner = lock.lock().unwrap();
         inner
             .slots
@@ -60,7 +68,7 @@ impl CaptureStore {
     /// Returns `Err` on timeout.
     pub fn wait(&self, key: &str, timeout: Duration) -> Result<String> {
         let deadline = Instant::now() + timeout;
-        let (lock, cvar) = &*self.inner;
+        let (lock, cvar) = self.lock_cvar();
         let mut inner = lock.lock().unwrap();
         loop {
             if let Some(v) = inner.slots.get(key).and_then(|s| s.value()) {
@@ -80,13 +88,6 @@ impl CaptureStore {
 
     /// Non-blocking latest value for interpolation (returns `None` if unset).
     pub fn get(&self, key: &str) -> Option<String> {
-        self.inner
-            .0
-            .lock()
-            .unwrap()
-            .slots
-            .get(key)?
-            .value()
-            .map(|s| s.to_owned())
+        self.lock().slots.get(key)?.value().map(|s| s.to_owned())
     }
 }
