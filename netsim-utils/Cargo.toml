@@ -13,5 +13,6 @@ sha2     = "0.10"
 flate2   = "1"
 tar      = "0.4"
 tracing  = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webbrowser = "1"
 glob     = "0.3"

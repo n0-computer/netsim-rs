@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let ui_dir = manifest_dir.parent().expect("workspace root").join("ui");
     println!("cargo:rerun-if-changed=../ui/package.json");
     println!("cargo:rerun-if-changed=../ui/package-lock.json");

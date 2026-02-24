@@ -11,7 +11,10 @@ use crate::sim::SimFile;
 /// with a fallback to `<cwd>/topos/<name>.toml`.
 pub fn load_topology(sim: &SimFile, sim_path: &Path) -> Result<LabConfig> {
     if let Some(name) = &sim.sim.topology {
-        if !sim.topology.router.is_empty() || !sim.topology.device.is_empty() || sim.topology.region.is_some() {
+        if !sim.topology.router.is_empty()
+            || !sim.topology.device.is_empty()
+            || sim.topology.region.is_some()
+        {
             bail!(
                 "sim.topology is set to '{}'; inline router/device/region tables are not allowed",
                 name

@@ -8,8 +8,8 @@
 - [x] Add `netsim-vm run` with `--netsim-version` (latest, release tag, `git:<ref>`, `path:`)
 - [x] Add `netsim-vm test` VM test execution (host build/discover, guest execute, summary)
 - [x] Replace Makefile VM tasks with `cargo run -p netsim-vm -- ...`
-- [ ] Remove `qemu-vm.sh` file from repository
-- [ ] Remove `netsim run-vm` path from `netsim` binary (deferred by request)
+- [x] Remove `qemu-vm.sh` file from repository
+- [x] Remove `netsim run-vm` path from `netsim` binary (deferred by request)
 - [ ] Final review
 
 ## Goal

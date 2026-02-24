@@ -116,4 +116,3 @@ fn stage_build_binary(
     set_executable(&dest)?;
     Ok(dest)
 }
-

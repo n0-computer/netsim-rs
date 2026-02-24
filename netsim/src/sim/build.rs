@@ -332,7 +332,6 @@ fn metadata_target_dir(source_dir: &Path) -> Result<PathBuf> {
     Ok(PathBuf::from(target_dir))
 }
 
-
 fn git_clone_or_update(repo: &str, commit: &str, dir: &Path) -> Result<()> {
     if dir.join(".git").exists() {
         let status = std::process::Command::new("git")

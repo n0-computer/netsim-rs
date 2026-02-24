@@ -81,8 +81,8 @@ pub(crate) async fn write_progress(run_root: &Path, progress: &RunProgress) -> R
 /// Serialize `value` as pretty JSON and write it atomically to `path`.
 pub(crate) async fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<()> {
     let path = path.as_ref();
-    let text =
-        serde_json::to_string_pretty(value).with_context(|| format!("serialize {}", path.display()))?;
+    let text = serde_json::to_string_pretty(value)
+        .with_context(|| format!("serialize {}", path.display()))?;
     tokio::fs::write(path, text)
         .await
         .with_context(|| format!("write {}", path.display()))

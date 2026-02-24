@@ -112,7 +112,6 @@ where
     })
 }
 
-
 /// `[[step-template]]` entry: name + raw TOML table for merge-then-parse.
 #[derive(Deserialize, Clone)]
 pub struct StepTemplateDef {

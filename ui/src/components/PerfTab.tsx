@@ -28,7 +28,7 @@ function hasAny(steps: StepResult[], field: keyof StepResult): boolean {
 
 export default function PerfTab({ results }: { results: SimResults | null }) {
   if (!results) return <div className="empty">no results for this simulation yet</div>
-  const { steps, iperf = [] } = results
+  const { steps } = results
 
   const showDown = hasAny(steps, 'down_bytes')
   const showUp = hasAny(steps, 'up_bytes')
@@ -60,38 +60,6 @@ export default function PerfTab({ results }: { results: SimResults | null }) {
                     {showDuration && <td>{fmt(elapsedS(r.duration), 2, 's')}</td>}
                     {showDown && <td>{r.down_bytes ?? '—'}</td>}
                     {showUp && <td>{r.up_bytes ?? '—'}</td>}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {iperf.length > 0 && (
-        <div className="section">
-          <div className="section-header">iperf</div>
-          <div className="tbl-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Device</th>
-                  <th>Mbps</th>
-                  <th>Retx</th>
-                  <th>Baseline</th>
-                  <th>Delta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {iperf.map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.id}</td>
-                    <td>{r.device}</td>
-                    <td>{fmt(r.mbps, 2)}</td>
-                    <td>{fmt(r.retransmits, 0)}</td>
-                    <td>{r.baseline ?? '—'}</td>
-                    <td>{fmt(r.delta_mbps, 2)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -2,9 +2,9 @@
 
 pub use netsim_core as core;
 pub use netsim_core::{
-    Lab, DeviceBuilder, NodeId, NatMode, Impair, ObservedAddr,
-    init_userns, check_caps,
-    config::{LabConfig, RouterConfig, RegionConfig},
+    check_caps,
+    config::{LabConfig, RegionConfig, RouterConfig},
+    init_userns, DeviceBuilder, Impair, Lab, NatMode, NodeId, ObservedAddr,
 };
 pub use netsim_utils::assets::BinaryOverride;
 
@@ -25,7 +25,15 @@ pub async fn run_sims(
     project_root: Option<PathBuf>,
     no_build: bool,
 ) -> Result<()> {
-    sim::run_sims(sim_inputs, work_dir, binary_overrides, verbose, project_root, no_build).await
+    sim::run_sims(
+        sim_inputs,
+        work_dir,
+        binary_overrides,
+        verbose,
+        project_root,
+        no_build,
+    )
+    .await
 }
 
 /// Build / fetch binaries declared in sim files without executing steps.
@@ -36,5 +44,12 @@ pub async fn prepare_sims(
     project_root: Option<PathBuf>,
     no_build: bool,
 ) -> Result<()> {
-    sim::prepare_sims(sim_inputs, work_dir, binary_overrides, project_root, no_build).await
+    sim::prepare_sims(
+        sim_inputs,
+        work_dir,
+        binary_overrides,
+        project_root,
+        no_build,
+    )
+    .await
 }

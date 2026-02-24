@@ -140,7 +140,7 @@ fn main() -> Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn tokio_main() -> Result<()> {
-    netsim_core::Lab::init_tracing();
+    netsim_utils::init_tracing();
     let cli = Cli::parse();
     match cli.command {
         Command::Run {
@@ -607,7 +607,9 @@ fn env_key_suffix(name: &str) -> String {
     netsim_core::util::sanitize_for_env_key(name)
 }
 
-fn load_topology_for_inspect(input: &std::path::Path) -> Result<(netsim_core::config::LabConfig, bool)> {
+fn load_topology_for_inspect(
+    input: &std::path::Path,
+) -> Result<(netsim_core::config::LabConfig, bool)> {
     let text =
         std::fs::read_to_string(input).with_context(|| format!("read {}", input.display()))?;
     let value: toml::Value =
@@ -904,8 +906,10 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).expect("create temp workdir");
-        let workspace_root =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
+        let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let sim_path = workspace_root.join("iroh-integration/netsim/sims/iperf-1to1-public.toml");
         let project_root = workspace_root;
         sim::run_sims(
@@ -938,7 +942,11 @@ mod tests {
             .parse::<u64>()
             .map(|us| us as f64 / 1_000_000.0)
             .unwrap_or_else(|_| {
-                step["duration"].as_str().unwrap().parse::<f64>().expect("duration as float")
+                step["duration"]
+                    .as_str()
+                    .unwrap()
+                    .parse::<f64>()
+                    .expect("duration as float")
             });
         let mb_s = down_bytes / (duration * 1_000_000.0);
         assert!(mb_s > 0.0, "expected mb_s > 0, got {mb_s}");

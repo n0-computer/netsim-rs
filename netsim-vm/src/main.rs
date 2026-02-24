@@ -77,6 +77,7 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    netsim_utils::init_tracing();
     let cli = Cli::parse();
     match cli.command {
         Command::Up { recreate } => vm::up_cmd(recreate),

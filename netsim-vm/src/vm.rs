@@ -1,7 +1,7 @@
 use crate::util::stage_binary_overrides;
-use netsim_utils::binary_cache::set_executable;
 use anyhow::{anyhow, bail, Context, Result};
 use netsim_utils::assets::{infer_binary_mode, parse_binary_overrides, BinarySpec};
+use netsim_utils::binary_cache::set_executable;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -614,10 +614,7 @@ fn load_vm_sim(sim_path: &Path) -> Result<(VmSimFile, PathBuf)> {
     Ok((sim, root))
 }
 
-fn merged_vm_binary_specs(
-    sim: &VmSimFile,
-    sim_path: &Path,
-) -> Result<HashMap<String, BinarySpec>> {
+fn merged_vm_binary_specs(sim: &VmSimFile, sim_path: &Path) -> Result<HashMap<String, BinarySpec>> {
     let mut merged = HashMap::new();
     for spec in load_vm_extends_binaries(sim, sim_path)?
         .into_iter()
@@ -660,7 +657,6 @@ fn load_vm_shared_binaries(sim: &VmSimFile, sim_path: &Path) -> Result<Vec<Binar
     let parsed: BinaryFile = toml::from_str(&text).context("parse shared binaries file")?;
     Ok(parsed.binaries)
 }
-
 
 fn resolve_vm_build_source_dir(spec: &BinarySpec, default_root: &Path) -> Result<PathBuf> {
     if let Some(path) = &spec.path {

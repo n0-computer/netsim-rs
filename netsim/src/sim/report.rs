@@ -86,7 +86,15 @@ pub async fn write_results(
 /// Columns: sim, id, down_bytes, elapsed_s, mb_s, up_bytes, up_mb_s.
 /// Only emits columns with at least one non-empty value.
 fn build_steps_md_table(sim_name: &str, step_results: &[StepResultRecord]) -> String {
-    let headers = ["sim", "id", "down_bytes", "elapsed_s", "mb_s", "up_bytes", "up_mb_s"];
+    let headers = [
+        "sim",
+        "id",
+        "down_bytes",
+        "elapsed_s",
+        "mb_s",
+        "up_bytes",
+        "up_mb_s",
+    ];
 
     let rows: Vec<Vec<String>> = step_results
         .iter()
@@ -100,9 +108,7 @@ fn build_steps_md_table(sim_name: &str, step_results: &[StepResultRecord]) -> St
                     .unwrap_or_default(),
                 r.mb_s().map(|v| format!("{:.2}", v)).unwrap_or_default(),
                 r.up_bytes.clone().unwrap_or_default(),
-                r.up_mb_s()
-                    .map(|v| format!("{:.2}", v))
-                    .unwrap_or_default(),
+                r.up_mb_s().map(|v| format!("{:.2}", v)).unwrap_or_default(),
             ]
         })
         .collect();
@@ -218,9 +224,7 @@ pub async fn write_combined_results_for_runs(work_root: &Path, run_names: &[Stri
                         .unwrap_or_default(),
                     r.mb_s().map(|v| format!("{:.2}", v)).unwrap_or_default(),
                     r.up_bytes.clone().unwrap_or_default(),
-                    r.up_mb_s()
-                        .map(|v| format!("{:.2}", v))
-                        .unwrap_or_default(),
+                    r.up_mb_s().map(|v| format!("{:.2}", v)).unwrap_or_default(),
                 ]
             })
         })

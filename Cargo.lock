@@ -1130,6 +1130,7 @@ dependencies = [
  "sha2",
  "tar",
  "tracing",
+ "tracing-subscriber",
  "webbrowser",
 ]
 

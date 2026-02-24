@@ -5,23 +5,9 @@ export interface StepResult {
   up_bytes?: string
 }
 
-export interface IperfResult {
-  id: string
-  device: string
-  bytes?: number
-  seconds?: number
-  bits_per_second?: number
-  mbps?: number
-  retransmits?: number
-  baseline?: string
-  delta_mbps?: number
-  delta_pct?: number
-}
-
 export interface SimResults {
   sim: string
   steps: StepResult[]
-  iperf?: IperfResult[]
 }
 
 export type LogKind = 'transfer' | 'text' | 'qlog'

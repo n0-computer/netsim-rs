@@ -25,6 +25,8 @@ pub struct CoreConfig {
     pub prefix: String,
     /// Stores the dedicated lab root namespace name.
     pub root_ns: String,
+    /// Short tag used to generate bridge interface names (e.g. `"p1230"`).
+    pub bridge_tag: String,
     /// Stores the IX bridge interface name inside the lab root namespace.
     pub ix_br: String,
     /// Stores the IX gateway IPv4 address.
@@ -41,13 +43,6 @@ pub struct CoreConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(pub u64);
 
-/// Identifies a device node.
-pub type DeviceId = NodeId;
-/// Identifies a router node.
-pub type RouterId = NodeId;
-/// Identifies a switch node.
-pub type SwitchId = NodeId;
-
 /// Selects the address pool used for router downstream links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DownstreamPool {
@@ -62,8 +57,6 @@ pub enum DownstreamPool {
 pub struct RouterConfig {
     /// Selects router NAT behavior.
     pub nat: NatMode,
-    /// Stores the downstream bridge name.
-    pub downlink_bridge: String,
     /// Selects which pool to allocate downstream subnets from.
     pub downstream_pool: DownstreamPool,
 }
@@ -74,7 +67,7 @@ pub struct DeviceIface {
     /// Interface name inside the device namespace (e.g. `"eth0"`).
     pub ifname: String,
     /// Stores the switch this interface is attached to.
-    pub uplink: SwitchId,
+    pub uplink: NodeId,
     /// Assigned IP address.
     pub ip: Option<Ipv4Addr>,
     /// Optional link impairment applied via `tc netem`.
@@ -87,7 +80,7 @@ pub struct DeviceIface {
 #[derive(Clone, Debug)]
 pub struct Device {
     /// Identifies the device.
-    pub id: DeviceId,
+    pub id: NodeId,
     /// Stores the device name.
     pub name: String,
     /// Stores the device namespace name.
@@ -124,7 +117,7 @@ impl Device {
 #[derive(Clone, Debug)]
 pub struct Router {
     /// Identifies the router.
-    pub id: RouterId,
+    pub id: NodeId,
     /// Stores the router name.
     pub name: String,
     /// Stores the router namespace name.
@@ -133,12 +126,14 @@ pub struct Router {
     pub region: Option<String>,
     /// Stores static router configuration.
     pub cfg: RouterConfig,
+    /// Stores the bridge name for the downstream LAN side.
+    pub downlink_bridge: String,
     /// Stores the uplink switch identifier.
-    pub uplink: Option<SwitchId>,
+    pub uplink: Option<NodeId>,
     /// Stores the router uplink IPv4 address.
     pub upstream_ip: Option<Ipv4Addr>,
     /// Stores the downstream switch identifier.
-    pub downlink: Option<SwitchId>,
+    pub downlink: Option<NodeId>,
     /// Stores the downstream subnet CIDR.
     pub downstream_cidr: Option<Ipv4Net>,
     /// Stores the downstream gateway address.
@@ -149,7 +144,7 @@ pub struct Router {
 #[derive(Clone, Debug)]
 pub struct Switch {
     /// Identifies the switch.
-    pub id: SwitchId,
+    pub id: NodeId,
     /// Stores the switch name.
     pub name: String,
     /// Stores the switch subnet if assigned.
@@ -157,7 +152,7 @@ pub struct Switch {
     /// Stores the switch gateway address if assigned.
     pub gw: Option<Ipv4Addr>,
     /// Stores the owning router for managed downstream switches.
-    pub owner_router: Option<RouterId>,
+    pub owner_router: Option<NodeId>,
     /// Stores the backing bridge name.
     pub bridge: Option<String>,
     next_host: u8,
@@ -189,10 +184,12 @@ pub struct NetworkCore {
     next_public_subnet: u16,
     next_ix_low: u8,
     next_ix_high: u8,
-    ix_sw: SwitchId,
-    devices: HashMap<DeviceId, Device>,
-    routers: HashMap<RouterId, Router>,
-    switches: HashMap<SwitchId, Switch>,
+    bridge_counter: u32,
+    ns_counter: u32,
+    ix_sw: NodeId,
+    devices: HashMap<NodeId, Device>,
+    routers: HashMap<NodeId, Router>,
+    switches: HashMap<NodeId, Switch>,
     nodes_by_name: HashMap<String, NodeId>,
 }
 
@@ -380,6 +377,8 @@ impl NetworkCore {
             next_public_subnet: 1,
             next_ix_low: 10,
             next_ix_high: 250,
+            bridge_counter: 2,
+            ns_counter: 1,
             ix_sw: NodeId(0),
             devices: HashMap::new(),
             routers: HashMap::new(),
@@ -389,6 +388,18 @@ impl NetworkCore {
         let ix_sw = core.add_switch("ix", Some(core.cfg.ix_cidr), Some(core.cfg.ix_gw));
         core.ix_sw = ix_sw;
         core
+    }
+
+    fn next_bridge_name(&mut self) -> String {
+        let name = format!("br-{}-{}", self.cfg.bridge_tag, self.bridge_counter);
+        self.bridge_counter = self.bridge_counter.saturating_add(1);
+        name
+    }
+
+    fn next_ns_name(&mut self) -> String {
+        let id = self.ns_counter;
+        self.ns_counter = self.ns_counter.saturating_add(1);
+        format!("{}-{}", self.cfg.prefix, id)
     }
 
     async fn with_netns<F>(&self, ns: &str, f: F) -> Result<()>
@@ -434,7 +445,7 @@ impl NetworkCore {
     }
 
     /// Returns the IX switch identifier.
-    pub fn ix_sw(&self) -> SwitchId {
+    pub fn ix_sw(&self) -> NodeId {
         self.ix_sw
     }
 
@@ -444,7 +455,7 @@ impl NetworkCore {
     }
 
     /// Returns the namespace name for router `id`.
-    pub fn router_ns(&self, id: RouterId) -> Result<&str> {
+    pub fn router_ns(&self, id: NodeId) -> Result<&str> {
         self.routers
             .get(&id)
             .map(|r| r.ns.as_str())
@@ -452,7 +463,7 @@ impl NetworkCore {
     }
 
     /// Returns the namespace name for device `id`.
-    pub fn device_ns(&self, id: DeviceId) -> Result<&str> {
+    pub fn device_ns(&self, id: NodeId) -> Result<&str> {
         self.devices
             .get(&id)
             .map(|d| d.ns.as_str())
@@ -460,22 +471,22 @@ impl NetworkCore {
     }
 
     /// Returns router data for `id`.
-    pub fn router(&self, id: RouterId) -> Option<&Router> {
+    pub fn router(&self, id: NodeId) -> Option<&Router> {
         self.routers.get(&id)
     }
 
     /// Returns device data for `id`.
-    pub fn device(&self, id: DeviceId) -> Option<&Device> {
+    pub fn device(&self, id: NodeId) -> Option<&Device> {
         self.devices.get(&id)
     }
 
     /// Returns mutable device data for `id`.
-    pub fn device_mut(&mut self, id: DeviceId) -> Option<&mut Device> {
+    pub fn device_mut(&mut self, id: NodeId) -> Option<&mut Device> {
         self.devices.get_mut(&id)
     }
 
     /// Returns switch data for `id`.
-    pub fn switch(&self, id: SwitchId) -> Option<&Switch> {
+    pub fn switch(&self, id: NodeId) -> Option<&Switch> {
         self.switches.get(&id)
     }
 
@@ -484,14 +495,30 @@ impl NetworkCore {
         self.nodes_by_name.get(name).copied()
     }
 
+    /// Returns the router identifier for `name`, or `None` if not a router.
+    pub fn router_id_by_name(&self, name: &str) -> Option<NodeId> {
+        let id = *self.nodes_by_name.get(name)?;
+        self.routers.contains_key(&id).then_some(id)
+    }
+
+    /// Returns the device identifier for `name`, or `None` if not a device.
+    pub fn device_id_by_name(&self, name: &str) -> Option<NodeId> {
+        let id = *self.nodes_by_name.get(name)?;
+        self.devices.contains_key(&id).then_some(id)
+    }
+
     /// Adds a router node and returns its identifier.
+    ///
+    /// The namespace name and downstream bridge name are generated internally.
     pub fn add_router(
         &mut self,
         name: &str,
-        ns: String,
-        cfg: RouterConfig,
+        nat: NatMode,
+        downstream_pool: DownstreamPool,
         region: Option<String>,
-    ) -> RouterId {
+    ) -> NodeId {
+        let ns = self.next_ns_name();
+        let downlink_bridge = self.next_bridge_name();
         let id = NodeId(self.alloc_id());
         self.nodes_by_name.insert(name.to_string(), id);
         self.routers.insert(
@@ -501,7 +528,11 @@ impl NetworkCore {
                 name: name.to_string(),
                 ns,
                 region,
-                cfg,
+                cfg: RouterConfig {
+                    nat,
+                    downstream_pool,
+                },
+                downlink_bridge,
                 uplink: None,
                 upstream_ip: None,
                 downlink: None,
@@ -514,10 +545,12 @@ impl NetworkCore {
 
     /// Creates a device shell with no interfaces yet.
     ///
+    /// The namespace name is generated internally.
     /// Call [`add_device_iface`] one or more times to attach interfaces, then
     /// optionally [`set_device_default_via`] to override the default route
     /// interface (first interface by default).
-    pub fn add_device(&mut self, name: &str, ns: String) -> DeviceId {
+    pub fn add_device(&mut self, name: &str) -> NodeId {
+        let ns = self.next_ns_name();
         let id = NodeId(self.alloc_id());
         self.nodes_by_name.insert(name.to_string(), id);
         self.devices.insert(
@@ -542,9 +575,9 @@ impl NetworkCore {
     /// Returns the allocated IP address.
     pub fn add_device_iface(
         &mut self,
-        device: DeviceId,
+        device: NodeId,
         ifname: &str,
-        router: RouterId,
+        router: NodeId,
         impair: Option<Impair>,
     ) -> Result<Ipv4Addr> {
         let downlink = self
@@ -573,7 +606,7 @@ impl NetworkCore {
     }
 
     /// Changes which interface carries the default route.
-    pub fn set_device_default_via(&mut self, device: DeviceId, ifname: &str) -> Result<()> {
+    pub fn set_device_default_via(&mut self, device: NodeId, ifname: &str) -> Result<()> {
         let dev = self
             .devices
             .get_mut(&device)
@@ -588,7 +621,7 @@ impl NetworkCore {
     /// Returns the gateway IP of a router's downstream switch.
     ///
     /// Used by dynamic operations that need to re-issue `ip route add default`.
-    pub fn router_downlink_gw_for_switch(&self, sw: SwitchId) -> Result<Ipv4Addr> {
+    pub fn router_downlink_gw_for_switch(&self, sw: NodeId) -> Result<Ipv4Addr> {
         self.switches
             .get(&sw)
             .and_then(|s| s.gw)
@@ -654,7 +687,7 @@ impl NetworkCore {
         name: &str,
         cidr: Option<Ipv4Net>,
         gw: Option<Ipv4Addr>,
-    ) -> SwitchId {
+    ) -> NodeId {
         let id = NodeId(self.alloc_id());
         self.nodes_by_name.insert(name.to_string(), id);
         self.switches.insert(
@@ -675,8 +708,8 @@ impl NetworkCore {
     /// Connects `router` to uplink switch `sw` and returns its uplink IP.
     pub fn connect_router_uplink(
         &mut self,
-        router: RouterId,
-        sw: SwitchId,
+        router: NodeId,
+        sw: NodeId,
         ip: Option<Ipv4Addr>,
     ) -> Result<Ipv4Addr> {
         let assigned = match ip {
@@ -695,8 +728,8 @@ impl NetworkCore {
     /// Connects `router` to downstream switch `sw` and returns `(cidr, gw)`.
     pub fn connect_router_downlink(
         &mut self,
-        router: RouterId,
-        sw: SwitchId,
+        router: NodeId,
+        sw: NodeId,
     ) -> Result<(Ipv4Net, Ipv4Addr)> {
         let pool = self
             .routers
@@ -735,7 +768,6 @@ impl NetworkCore {
             .routers
             .get(&router)
             .ok_or_else(|| anyhow!("unknown router id"))?
-            .cfg
             .downlink_bridge
             .clone();
         sw_entry.owner_router = Some(router);
@@ -835,7 +867,7 @@ impl NetworkCore {
             apply_nat(
                 &router.ns,
                 router.cfg.nat,
-                &router.cfg.downlink_bridge,
+                &router.downlink_bridge,
                 &ns_if,
                 router.upstream_ip.unwrap(),
             )
@@ -987,7 +1019,7 @@ impl NetworkCore {
             apply_nat(
                 &router.ns,
                 router.cfg.nat,
-                &router.cfg.downlink_bridge,
+                &router.downlink_bridge,
                 &wan_if,
                 router.upstream_ip.unwrap(),
             )
@@ -1174,7 +1206,7 @@ impl NetworkCore {
         Ok(cidr)
     }
 
-    fn alloc_from_switch(&mut self, sw: SwitchId) -> Result<Ipv4Addr> {
+    fn alloc_from_switch(&mut self, sw: NodeId) -> Result<Ipv4Addr> {
         let sw_entry = self
             .switches
             .get_mut(&sw)
@@ -1189,6 +1221,11 @@ impl NetworkCore {
 
     fn root_if(&self, tag: &str, id: u64) -> String {
         format!("{}{}{}", self.cfg.prefix, tag, id)
+    }
+
+    /// Returns an iterator over all devices in the topology.
+    pub fn all_devices(&self) -> impl Iterator<Item = &Device> {
+        self.devices.values()
     }
 
     /// Returns all namespace names owned by the lab.
