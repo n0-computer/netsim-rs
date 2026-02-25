@@ -538,7 +538,12 @@ where
     F: FnOnce() -> Result<R> + Send + 'static,
     R: Send + 'static,
 {
-    thread::spawn(move || run_closure_in_netns(&ns, f))
+    thread::spawn(move || {
+        let fd = open_netns_fd(&ns)?;
+        setns(&fd, CloneFlags::CLONE_NEWNET)
+            .with_context(|| format!("setns for spawned thread in '{ns}'"))?;
+        f()
+    })
 }
 
 /// Run a command synchronously inside `ns`.

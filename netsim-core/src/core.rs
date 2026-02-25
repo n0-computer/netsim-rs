@@ -697,19 +697,15 @@ impl NetworkCore {
         sw: NodeId,
         ip: Option<Ipv4Addr>,
         ip_v6: Option<Ipv6Addr>,
-    ) -> Result<Ipv4Addr> {
-        let assigned = match ip {
-            Some(ip) => ip,
-            None => self.alloc_from_switch(sw)?,
-        };
+    ) -> Result<()> {
         let router_entry = self
             .routers
             .get_mut(&router)
             .ok_or_else(|| anyhow!("unknown router id"))?;
         router_entry.uplink = Some(sw);
-        router_entry.upstream_ip = Some(assigned);
+        router_entry.upstream_ip = ip;
         router_entry.upstream_ip_v6 = ip_v6;
-        Ok(assigned)
+        Ok(())
     }
 
     /// Connects `router` to downstream switch `sw` and returns `(cidr, gw)`.
@@ -949,9 +945,7 @@ pub(crate) async fn setup_root_ns_async(
         debug!(ns = %root_ns, error = %err, "setup_root_ns: nft flush failed; continuing");
     }
 
-    // Disable DAD before any v6 addresses are added so they go straight to valid state.
-    set_sysctl_in(&root_ns, "net/ipv6/conf/all/accept_dad", "0")?;
-    set_sysctl_in(&root_ns, "net/ipv6/conf/default/accept_dad", "0")?;
+    // DAD already disabled by create_named_netns; enable forwarding.
     set_sysctl_in(&root_ns, "net/ipv4/ip_forward", "1")?;
     set_sysctl_in(&root_ns, "net/ipv6/conf/all/forwarding", "1")?;
 
@@ -1001,6 +995,9 @@ pub(crate) struct RouterSetupData {
     pub upstream_cidr_prefix_v6: Option<u8>,
     pub return_route_v6: Option<(Ipv6Addr, u8, Ipv6Addr)>,
     pub downlink_bridge_v6: Option<(Ipv6Addr, u8)>,
+    /// For sub-routers with NatV6Mode::None: route in the parent router's ns
+    /// for the sub-router's downstream v6 subnet via the sub-router's WAN IP.
+    pub parent_route_v6: Option<(String, Ipv6Addr, u8, Ipv6Addr)>, // (parent_ns, net, prefix, via)
 }
 
 /// Sets up a single router's namespaces, links, and NAT. No lock held.
@@ -1044,11 +1041,9 @@ pub(crate) async fn setup_router_async(
         })
         .await?;
 
-        // Disable DAD + enable forwarding before adding v6 addresses.
+        // DAD already disabled by create_named_netns; enable forwarding.
         set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
         if router.cfg.ip_support.has_v6() {
-            set_sysctl_in(&router.ns, "net/ipv6/conf/all/accept_dad", "0")?;
-            set_sysctl_in(&router.ns, "net/ipv6/conf/default/accept_dad", "0")?;
             set_sysctl_in(&router.ns, "net/ipv6/conf/all/forwarding", "1")?;
         }
 
@@ -1148,11 +1143,9 @@ pub(crate) async fn setup_router_async(
         })
         .await?;
 
-        // Disable DAD + enable forwarding before adding v6 addresses.
+        // DAD already disabled by create_named_netns; enable forwarding.
         set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
         if router.cfg.ip_support.has_v6() {
-            set_sysctl_in(&router.ns, "net/ipv6/conf/all/accept_dad", "0")?;
-            set_sysctl_in(&router.ns, "net/ipv6/conf/default/accept_dad", "0")?;
             set_sysctl_in(&router.ns, "net/ipv6/conf/all/forwarding", "1")?;
         }
 
@@ -1250,6 +1243,16 @@ pub(crate) async fn setup_router_async(
         .ok();
     }
 
+    // Route in parent router's ns for sub-router's downstream (NatV6Mode::None).
+    if let Some((ref parent_ns, net6, prefix6, via6)) = data.parent_route_v6 {
+        nl_run(netns, parent_ns, async move |h| {
+            h.add_route_v6(net6, prefix6, via6).await.ok();
+            Ok(())
+        })
+        .await
+        .ok();
+    }
+
     Ok(())
 }
 
@@ -1308,11 +1311,7 @@ pub(crate) async fn wire_iface_async(
     let dev_ip_v6 = dev.dev_ip_v6;
     let gw_ip_v6 = dev.gw_ip_v6;
     let prefix_len_v6 = dev.prefix_len_v6;
-    // Disable DAD before adding v6 addresses so they go straight to valid state.
-    if dev_ip_v6.is_some() {
-        set_sysctl_in(&dev.dev_ns, "net/ipv6/conf/all/accept_dad", "0").ok();
-        set_sysctl_in(&dev.dev_ns, "net/ipv6/conf/default/accept_dad", "0").ok();
-    }
+    // DAD already disabled by create_named_netns.
     nl_run(netns, &dev.dev_ns, {
         let root_dev = root_dev.clone();
         let ifname = ifname.clone();
@@ -1387,9 +1386,18 @@ pub fn cleanup_netns(name: &str) {
     netns::cleanup_netns(name);
 }
 
-/// Creates a named network namespace.
+/// Creates a named network namespace with DAD disabled.
+///
+/// IPv6 DAD (Duplicate Address Detection) is disabled immediately so that
+/// interfaces moved into this namespace will inherit `dad_transmits=0` and
+/// addresses assigned to them will go straight to the "valid" state.
 pub async fn create_named_netns(name: &str) -> Result<()> {
     netns::create_named_netns(name).await?;
+    // Disable DAD before any interfaces are created or moved in.
+    set_sysctl_in(name, "net/ipv6/conf/all/accept_dad", "0").ok();
+    set_sysctl_in(name, "net/ipv6/conf/default/accept_dad", "0").ok();
+    set_sysctl_in(name, "net/ipv6/conf/all/dad_transmits", "0").ok();
+    set_sysctl_in(name, "net/ipv6/conf/default/dad_transmits", "0").ok();
     Ok(())
 }
 

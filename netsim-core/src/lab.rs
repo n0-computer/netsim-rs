@@ -1027,6 +1027,11 @@ impl RouterBuilder {
                         .router(parent_id)
                         .and_then(|r| r.downlink)
                         .ok_or_else(|| anyhow!("parent router missing downlink switch"))?;
+                    let uplink_ip_v4 = if has_v4 {
+                        Some(inner.core.alloc_from_switch(parent_downlink)?)
+                    } else {
+                        None
+                    };
                     let uplink_ip_v6 = if has_v6 {
                         Some(inner.core.alloc_from_switch_v6(parent_downlink)?)
                     } else {
@@ -1034,7 +1039,7 @@ impl RouterBuilder {
                     };
                     inner
                         .core
-                        .connect_router_uplink(id, parent_downlink, None, uplink_ip_v6)?;
+                        .connect_router_uplink(id, parent_downlink, uplink_ip_v4, uplink_ip_v6)?;
                 }
             }
 
@@ -1093,16 +1098,57 @@ impl RouterBuilder {
             } else {
                 None
             };
-            let return_route_v6 = if router.uplink == Some(ix_sw)
-                && router.cfg.downstream_pool == DownstreamPool::Public
-            {
-                if let (Some(cidr6), Some(via6)) =
-                    (router.downstream_cidr_v6, router.upstream_ip_v6)
-                {
-                    Some((cidr6.addr(), cidr6.prefix_len(), via6))
+            let mut return_route_v6 = if router.uplink == Some(ix_sw) {
+                // IX-level router: return route via this router's IX IP.
+                if router.cfg.downstream_pool == DownstreamPool::Public {
+                    if let (Some(cidr6), Some(via6)) =
+                        (router.downstream_cidr_v6, router.upstream_ip_v6)
+                    {
+                        Some((cidr6.addr(), cidr6.prefix_len(), via6))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
+            } else {
+                None
+            };
+
+            // For sub-routers with NatV6Mode::None: add routes so that return
+            // traffic for the sub-router's ULA subnet can reach it.
+            let parent_route_v6 = if router.uplink.is_some()
+                && router.uplink != Some(ix_sw)
+                && router.cfg.nat_v6 == NatV6Mode::None
+            {
+                let uplink_sw = router.uplink.unwrap();
+                let parent_id = inner.core.switch(uplink_sw)
+                    .and_then(|sw| sw.owner_router);
+                // Route in the parent router's ns: sub-router's LAN via sub-router's WAN IP.
+                let parent_rt = if let (Some(cidr6), Some(via6), Some(ref owner_ns)) =
+                    (router.downstream_cidr_v6, router.upstream_ip_v6, &upstream_owner_ns)
+                {
+                    Some((owner_ns.clone(), cidr6.addr(), cidr6.prefix_len(), via6))
+                } else {
+                    None
+                };
+                // Also need a root-ns route via the IX-level ancestor's IX IP.
+                if parent_rt.is_some() {
+                    if let Some(pid) = parent_id {
+                        if let Some(parent_router) = inner.core.router(pid) {
+                            if parent_router.uplink == Some(ix_sw) {
+                                // Parent is IX-level; use its IX IP as the root-ns next-hop.
+                                if let Some(parent_ix_v6) = parent_router.upstream_ip_v6 {
+                                    if let Some(cidr6) = router.downstream_cidr_v6 {
+                                        // Overwrite return_route_v6 for root ns
+                                        return_route_v6 = Some((cidr6.addr(), cidr6.prefix_len(), parent_ix_v6));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                parent_rt
             } else {
                 None
             };
@@ -1132,6 +1178,7 @@ impl RouterBuilder {
                 upstream_cidr_prefix_v6,
                 return_route_v6,
                 downlink_bridge_v6,
+                parent_route_v6,
             };
 
             let netns = Arc::clone(&inner.core.netns);
@@ -5232,29 +5279,6 @@ gateway = "dc1"
             "v4 reflexive should be device IP (no NAT)"
         );
 
-        // Dump v6 state for debugging.
-        let dev_ns_str = lab.node_ns(dev.id())?.to_string();
-        let root_ns = lab.root_namespace_name();
-        for ns_name in [root_ns, dc_ns.clone(), dev_ns_str.clone()] {
-            let ns_label = ns_name.clone();
-            let out = crate::core::run_closure_in_namespace(&ns_name, move || {
-                let ns_name = ns_label;
-                let ip6a = std::process::Command::new("ip")
-                    .args(["-6", "addr"])
-                    .output()?;
-                let ip6r = std::process::Command::new("ip")
-                    .args(["-6", "route"])
-                    .output()?;
-                Ok(format!(
-                    "=== {} ===\nADDR:\n{}\nROUTE:\n{}",
-                    ns_name,
-                    String::from_utf8_lossy(&ip6a.stdout),
-                    String::from_utf8_lossy(&ip6r.stdout),
-                ))
-            })?;
-            eprintln!("{}", out);
-        }
-
         // v6 roundtrip
         let dc_ip_v6 = dc.uplink_ip_v6().expect("dc should have v6 uplink");
         let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3481);
@@ -5447,11 +5471,11 @@ gateway = "dc1"
             .await?;
 
         let dev_ns = lab.node_ns(dev.id())?.to_string();
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
 
         // v6 roundtrip succeeds.
         let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
         let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3491);
-        let dc_ns = lab.node_ns(dc.id())?.to_string();
         lab.spawn_reflector(&dc_ns, r_v6)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let o = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
