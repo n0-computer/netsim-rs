@@ -9,8 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
-use tracing::debug;
-use tracing::warn;
+use tracing::{debug, instrument, warn, Instrument as _};
 
 use crate::netlink::Netlink;
 use crate::netns;
@@ -20,6 +19,8 @@ use nix::libc;
 /// Defines static addressing and naming for one lab instance.
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
+    /// Process-wide sequential lab identifier (from `LAB_COUNTER`).
+    pub lab_id: u64,
     /// Stores the process-unique lab prefix used for namespacing resources.
     pub prefix: String,
     /// Stores the dedicated lab root namespace name.
@@ -42,6 +43,8 @@ pub struct CoreConfig {
     pub ix_cidr_v6: Ipv6Net,
     /// Stores the base private downstream IPv6 pool (ULA).
     pub private_cidr_v6: Ipv6Net,
+    /// Tracing span for this lab; used to parent worker thread spans.
+    pub span: tracing::Span,
 }
 
 /// Identifies a node in the topology graph.
@@ -90,6 +93,8 @@ pub struct DeviceIfaceData {
 /// A network endpoint with one or more interfaces.
 #[derive(Clone, Debug)]
 pub struct DeviceData {
+    /// Identifies the device node.
+    pub id: NodeId,
     /// Stores the device name.
     pub name: String,
     /// Stores the device namespace name.
@@ -204,7 +209,6 @@ pub struct NetworkCore {
     next_ix_low_v6: u16,
     next_private_subnet_v6: u16,
     bridge_counter: u32,
-    ns_counter: u32,
     ix_sw: NodeId,
     devices: HashMap<NodeId, DeviceData>,
     routers: HashMap<NodeId, RouterData>,
@@ -375,8 +379,11 @@ impl NetworkCore {
     pub fn new(cfg: CoreConfig) -> Self {
         let own_links = Arc::new(Mutex::new(Vec::new()));
         let mut core = Self {
+            netns: Arc::new(netns::NetnsManager::new_with_tracker(
+                own_links.clone(),
+                cfg.span.clone(),
+            )),
             cfg,
-            netns: Arc::new(netns::NetnsManager::new_with_tracker(own_links.clone())),
             next_id: 1,
             next_private_subnet: 1,
             next_public_subnet: 1,
@@ -384,7 +391,6 @@ impl NetworkCore {
             next_ix_low_v6: 0x10,
             next_private_subnet_v6: 1,
             bridge_counter: 2,
-            ns_counter: 1,
             ix_sw: NodeId(0),
             devices: HashMap::new(),
             routers: HashMap::new(),
@@ -409,12 +415,6 @@ impl NetworkCore {
         let name = format!("br-{}-{}", self.cfg.bridge_tag, self.bridge_counter);
         self.bridge_counter = self.bridge_counter.saturating_add(1);
         name
-    }
-
-    fn next_ns_name(&mut self) -> String {
-        let id = self.ns_counter;
-        self.ns_counter = self.ns_counter.saturating_add(1);
-        format!("{}-{}", self.cfg.prefix, id)
     }
 
     /// Returns the IX gateway address.
@@ -531,9 +531,9 @@ impl NetworkCore {
         ip_support: IpSupport,
         nat_v6: NatV6Mode,
     ) -> NodeId {
-        let ns = self.next_ns_name();
-        let downlink_bridge = self.next_bridge_name();
         let id = NodeId(self.alloc_id());
+        let ns = format!("lab{}-r{}", self.cfg.lab_id, id.0);
+        let downlink_bridge = self.next_bridge_name();
         self.nodes_by_name.insert(name.to_string(), id);
         self.routers.insert(
             id,
@@ -569,12 +569,13 @@ impl NetworkCore {
     /// optionally [`set_device_default_via`] to override the default route
     /// interface (first interface by default).
     pub fn add_device(&mut self, name: &str) -> NodeId {
-        let ns = self.next_ns_name();
         let id = NodeId(self.alloc_id());
+        let ns = format!("lab{}-d{}", self.cfg.lab_id, id.0);
         self.nodes_by_name.insert(name.to_string(), id);
         self.devices.insert(
             id,
             DeviceData {
+                id,
                 name: name.to_string(),
                 ns,
                 interfaces: vec![],
@@ -923,16 +924,21 @@ pub(crate) async fn nl_run<F>(netns: &Arc<netns::NetnsManager>, ns: &str, f: F) 
 where
     F: AsyncFnOnce(&mut Netlink) -> Result<()> + Send + 'static,
 {
+    let span = tracing::Span::current();
     netns
-        .spawn_netlink_task_in(ns, move |nl_arc| async move {
-            let mut nl = nl_arc.lock().await;
-            f(&mut *nl).await
+        .spawn_netlink_task_in(ns, move |nl_arc| {
+            async move {
+                let mut nl = nl_arc.lock().await;
+                f(&mut *nl).await
+            }
+            .instrument(span)
         })
         .await
         .map_err(|_| anyhow!("netns task cancelled"))?
 }
 
 /// Creates root namespace, IX bridge, and enables forwarding. Idempotent-safe at caller level.
+#[instrument(name = "root", skip_all)]
 pub(crate) async fn setup_root_ns_async(
     cfg: &CoreConfig,
     netns: &Arc<netns::NetnsManager>,
@@ -942,7 +948,7 @@ pub(crate) async fn setup_root_ns_async(
     create_named_netns(&root_ns).await?;
 
     if let Err(err) = run_nft_in(&root_ns, "flush ruleset").await {
-        debug!(ns = %root_ns, error = %err, "setup_root_ns: nft flush failed; continuing");
+        debug!(error = %err, "setup_root_ns: nft flush failed; continuing");
     }
 
     // DAD already disabled by create_named_netns; enable forwarding.
@@ -1001,17 +1007,19 @@ pub(crate) struct RouterSetupData {
 }
 
 /// Sets up a single router's namespaces, links, and NAT. No lock held.
+#[instrument(name = "router", skip_all, fields(id = data.router.id.0))]
 pub(crate) async fn setup_router_async(
     netns: &Arc<netns::NetnsManager>,
     data: &RouterSetupData,
 ) -> Result<()> {
     let router = &data.router;
     let id = router.id;
+    debug!(name = %router.name, ns = %router.ns, "router: setup");
 
     // Create router namespace.
     create_named_netns(&router.ns).await?;
     if let Err(err) = run_nft_in(&router.ns, "flush ruleset").await {
-        debug!(ns = %router.ns, error = %err, "setup_router: nft flush failed; continuing");
+        debug!(error = %err, "setup_router: nft flush failed; continuing");
     }
 
     let uplink = router
@@ -1072,6 +1080,7 @@ pub(crate) async fn setup_router_async(
         .await?;
 
         if let Some(upstream_ip4) = router.upstream_ip {
+            debug!(nat = ?router.cfg.nat, ip = %upstream_ip4, "router: apply NAT");
             apply_nat(
                 &router.ns,
                 router.cfg.nat,
@@ -1093,6 +1102,7 @@ pub(crate) async fn setup_router_async(
                     .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
                 let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
                     .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
+                debug!(nat_v6 = ?router.cfg.nat_v6, "router: apply NAT v6");
                 apply_nat_v6(&router.ns, router.cfg.nat_v6, &ns_if, lan_pfx, wan_pfx).await?;
             }
         }
@@ -1176,6 +1186,7 @@ pub(crate) async fn setup_router_async(
         .await?;
 
         if let Some(upstream_ip4) = router.upstream_ip {
+            debug!(nat = ?router.cfg.nat, ip = %upstream_ip4, "router: apply NAT");
             apply_nat(
                 &router.ns,
                 router.cfg.nat,
@@ -1197,6 +1208,7 @@ pub(crate) async fn setup_router_async(
                     .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
                 let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
                     .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
+                debug!(nat_v6 = ?router.cfg.nat_v6, "router: apply NAT v6");
                 apply_nat_v6(&router.ns, router.cfg.nat_v6, &wan_if, lan_pfx, wan_pfx).await?;
             }
         }
@@ -1257,6 +1269,7 @@ pub(crate) async fn setup_router_async(
 }
 
 /// Sets up a single device's namespace and wires all interfaces. No lock held.
+#[instrument(name = "device", skip_all, fields(id = dev.id.0))]
 pub(crate) async fn setup_device_async(
     netns: &Arc<netns::NetnsManager>,
     prefix: &str,
@@ -1264,9 +1277,10 @@ pub(crate) async fn setup_device_async(
     dev: &DeviceData,
     ifaces: Vec<IfaceBuild>,
 ) -> Result<()> {
+    debug!(name = %dev.name, ns = %dev.ns, "device: setup");
     create_named_netns(&dev.ns).await?;
     if let Err(err) = run_nft_in(&dev.ns, "flush ruleset").await {
-        debug!(ns = %dev.ns, error = %err, "setup_device: nft flush failed; continuing");
+        debug!(error = %err, "setup_device: nft flush failed; continuing");
     }
 
     for iface in ifaces {
@@ -1276,12 +1290,14 @@ pub(crate) async fn setup_device_async(
 }
 
 /// Wire one device interface: veth pair, move, IP, route, impairment.
+#[instrument(name = "iface", skip_all, fields(iface = %dev.ifname))]
 pub(crate) async fn wire_iface_async(
     netns: &Arc<netns::NetnsManager>,
     prefix: &str,
     root_ns: &str,
     dev: IfaceBuild,
 ) -> Result<()> {
+    debug!(ip = ?dev.dev_ip, ip6 = ?dev.dev_ip_v6, gw = ?dev.gw_ip, gw6 = ?dev.gw_ip_v6, "iface: assigned addresses");
     let root_gw = format!("{}g{}", prefix, dev.idx);
     let root_dev = format!("{}e{}", prefix, dev.idx);
 

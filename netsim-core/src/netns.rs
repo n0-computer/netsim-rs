@@ -13,7 +13,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::task::{Context as TaskContext, Poll};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::{debug, error};
+use tracing::{debug, debug_span, error, Instrument as _};
 
 use crate::netlink::Netlink;
 
@@ -80,7 +80,6 @@ pub fn ensure_netns_dir() -> Result<()> {
 
 /// Open a namespace FD for `name` from the in-memory registry.
 pub fn open_netns_fd(name: &str) -> Result<File> {
-    debug!(ns = %name, "netns: open namespace fd");
     let fd = fd_registry()
         .get(name)
         .ok_or_else(|| anyhow!("netns '{name}' not found"))?;
@@ -188,12 +187,17 @@ struct AsyncWorker {
 }
 
 impl AsyncWorker {
-    fn spawn(ns: &str, own_links: Arc<Mutex<Vec<String>>>) -> Result<Self> {
+    fn spawn(
+        ns: &str,
+        own_links: Arc<Mutex<Vec<String>>>,
+        parent_span: &tracing::Span,
+    ) -> Result<Self> {
         let target = open_netns_fd(ns)
             .with_context(|| format!("open namespace fd for async worker '{ns}'"))?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let ns_name = ns.to_string();
-        let join = thread::spawn(move || async_worker_main(ns_name, target, rx, own_links));
+        let span = debug_span!(parent: parent_span, "worker", ns = %ns);
+        let join = thread::spawn(move || async_worker_main(ns_name, target, rx, own_links, span));
         Ok(Self {
             tx,
             join: Some(join),
@@ -211,13 +215,15 @@ impl Drop for AsyncWorker {
 }
 
 fn async_worker_main(
-    ns: String,
+    _ns: String,
     target: File,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AsyncMsg>,
     own_links: Arc<Mutex<Vec<String>>>,
+    span: tracing::Span,
 ) {
+    let _guard = span.clone().entered();
     if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-        error!(ns = %ns, error = %err, "async netns worker: setns failed");
+        error!(error = %err, "async netns worker: setns failed");
         return;
     }
 
@@ -227,7 +233,7 @@ fn async_worker_main(
     {
         Ok(rt) => rt,
         Err(err) => {
-            error!(ns = %ns, error = %err, "async netns worker: runtime build failed");
+            error!(error = %err, "async netns worker: runtime build failed");
             return;
         }
     };
@@ -244,7 +250,7 @@ fn async_worker_main(
                 ))))
             }
             Err(err) => {
-                error!(ns = %ns, error = %err, "async netns worker: rtnetlink connection failed");
+                error!(error = %err, "async netns worker: rtnetlink connection failed");
                 None
             }
         };
@@ -252,11 +258,11 @@ fn async_worker_main(
         while let Some(msg) = rx.recv().await {
             match msg {
                 AsyncMsg::Task(f) => {
-                    tokio::task::spawn_local(f());
+                    tokio::task::spawn_local(f().instrument(span.clone()));
                 }
                 AsyncMsg::NetlinkTask(f) => {
                     if let Some(nl) = netlink.as_ref() {
-                        tokio::task::spawn_local(f(nl.clone()));
+                        tokio::task::spawn_local(f(nl.clone()).instrument(span.clone()));
                     }
                     // else: factory dropped → result_tx dropped → TaskHandle resolves Err
                 }
@@ -281,12 +287,13 @@ struct SyncWorker {
 }
 
 impl SyncWorker {
-    fn spawn(ns: &str) -> Result<Self> {
+    fn spawn(ns: &str, parent_span: &tracing::Span) -> Result<Self> {
         let target = open_netns_fd(ns)
             .with_context(|| format!("open namespace fd for sync worker '{ns}'"))?;
         let (tx, rx) = mpsc::sync_channel(64);
         let ns_name = ns.to_string();
-        let join = thread::spawn(move || sync_worker_main(ns_name, target, rx));
+        let span = debug_span!(parent: parent_span, "worker", ns = %ns);
+        let join = thread::spawn(move || sync_worker_main(ns_name, target, rx, span));
         Ok(Self {
             tx,
             join: Some(join),
@@ -303,9 +310,10 @@ impl Drop for SyncWorker {
     }
 }
 
-fn sync_worker_main(ns: String, target: File, rx: mpsc::Receiver<SyncMsg>) {
+fn sync_worker_main(_ns: String, target: File, rx: mpsc::Receiver<SyncMsg>, span: tracing::Span) {
+    let _guard = span.entered();
     if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-        debug!(ns = %ns, error = %err, "sync netns worker: setns failed");
+        debug!(error = %err, "sync netns worker: setns failed");
         return;
     }
     while let Ok(msg) = rx.recv() {
@@ -323,15 +331,17 @@ fn sync_worker_main(ns: String, target: File, rx: mpsc::Receiver<SyncMsg>) {
 struct Worker {
     ns: String,
     own_links: Arc<Mutex<Vec<String>>>,
+    parent_span: tracing::Span,
     async_worker: Mutex<Option<AsyncWorker>>,
     sync_worker: Mutex<Option<SyncWorker>>,
 }
 
 impl Worker {
-    fn new(ns: &str, own_links: Arc<Mutex<Vec<String>>>) -> Self {
+    fn new(ns: &str, own_links: Arc<Mutex<Vec<String>>>, parent_span: tracing::Span) -> Self {
         Self {
             ns: ns.to_string(),
             own_links,
+            parent_span,
             async_worker: Mutex::new(None),
             sync_worker: Mutex::new(None),
         }
@@ -343,7 +353,11 @@ impl Worker {
             .lock()
             .expect("async worker mutex poisoned");
         if guard.is_none() {
-            *guard = Some(AsyncWorker::spawn(&self.ns, self.own_links.clone())?);
+            *guard = Some(AsyncWorker::spawn(
+                &self.ns,
+                self.own_links.clone(),
+                &self.parent_span,
+            )?);
         }
         Ok(guard.as_ref().unwrap().tx.clone())
     }
@@ -351,7 +365,7 @@ impl Worker {
     fn sync_tx(&self) -> Result<mpsc::SyncSender<SyncMsg>> {
         let mut guard = self.sync_worker.lock().expect("sync worker mutex poisoned");
         if guard.is_none() {
-            *guard = Some(SyncWorker::spawn(&self.ns)?);
+            *guard = Some(SyncWorker::spawn(&self.ns, &self.parent_span)?);
         }
         Ok(guard.as_ref().unwrap().tx.clone())
     }
@@ -368,6 +382,7 @@ impl Worker {
 /// Workers are started lazily on first use.
 pub struct NetnsManager {
     own_links: Arc<Mutex<Vec<String>>>,
+    parent_span: tracing::Span,
     workers: Mutex<HashMap<String, Worker>>,
 }
 
@@ -382,14 +397,16 @@ impl NetnsManager {
     pub fn new() -> Self {
         Self {
             own_links: Arc::new(Mutex::new(Vec::new())),
+            parent_span: tracing::Span::none(),
             workers: Mutex::new(HashMap::new()),
         }
     }
 
     /// Create a namespace manager whose workers register created links in `own_links`.
-    pub fn new_with_tracker(own_links: Arc<Mutex<Vec<String>>>) -> Self {
+    pub fn new_with_tracker(own_links: Arc<Mutex<Vec<String>>>, parent_span: tracing::Span) -> Self {
         Self {
             own_links,
+            parent_span,
             workers: Mutex::new(HashMap::new()),
         }
     }
@@ -397,7 +414,10 @@ impl NetnsManager {
     fn async_tx_for(&self, ns: &str) -> Result<tokio::sync::mpsc::UnboundedSender<AsyncMsg>> {
         let mut workers = self.workers.lock().expect("netns worker map poisoned");
         if !workers.contains_key(ns) {
-            workers.insert(ns.to_string(), Worker::new(ns, self.own_links.clone()));
+            workers.insert(
+                ns.to_string(),
+                Worker::new(ns, self.own_links.clone(), self.parent_span.clone()),
+            );
         }
         workers.get(ns).expect("just inserted").async_tx()
     }
@@ -405,7 +425,10 @@ impl NetnsManager {
     fn sync_tx_for(&self, ns: &str) -> Result<mpsc::SyncSender<SyncMsg>> {
         let mut workers = self.workers.lock().expect("netns worker map poisoned");
         if !workers.contains_key(ns) {
-            workers.insert(ns.to_string(), Worker::new(ns, self.own_links.clone()));
+            workers.insert(
+                ns.to_string(),
+                Worker::new(ns, self.own_links.clone(), self.parent_span.clone()),
+            );
         }
         workers.get(ns).expect("just inserted").sync_tx()
     }

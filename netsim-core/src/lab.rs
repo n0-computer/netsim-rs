@@ -23,6 +23,8 @@ use crate::core::{
     RouterSetupData, TaskHandle,
 };
 
+use tracing::{debug, debug_span, Instrument as _};
+
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ─────────────────────────────────────────────
@@ -170,6 +172,9 @@ pub(crate) struct LabInner {
 
     /// Low-level topology model.
     pub(crate) core: NetworkCore,
+
+    /// Tracing span for this lab instance; used as parent for router/device/worker spans.
+    pub(crate) span: tracing::Span,
 }
 
 enum ChildTask {
@@ -189,12 +194,17 @@ impl Lab {
         let lab_seq = LAB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let uniq = format!("{lab_seq:x}");
         let prefix = format!("lab-p{}{}", pid_tag, uniq); // e.g. "lab-p12340"
-        let root_ns = format!("{prefix}-root");
+        let root_ns = format!("lab{lab_seq}-root");
         let bridge_tag = format!("p{}{}", pid_tag, uniq);
         let ix_gw = Ipv4Addr::new(203, 0, 113, 1);
+        let lab_span = debug_span!("lab", id = lab_seq);
+        let _lab_enter = lab_span.enter();
+        debug!(prefix = %prefix, "lab: created");
         resources().register_prefix(&prefix);
         resources().register_prefix(&format!("br-{}-", bridge_tag));
+        resources().register_prefix(&format!("lab{lab_seq}-"));
         let core = NetworkCore::new(CoreConfig {
+            lab_id: lab_seq,
             prefix: prefix.clone(),
             root_ns,
             bridge_tag,
@@ -206,13 +216,16 @@ impl Lab {
             ix_gw_v6: "2001:db8::1".parse().expect("valid ix gw v6"),
             ix_cidr_v6: "2001:db8::/32".parse().expect("valid ix cidr v6"),
             private_cidr_v6: "fd10::/48".parse().expect("valid private cidr v6"),
+            span: lab_span.clone(),
         });
+        drop(_lab_enter);
         Self {
             inner: Arc::new(Mutex::new(LabInner {
                 prefix,
                 region_latencies: vec![],
                 children: vec![],
                 core,
+                span: lab_span,
             })),
         }
     }
@@ -510,9 +523,11 @@ impl Lab {
     /// Default NAT mode is [`NatMode::None`] (public DC-style router, IX-connected).
     pub fn add_router(&self, name: &str) -> RouterBuilder {
         let inner = self.inner.lock().unwrap();
+        let lab_span = inner.span.clone();
         if inner.core.router_id_by_name(name).is_some() {
             return RouterBuilder {
                 inner: Arc::clone(&self.inner),
+                lab_span,
                 name: name.to_string(),
                 region: None,
                 upstream: None,
@@ -524,6 +539,7 @@ impl Lab {
         }
         RouterBuilder {
             inner: Arc::clone(&self.inner),
+            lab_span,
             name: name.to_string(),
             region: None,
             upstream: None,
@@ -540,9 +556,11 @@ impl Lab {
     /// interfaces, then [`.build()`][DeviceBuilder::build] to finalize.
     pub fn add_device(&self, name: &str) -> DeviceBuilder {
         let mut inner = self.inner.lock().unwrap();
+        let lab_span = inner.span.clone();
         if inner.core.device_id_by_name(name).is_some() {
             return DeviceBuilder {
                 inner: Arc::clone(&self.inner),
+                lab_span,
                 id: NodeId(u64::MAX),
                 result: Err(anyhow!("device '{}' already exists", name)),
             };
@@ -550,6 +568,7 @@ impl Lab {
         let id = inner.core.add_device(name);
         DeviceBuilder {
             inner: Arc::clone(&self.inner),
+            lab_span,
             id,
             result: Ok(()),
         }
@@ -564,6 +583,7 @@ impl Lab {
     /// If IX-connected routers are already built, the latency rules are applied
     /// immediately. Otherwise they are deferred until all routers are ready.
     pub fn add_region_latency(&self, from: &str, to: &str, latency_ms: u32) {
+        debug!(from = %from, to = %to, latency_ms, "lab: add_region_latency");
         self.inner.lock().unwrap().region_latencies.push((
             from.to_string(),
             to.to_string(),
@@ -736,6 +756,7 @@ impl Lab {
     /// The order of `from` and `to` does not matter — the method resolves the
     /// connected pair in either direction.
     pub fn impair_link(&self, a: NodeId, b: NodeId, impair: Option<Impair>) -> Result<()> {
+        debug!(a = ?a, b = ?b, impair = ?impair, "lab: impair_link");
         let inner = self.inner.lock().unwrap();
 
         // Try Device(a) ↔ Router(b) or Device(b) ↔ Router(a).
@@ -845,6 +866,7 @@ impl Lab {
     /// Applies or removes impairment on a router's downlink bridge, affecting
     /// download-direction traffic to all downstream devices.
     pub fn impair_router_downlink(&self, router: NodeId, impair: Option<Impair>) -> Result<()> {
+        debug!(router = ?router, impair = ?impair, "lab: impair_router_downlink");
         let inner = self.inner.lock().unwrap();
         let r = inner.core.router(router).context("unknown router id")?;
         let ns = r.ns.clone();
@@ -924,6 +946,7 @@ impl Drop for LabInner {
 /// Builder for a router node; returned by [`Lab::add_router`].
 pub struct RouterBuilder {
     inner: Arc<Mutex<LabInner>>,
+    lab_span: tracing::Span,
     name: String,
     region: Option<String>,
     upstream: Option<NodeId>,
@@ -1187,22 +1210,26 @@ impl RouterBuilder {
         }; // lock released
 
         // Phase 2: Async network setup (no lock held).
-        if need_root_setup {
-            let cfg = {
-                let inner = self.inner.lock().unwrap();
-                inner.core.cfg.clone()
-            };
-            setup_root_ns_async(&cfg, &netns).await?;
-            {
-                let mut inner = self.inner.lock().unwrap();
-                if !inner.core.root_ns_initialized {
-                    inner.core.own_netns.push(cfg.root_ns.clone());
-                    inner.core.root_ns_initialized = true;
+        async {
+            if need_root_setup {
+                let cfg = {
+                    let inner = self.inner.lock().unwrap();
+                    inner.core.cfg.clone()
+                };
+                setup_root_ns_async(&cfg, &netns).await?;
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    if !inner.core.root_ns_initialized {
+                        inner.core.own_netns.push(cfg.root_ns.clone());
+                        inner.core.root_ns_initialized = true;
+                    }
                 }
             }
-        }
 
-        setup_router_async(&netns, &setup_data).await?;
+            setup_router_async(&netns, &setup_data).await
+        }
+        .instrument(self.lab_span.clone())
+        .await?;
 
         // Phase 3: Lock → bookkeeping → unlock.
         {
@@ -1228,6 +1255,7 @@ impl RouterBuilder {
 /// Builder for a device node; returned by [`Lab::add_device`].
 pub struct DeviceBuilder {
     inner: Arc<Mutex<LabInner>>,
+    lab_span: tracing::Span,
     id: NodeId,
     result: Result<()>,
 }
@@ -1339,22 +1367,26 @@ impl DeviceBuilder {
         }; // lock released
 
         // Phase 2: Async network setup (no lock held).
-        if need_root_setup {
-            let cfg = {
-                let inner = self.inner.lock().unwrap();
-                inner.core.cfg.clone()
-            };
-            setup_root_ns_async(&cfg, &netns).await?;
-            {
-                let mut inner = self.inner.lock().unwrap();
-                if !inner.core.root_ns_initialized {
-                    inner.core.own_netns.push(cfg.root_ns.clone());
-                    inner.core.root_ns_initialized = true;
+        async {
+            if need_root_setup {
+                let cfg = {
+                    let inner = self.inner.lock().unwrap();
+                    inner.core.cfg.clone()
+                };
+                setup_root_ns_async(&cfg, &netns).await?;
+                {
+                    let mut inner = self.inner.lock().unwrap();
+                    if !inner.core.root_ns_initialized {
+                        inner.core.own_netns.push(cfg.root_ns.clone());
+                        inner.core.root_ns_initialized = true;
+                    }
                 }
             }
-        }
 
-        setup_device_async(&netns, &prefix, &root_ns, &dev, ifaces).await?;
+            setup_device_async(&netns, &prefix, &root_ns, &dev, ifaces).await
+        }
+        .instrument(self.lab_span.clone())
+        .await?;
 
         // Phase 3: Lock → bookkeeping → unlock.
         {
@@ -2144,7 +2176,6 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::thread;
     use std::time::Duration;
-    use tracing::debug;
 
     use super::*;
     use crate::check_caps;

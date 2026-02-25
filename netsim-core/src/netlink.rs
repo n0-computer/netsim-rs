@@ -5,7 +5,7 @@ use std::fs::File;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
-use tracing::debug;
+use tracing::trace;
 
 pub(crate) struct Netlink {
     handle: Handle,
@@ -42,7 +42,6 @@ impl Netlink {
     }
 
     pub(crate) async fn link_index(&mut self, ifname: &str) -> Result<u32> {
-        debug!(ifname = %ifname, "netlink: lookup link index");
         let mut links = self
             .handle
             .link()
@@ -57,16 +56,15 @@ impl Netlink {
     }
 
     pub(crate) async fn ensure_link_deleted(&mut self, ifname: &str) -> Result<()> {
-        debug!(ifname = %ifname, "netlink: ensure link deleted");
         if let Ok(idx) = self.link_index(ifname).await {
-            debug!(ifname = %ifname, idx, "netlink: delete link");
+            trace!(ifname = %ifname, "delete link");
             self.handle.link().del(idx).execute().await?;
         }
         Ok(())
     }
 
     pub(crate) async fn add_bridge(&mut self, name: &str) -> Result<()> {
-        debug!(bridge = %name, "netlink: add bridge");
+        trace!(bridge = %name, "add bridge");
         if let Err(err) = self
             .handle
             .link()
@@ -75,7 +73,7 @@ impl Netlink {
             .await
         {
             if is_eexist(&err) {
-                debug!(bridge = %name, "netlink: bridge already exists");
+                trace!(bridge = %name, "bridge already exists");
             } else {
                 return Err(err.into());
             }
@@ -85,7 +83,7 @@ impl Netlink {
     }
 
     pub(crate) async fn add_veth(&mut self, a: &str, b: &str) -> Result<()> {
-        debug!(a = %a, b = %b, "netlink: add veth pair");
+        trace!(a = %a, b = %b, "add veth pair");
         self.handle
             .link()
             .add(LinkVeth::new(a, b).build())
@@ -97,7 +95,7 @@ impl Netlink {
     }
 
     pub(crate) async fn set_link_up(&mut self, ifname: &str) -> Result<()> {
-        debug!(ifname = %ifname, "netlink: set link up");
+        trace!(ifname = %ifname, "set link up");
         let idx = self.link_index(ifname).await?;
         let msg = LinkUnspec::new_with_index(idx).up().build();
         self.handle.link().change(msg).execute().await?;
@@ -105,7 +103,7 @@ impl Netlink {
     }
 
     pub(crate) async fn set_link_down(&mut self, ifname: &str) -> Result<()> {
-        debug!(ifname = %ifname, "netlink: set link down");
+        trace!(ifname = %ifname, "set link down");
         let idx = self.link_index(ifname).await?;
         let msg = LinkUnspec::new_with_index(idx).down().build();
         self.handle.link().change(msg).execute().await?;
@@ -113,7 +111,7 @@ impl Netlink {
     }
 
     pub(crate) async fn rename_link(&mut self, from: &str, to: &str) -> Result<()> {
-        debug!(from = %from, to = %to, "netlink: rename link");
+        trace!(from = %from, to = %to, "rename link");
         let idx = self.link_index(from).await?;
         let msg = LinkUnspec::new_with_index(idx).name(to.to_string()).build();
         self.handle.link().change(msg).execute().await?;
@@ -121,7 +119,7 @@ impl Netlink {
     }
 
     pub(crate) async fn set_master(&mut self, ifname: &str, master: &str) -> Result<()> {
-        debug!(ifname = %ifname, master = %master, "netlink: set master");
+        trace!(ifname = %ifname, master = %master, "set master");
         let idx = self.link_index(ifname).await?;
         let midx = self.link_index(master).await?;
         let msg = LinkUnspec::new_with_index(idx).controller(midx).build();
@@ -130,7 +128,7 @@ impl Netlink {
     }
 
     pub(crate) async fn move_link_to_netns(&mut self, ifname: &str, ns_fd: &File) -> Result<()> {
-        debug!(ifname = %ifname, "netlink: move link to netns");
+        trace!(ifname = %ifname, "move link to netns");
         let idx = self.link_index(ifname).await?;
         let msg = LinkUnspec::new_with_index(idx)
             .setns_by_fd(ns_fd.as_raw_fd())
@@ -140,12 +138,7 @@ impl Netlink {
     }
 
     pub(crate) async fn add_addr4(&mut self, ifname: &str, ip: Ipv4Addr, prefix: u8) -> Result<()> {
-        debug!(
-            ifname = %ifname,
-            ip = %ip,
-            prefix,
-            "netlink: add IPv4 address"
-        );
+        trace!(ifname = %ifname, ip = %ip, prefix, "add addr4");
         let idx = self.link_index(ifname).await?;
         if let Err(err) = self
             .handle
@@ -155,12 +148,6 @@ impl Netlink {
             .await
         {
             if is_eexist(&err) {
-                debug!(
-                    ifname = %ifname,
-                    ip = %ip,
-                    prefix,
-                    "netlink: IPv4 address already exists"
-                );
                 return Ok(());
             }
             return Err(err.into());
@@ -169,11 +156,10 @@ impl Netlink {
     }
 
     pub(crate) async fn add_default_route_v4(&mut self, via: Ipv4Addr) -> Result<()> {
-        debug!(via = %via, "netlink: add default route");
+        trace!(via = %via, "add default route v4");
         let msg = RouteMessageBuilder::<Ipv4Addr>::new().gateway(via).build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {
-                debug!(via = %via, "netlink: default route already exists");
                 return Ok(());
             }
             return Err(err.into());
@@ -186,7 +172,7 @@ impl Netlink {
         ifname: &str,
         via: Ipv4Addr,
     ) -> Result<()> {
-        debug!(ifname = %ifname, via = %via, "netlink: replace default route");
+        trace!(ifname = %ifname, via = %via, "replace default route v4");
         let ifindex = self.link_index(ifname).await?;
 
         let mut routes = self
@@ -214,14 +200,13 @@ impl Netlink {
         prefix: u8,
         via: Ipv4Addr,
     ) -> Result<()> {
-        debug!(dst = %dst, prefix, via = %via, "netlink: add route");
+        trace!(dst = %dst, prefix, via = %via, "add route v4");
         let msg = RouteMessageBuilder::<Ipv4Addr>::new()
             .destination_prefix(dst, prefix)
             .gateway(via)
             .build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {
-                debug!(dst = %dst, prefix, via = %via, "netlink: route already exists");
                 return Ok(());
             }
             return Err(err.into());
@@ -232,7 +217,7 @@ impl Netlink {
     // ── IPv6 methods ──
 
     pub(crate) async fn add_addr6(&mut self, ifname: &str, ip: Ipv6Addr, prefix: u8) -> Result<()> {
-        debug!(ifname = %ifname, ip = %ip, prefix, "netlink: add IPv6 address");
+        trace!(ifname = %ifname, ip = %ip, prefix, "add addr6");
         let idx = self.link_index(ifname).await?;
         if let Err(err) = self
             .handle
@@ -242,7 +227,6 @@ impl Netlink {
             .await
         {
             if is_eexist(&err) {
-                debug!(ifname = %ifname, ip = %ip, prefix, "netlink: IPv6 address already exists");
                 return Ok(());
             }
             return Err(err.into());
@@ -251,11 +235,10 @@ impl Netlink {
     }
 
     pub(crate) async fn add_default_route_v6(&mut self, via: Ipv6Addr) -> Result<()> {
-        debug!(via = %via, "netlink: add default route v6");
+        trace!(via = %via, "add default route v6");
         let msg = RouteMessageBuilder::<Ipv6Addr>::new().gateway(via).build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {
-                debug!(via = %via, "netlink: default route v6 already exists");
                 return Ok(());
             }
             return Err(err.into());
@@ -269,7 +252,7 @@ impl Netlink {
         ifname: &str,
         via: Ipv6Addr,
     ) -> Result<()> {
-        debug!(ifname = %ifname, via = %via, "netlink: replace default route v6");
+        trace!(ifname = %ifname, via = %via, "replace default route v6");
         let ifindex = self.link_index(ifname).await?;
 
         let mut routes = self
@@ -297,14 +280,13 @@ impl Netlink {
         prefix: u8,
         via: Ipv6Addr,
     ) -> Result<()> {
-        debug!(dst = %dst, prefix, via = %via, "netlink: add route v6");
+        trace!(dst = %dst, prefix, via = %via, "add route v6");
         let msg = RouteMessageBuilder::<Ipv6Addr>::new()
             .destination_prefix(dst, prefix)
             .gateway(via)
             .build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {
-                debug!(dst = %dst, prefix, via = %via, "netlink: route v6 already exists");
                 return Ok(());
             }
             return Err(err.into());
