@@ -49,7 +49,8 @@ pub mod util;
 pub use crate::core::{resources, spawn_command_in_namespace, NodeId, ResourceList};
 pub use crate::userns::{init_userns, init_userns_for_ctor};
 pub use lab::{
-    Device, DeviceBuilder, DeviceIface, Impair, Lab, NatMode, ObservedAddr, Router, RouterBuilder,
+    Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Lab, NatMode, NatV6Mode, ObservedAddr,
+    Router, RouterBuilder,
 };
 
 /// Verifies the process has enough privileges to manage namespaces, routes, and raw sockets.

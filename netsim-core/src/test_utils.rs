@@ -4,7 +4,7 @@ pub use crate::core::TaskHandle;
 
 use anyhow::{anyhow, Context, Result};
 use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::debug;
@@ -54,10 +54,12 @@ pub fn probe_in_ns(
     let ns_name = ns.to_string();
     let ns_for_log = ns_name.clone();
     run_closure_in_namespace(&ns_name, move || {
-        let bind_addr = match bind_port {
-            Some(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
-            None => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+        let unspecified = if reflector.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
         };
+        let bind_addr = SocketAddr::new(unspecified, bind_port.unwrap_or(0));
         let sock = UdpSocket::bind(bind_addr)?;
         sock.set_read_timeout(Some(timeout))?;
         let mut buf = [0u8; 512];
@@ -96,7 +98,12 @@ pub fn udp_roundtrip_in_ns(ns: &str, reflector: SocketAddr) -> Result<ObservedAd
 /// Returns UDP round-trip time from `ns` to `reflector`.
 pub fn udp_rtt_in_ns(ns: &str, reflector: SocketAddr) -> Result<Duration> {
     run_closure_in_namespace(ns, move || {
-        let sock = UdpSocket::bind("0.0.0.0:0")?;
+        let bind = if reflector.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
+        let sock = UdpSocket::bind(bind)?;
         sock.set_read_timeout(Some(Duration::from_secs(2)))?;
         let mut buf = [0u8; 256];
         let start = Instant::now();

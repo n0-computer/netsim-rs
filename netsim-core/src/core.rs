@@ -1,9 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write as IoWrite;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -14,7 +14,7 @@ use tracing::warn;
 
 use crate::netlink::Netlink;
 use crate::netns;
-use crate::{qdisc, Impair, NatMode};
+use crate::{qdisc, Impair, IpSupport, NatMode, NatV6Mode};
 use nix::libc;
 
 /// Defines static addressing and naming for one lab instance.
@@ -36,6 +36,12 @@ pub struct CoreConfig {
     pub private_cidr: Ipv4Net,
     /// Stores the base public downstream address pool.
     pub public_cidr: Ipv4Net,
+    /// Stores the IX gateway IPv6 address.
+    pub ix_gw_v6: Ipv6Addr,
+    /// Stores the IX IPv6 subnet CIDR.
+    pub ix_cidr_v6: Ipv6Net,
+    /// Stores the base private downstream IPv6 pool (ULA).
+    pub private_cidr_v6: Ipv6Net,
 }
 
 /// Identifies a node in the topology graph.
@@ -58,6 +64,10 @@ pub struct RouterConfig {
     pub nat: NatMode,
     /// Selects which pool to allocate downstream subnets from.
     pub downstream_pool: DownstreamPool,
+    /// Selects router IPv6 NAT behavior.
+    pub nat_v6: NatV6Mode,
+    /// Selects which IP address families this router supports.
+    pub ip_support: IpSupport,
 }
 
 /// One network interface on a device, connected to a router's downstream switch.
@@ -67,8 +77,10 @@ pub struct DeviceIfaceData {
     pub ifname: String,
     /// Stores the switch this interface is attached to.
     pub uplink: NodeId,
-    /// Assigned IP address.
+    /// Assigned IPv4 address.
     pub ip: Option<Ipv4Addr>,
+    /// Assigned IPv6 address.
+    pub ip_v6: Option<Ipv6Addr>,
     /// Optional link impairment applied via `tc netem`.
     pub impair: Option<Impair>,
     /// Unique index used to name the root-namespace veth ends.
@@ -129,12 +141,18 @@ pub struct RouterData {
     pub uplink: Option<NodeId>,
     /// Stores the router uplink IPv4 address.
     pub upstream_ip: Option<Ipv4Addr>,
+    /// Stores the router uplink IPv6 address.
+    pub upstream_ip_v6: Option<Ipv6Addr>,
     /// Stores the downstream switch identifier.
     pub downlink: Option<NodeId>,
     /// Stores the downstream subnet CIDR.
     pub downstream_cidr: Option<Ipv4Net>,
     /// Stores the downstream gateway address.
     pub downstream_gw: Option<Ipv4Addr>,
+    /// Stores the downstream IPv6 subnet CIDR.
+    pub downstream_cidr_v6: Option<Ipv6Net>,
+    /// Stores the downstream IPv6 gateway address.
+    pub downstream_gw_v6: Option<Ipv6Addr>,
 }
 
 /// Represents an L2 switch/bridge attachment point.
@@ -142,25 +160,33 @@ pub struct RouterData {
 pub struct Switch {
     /// Stores the switch name.
     pub name: String,
-    /// Stores the switch subnet if assigned.
+    /// Stores the switch IPv4 subnet if assigned.
     pub cidr: Option<Ipv4Net>,
-    /// Stores the switch gateway address if assigned.
+    /// Stores the switch IPv4 gateway address if assigned.
     pub gw: Option<Ipv4Addr>,
+    /// Stores the switch IPv6 subnet if assigned.
+    pub cidr_v6: Option<Ipv6Net>,
+    /// Stores the switch IPv6 gateway address if assigned.
+    pub gw_v6: Option<Ipv6Addr>,
     /// Stores the owning router for managed downstream switches.
     pub owner_router: Option<NodeId>,
     /// Stores the backing bridge name.
     pub bridge: Option<String>,
     next_host: u8,
+    next_host_v6: u8,
 }
 
 /// Per-interface wiring job collected by `build()`.
 pub(crate) struct IfaceBuild {
     pub(crate) dev_ns: String,
     pub(crate) gw_ns: String,
-    pub(crate) gw_ip: Ipv4Addr,
+    pub(crate) gw_ip: Option<Ipv4Addr>,
     pub(crate) gw_br: String,
-    pub(crate) dev_ip: Ipv4Addr,
+    pub(crate) dev_ip: Option<Ipv4Addr>,
     pub(crate) prefix_len: u8,
+    pub(crate) gw_ip_v6: Option<Ipv6Addr>,
+    pub(crate) dev_ip_v6: Option<Ipv6Addr>,
+    pub(crate) prefix_len_v6: u8,
     pub(crate) impair: Option<Impair>,
     pub(crate) ifname: String,
     pub(crate) is_default: bool,
@@ -175,6 +201,8 @@ pub struct NetworkCore {
     next_private_subnet: u16,
     next_public_subnet: u16,
     next_ix_low: u8,
+    next_ix_low_v6: u16,
+    next_private_subnet_v6: u16,
     bridge_counter: u32,
     ns_counter: u32,
     ix_sw: NodeId,
@@ -353,6 +381,8 @@ impl NetworkCore {
             next_private_subnet: 1,
             next_public_subnet: 1,
             next_ix_low: 10,
+            next_ix_low_v6: 0x10,
+            next_private_subnet_v6: 1,
             bridge_counter: 2,
             ns_counter: 1,
             ix_sw: NodeId(0),
@@ -364,7 +394,13 @@ impl NetworkCore {
             own_netns: Vec::new(),
             root_ns_initialized: false,
         };
-        let ix_sw = core.add_switch("ix", Some(core.cfg.ix_cidr), Some(core.cfg.ix_gw));
+        let ix_sw = core.add_switch(
+            "ix",
+            Some(core.cfg.ix_cidr),
+            Some(core.cfg.ix_gw),
+            Some(core.cfg.ix_cidr_v6),
+            Some(core.cfg.ix_gw_v6),
+        );
         core.ix_sw = ix_sw;
         core
     }
@@ -423,6 +459,11 @@ impl NetworkCore {
     /// Returns router data for `id`.
     pub fn router(&self, id: NodeId) -> Option<&RouterData> {
         self.routers.get(&id)
+    }
+
+    /// Returns mutable router data for `id`.
+    pub fn router_mut(&mut self, id: NodeId) -> Option<&mut RouterData> {
+        self.routers.get_mut(&id)
     }
 
     /// Returns device data for `id`.
@@ -487,6 +528,8 @@ impl NetworkCore {
         nat: NatMode,
         downstream_pool: DownstreamPool,
         region: Option<String>,
+        ip_support: IpSupport,
+        nat_v6: NatV6Mode,
     ) -> NodeId {
         let ns = self.next_ns_name();
         let downlink_bridge = self.next_bridge_name();
@@ -502,13 +545,18 @@ impl NetworkCore {
                 cfg: RouterConfig {
                     nat,
                     downstream_pool,
+                    nat_v6,
+                    ip_support,
                 },
                 downlink_bridge,
                 uplink: None,
                 upstream_ip: None,
+                upstream_ip_v6: None,
                 downlink: None,
                 downstream_cidr: None,
                 downstream_gw: None,
+                downstream_cidr_v6: None,
+                downstream_gw_v6: None,
             },
         );
         id
@@ -549,13 +597,28 @@ impl NetworkCore {
         ifname: &str,
         router: NodeId,
         impair: Option<Impair>,
-    ) -> Result<Ipv4Addr> {
+    ) -> Result<Option<Ipv4Addr>> {
         let downlink = self
             .routers
             .get(&router)
             .and_then(|r| r.downlink)
             .ok_or_else(|| anyhow!("router missing downlink switch"))?;
-        let assigned = self.alloc_from_switch(downlink)?;
+        // Allocate v4 if the switch has a v4 CIDR (skip for V6Only routers).
+        let assigned = self
+            .switches
+            .get(&downlink)
+            .and_then(|sw| sw.cidr)
+            .is_some()
+            .then(|| self.alloc_from_switch(downlink))
+            .transpose()?;
+        // Allocate v6 if the switch has a v6 CIDR.
+        let assigned_v6 = self
+            .switches
+            .get(&downlink)
+            .and_then(|sw| sw.cidr_v6)
+            .is_some()
+            .then(|| self.alloc_from_switch_v6(downlink))
+            .transpose()?;
         let idx = self.alloc_id();
         let dev = self
             .devices
@@ -568,7 +631,8 @@ impl NetworkCore {
         dev.interfaces.push(DeviceIfaceData {
             ifname: ifname.to_string(),
             uplink: downlink,
-            ip: Some(assigned),
+            ip: assigned,
+            ip_v6: assigned_v6,
             impair,
             idx,
         });
@@ -604,6 +668,8 @@ impl NetworkCore {
         name: &str,
         cidr: Option<Ipv4Net>,
         gw: Option<Ipv4Addr>,
+        cidr_v6: Option<Ipv6Net>,
+        gw_v6: Option<Ipv6Addr>,
     ) -> NodeId {
         let id = NodeId(self.alloc_id());
         self.nodes_by_name.insert(name.to_string(), id);
@@ -613,9 +679,12 @@ impl NetworkCore {
                 name: name.to_string(),
                 cidr,
                 gw,
+                cidr_v6,
+                gw_v6,
                 owner_router: None,
                 bridge: None,
                 next_host: 2,
+                next_host_v6: 2,
             },
         );
         id
@@ -627,6 +696,7 @@ impl NetworkCore {
         router: NodeId,
         sw: NodeId,
         ip: Option<Ipv4Addr>,
+        ip_v6: Option<Ipv6Addr>,
     ) -> Result<Ipv4Addr> {
         let assigned = match ip {
             Some(ip) => ip,
@@ -638,6 +708,7 @@ impl NetworkCore {
             .ok_or_else(|| anyhow!("unknown router id"))?;
         router_entry.uplink = Some(sw);
         router_entry.upstream_ip = Some(assigned);
+        router_entry.upstream_ip_v6 = ip_v6;
         Ok(assigned)
     }
 
@@ -646,14 +717,17 @@ impl NetworkCore {
         &mut self,
         router: NodeId,
         sw: NodeId,
-    ) -> Result<(Ipv4Net, Ipv4Addr)> {
-        let pool = self
+    ) -> Result<(Option<Ipv4Net>, Option<Ipv4Addr>)> {
+        let router_data = self
             .routers
             .get(&router)
-            .ok_or_else(|| anyhow!("unknown router id"))?
-            .cfg
-            .downstream_pool;
-        let (cidr, gw) = {
+            .ok_or_else(|| anyhow!("unknown router id"))?;
+        let pool = router_data.cfg.downstream_pool;
+        let has_v4 = router_data.cfg.ip_support.has_v4();
+        let has_v6 = router_data.cfg.ip_support.has_v6();
+
+        // Allocate v4 CIDR for the downstream switch (skip for V6Only).
+        let (cidr, gw) = if has_v4 {
             let sw_entry = self
                 .switches
                 .get(&sw)
@@ -663,23 +737,45 @@ impl NetworkCore {
                 let gw = sw_entry
                     .gw
                     .ok_or_else(|| anyhow!("switch '{}' missing gw", sw_entry.name))?;
-                (cidr, gw)
+                (Some(cidr), Some(gw))
             } else {
                 let cidr = match pool {
                     DownstreamPool::Private => self.alloc_private_cidr()?,
                     DownstreamPool::Public => self.alloc_public_cidr()?,
                 };
                 let gw = add_host(cidr, 1)?;
-                (cidr, gw)
+                (Some(cidr), Some(gw))
             }
+        } else {
+            (None, None)
+        };
+
+        // Allocate v6 CIDR for the downstream switch if needed.
+        let (cidr_v6, gw_v6) = if has_v6 {
+            let sw_entry = self
+                .switches
+                .get(&sw)
+                .ok_or_else(|| anyhow!("unknown switch id"))?;
+            if sw_entry.cidr_v6.is_some() {
+                (sw_entry.cidr_v6, sw_entry.gw_v6)
+            } else {
+                let c6 = self.alloc_private_cidr_v6()?;
+                let seg = c6.addr().segments();
+                let g6 = Ipv6Addr::new(seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6], 1);
+                (Some(c6), Some(g6))
+            }
+        } else {
+            (None, None)
         };
 
         let sw_entry = self
             .switches
             .get_mut(&sw)
             .ok_or_else(|| anyhow!("unknown switch id"))?;
-        sw_entry.cidr = Some(cidr);
-        sw_entry.gw = Some(gw);
+        sw_entry.cidr = cidr;
+        sw_entry.gw = gw;
+        sw_entry.cidr_v6 = cidr_v6;
+        sw_entry.gw_v6 = gw_v6;
         let bridge = self
             .routers
             .get(&router)
@@ -694,8 +790,10 @@ impl NetworkCore {
             .get_mut(&router)
             .ok_or_else(|| anyhow!("unknown router id"))?;
         router_entry.downlink = Some(sw);
-        router_entry.downstream_cidr = Some(cidr);
-        router_entry.downstream_gw = Some(gw);
+        router_entry.downstream_cidr = cidr;
+        router_entry.downstream_gw = gw;
+        router_entry.downstream_cidr_v6 = cidr_v6;
+        router_entry.downstream_gw_v6 = gw_v6;
         Ok((cidr, gw))
     }
 
@@ -740,6 +838,51 @@ impl NetworkCore {
         let ip = add_host(cidr, sw_entry.next_host)?;
         sw_entry.next_host = sw_entry.next_host.saturating_add(1);
         Ok(ip)
+    }
+
+    /// Allocates the next IX IPv6 address (2001:db8::N).
+    pub fn alloc_ix_ip_v6_low(&mut self) -> Ipv6Addr {
+        let seg = self.cfg.ix_gw_v6.segments();
+        let host = self.next_ix_low_v6;
+        self.next_ix_low_v6 = self.next_ix_low_v6.saturating_add(1);
+        Ipv6Addr::new(seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6], host)
+    }
+
+    /// Allocates the next private /64 from the ULA pool (fd10:0:N::/64).
+    pub(crate) fn alloc_private_cidr_v6(&mut self) -> Result<Ipv6Net> {
+        let subnet = self.next_private_subnet_v6;
+        self.next_private_subnet_v6 = self.next_private_subnet_v6.saturating_add(1);
+        let base = self.cfg.private_cidr_v6.addr().segments();
+        let cidr = Ipv6Net::new(
+            Ipv6Addr::new(base[0], base[1], base[2], subnet, 0, 0, 0, 0),
+            64,
+        )
+        .context("allocate private /64 v6")?;
+        Ok(cidr)
+    }
+
+    /// Allocates the next host address from a switch's IPv6 pool.
+    pub(crate) fn alloc_from_switch_v6(&mut self, sw: NodeId) -> Result<Ipv6Addr> {
+        let sw_entry = self
+            .switches
+            .get_mut(&sw)
+            .ok_or_else(|| anyhow!("unknown switch id"))?;
+        let cidr = sw_entry
+            .cidr_v6
+            .ok_or_else(|| anyhow!("switch '{}' missing v6 cidr", sw_entry.name))?;
+        let host = sw_entry.next_host_v6;
+        sw_entry.next_host_v6 = sw_entry.next_host_v6.saturating_add(1);
+        let seg = cidr.addr().segments();
+        Ok(Ipv6Addr::new(
+            seg[0],
+            seg[1],
+            seg[2],
+            seg[3],
+            seg[4],
+            seg[5],
+            seg[6],
+            host as u16,
+        ))
     }
 
     /// Returns an iterator over all devices in the topology.
@@ -806,9 +949,17 @@ pub(crate) async fn setup_root_ns_async(
         debug!(ns = %root_ns, error = %err, "setup_root_ns: nft flush failed; continuing");
     }
 
+    // Disable DAD before any v6 addresses are added so they go straight to valid state.
+    set_sysctl_in(&root_ns, "net/ipv6/conf/all/accept_dad", "0")?;
+    set_sysctl_in(&root_ns, "net/ipv6/conf/default/accept_dad", "0")?;
+    set_sysctl_in(&root_ns, "net/ipv4/ip_forward", "1")?;
+    set_sysctl_in(&root_ns, "net/ipv6/conf/all/forwarding", "1")?;
+
     let ix_br = cfg.ix_br.clone();
     let ix_ip = cfg.ix_gw;
     let ix_prefix = cfg.ix_cidr.prefix_len();
+    let ix_ip_v6 = cfg.ix_gw_v6;
+    let ix_prefix_v6 = cfg.ix_cidr_v6.prefix_len();
     nl_run(netns, &root_ns, {
         let ix_br = ix_br.clone();
         async move |h| {
@@ -817,11 +968,11 @@ pub(crate) async fn setup_root_ns_async(
             h.add_bridge(&ix_br).await?;
             h.set_link_up(&ix_br).await?;
             h.add_addr4(&ix_br, ix_ip, ix_prefix).await?;
+            h.add_addr6(&ix_br, ix_ip_v6, ix_prefix_v6).await?;
             Ok(())
         }
     })
     .await?;
-    set_sysctl_in(&root_ns, "net/ipv4/ip_forward", "1")?;
     Ok(())
 }
 
@@ -841,8 +992,15 @@ pub(crate) struct RouterSetupData {
     pub upstream_cidr_prefix: Option<u8>,
     /// For IX-level public routers: downstream CIDR for return route.
     pub return_route: Option<(Ipv4Addr, u8, Ipv4Addr)>,
-    /// Downlink bridge info (if router has downstream switch).
-    pub downlink_bridge: Option<(String, Ipv4Addr, u8)>,
+    /// Downlink bridge name (if router has downstream switch) and optional v4 address.
+    pub downlink_bridge: Option<(String, Option<(Ipv4Addr, u8)>)>,
+    // ── IPv6 fields ──
+    pub ix_gw_v6: Option<Ipv6Addr>,
+    pub ix_cidr_v6_prefix: Option<u8>,
+    pub upstream_gw_v6: Option<Ipv6Addr>,
+    pub upstream_cidr_prefix_v6: Option<u8>,
+    pub return_route_v6: Option<(Ipv6Addr, u8, Ipv6Addr)>,
+    pub downlink_bridge_v6: Option<(Ipv6Addr, u8)>,
 }
 
 /// Sets up a single router's namespaces, links, and NAT. No lock held.
@@ -886,30 +1044,63 @@ pub(crate) async fn setup_router_async(
         })
         .await?;
 
-        let ix_ip = router.upstream_ip.unwrap();
+        // Disable DAD + enable forwarding before adding v6 addresses.
+        set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
+        if router.cfg.ip_support.has_v6() {
+            set_sysctl_in(&router.ns, "net/ipv6/conf/all/accept_dad", "0")?;
+            set_sysctl_in(&router.ns, "net/ipv6/conf/default/accept_dad", "0")?;
+            set_sysctl_in(&router.ns, "net/ipv6/conf/all/forwarding", "1")?;
+        }
+
+        let ix_ip = router.upstream_ip;
         let ix_prefix = data.ix_cidr_prefix;
         let ix_gw = data.ix_gw;
+        let ix_ip_v6 = router.upstream_ip_v6;
+        let ix_prefix_v6 = data.ix_cidr_v6_prefix;
+        let ix_gw_v6 = data.ix_gw_v6;
         nl_run(netns, &router.ns, {
             let ns_if = ns_if.clone();
             async move |h| {
                 h.set_link_up("lo").await?;
                 h.set_link_up(&ns_if).await?;
-                h.add_addr4(&ns_if, ix_ip, ix_prefix).await?;
-                h.add_default_route_v4(ix_gw).await?;
+                if let Some(ip4) = ix_ip {
+                    h.add_addr4(&ns_if, ip4, ix_prefix).await?;
+                    h.add_default_route_v4(ix_gw).await?;
+                }
+                if let (Some(ip6), Some(prefix6), Some(gw6)) = (ix_ip_v6, ix_prefix_v6, ix_gw_v6) {
+                    h.add_addr6(&ns_if, ip6, prefix6).await?;
+                    h.add_default_route_v6(gw6).await?;
+                }
                 Ok(())
             }
         })
         .await?;
-        set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
 
-        apply_nat(
-            &router.ns,
-            router.cfg.nat,
-            &router.downlink_bridge,
-            &ns_if,
-            router.upstream_ip.unwrap(),
-        )
-        .await?;
+        if let Some(upstream_ip4) = router.upstream_ip {
+            apply_nat(
+                &router.ns,
+                router.cfg.nat,
+                &router.downlink_bridge,
+                &ns_if,
+                upstream_ip4,
+            )
+            .await?;
+        }
+
+        // IPv6 NAT (IX-level router).
+        if router.cfg.nat_v6 != NatV6Mode::None {
+            if let (Some(up_v6), Some(up_prefix), Some((dl_gw_v6, dl_prefix))) = (
+                router.upstream_ip_v6,
+                data.ix_cidr_v6_prefix,
+                data.downlink_bridge_v6,
+            ) {
+                let wan_pfx = Ipv6Net::new(up_v6, up_prefix)
+                    .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
+                let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
+                    .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
+                apply_nat_v6(&router.ns, router.cfg.nat_v6, &ns_if, lan_pfx, wan_pfx).await?;
+            }
+        }
     } else {
         // Sub-router.
         let owner_ns = data
@@ -957,9 +1148,20 @@ pub(crate) async fn setup_router_async(
         })
         .await?;
 
+        // Disable DAD + enable forwarding before adding v6 addresses.
+        set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
+        if router.cfg.ip_support.has_v6() {
+            set_sysctl_in(&router.ns, "net/ipv6/conf/all/accept_dad", "0")?;
+            set_sysctl_in(&router.ns, "net/ipv6/conf/default/accept_dad", "0")?;
+            set_sysctl_in(&router.ns, "net/ipv6/conf/all/forwarding", "1")?;
+        }
+
         let wan_if = "wan".to_string();
-        let wan_ip = router.upstream_ip.unwrap();
-        let wan_prefix = data.upstream_cidr_prefix.unwrap();
+        let wan_ip = router.upstream_ip;
+        let wan_prefix = data.upstream_cidr_prefix;
+        let wan_ip_v6 = router.upstream_ip_v6;
+        let wan_prefix_v6 = data.upstream_cidr_prefix_v6;
+        let gw_ip_v6 = data.upstream_gw_v6;
         nl_run(netns, &router.ns, {
             let root_b = root_b.clone();
             let wan_if = wan_if.clone();
@@ -967,36 +1169,63 @@ pub(crate) async fn setup_router_async(
                 h.set_link_up("lo").await?;
                 h.rename_link(&root_b, &wan_if).await?;
                 h.set_link_up(&wan_if).await?;
-                h.add_addr4(&wan_if, wan_ip, wan_prefix).await?;
-                h.add_default_route_v4(gw_ip).await?;
+                if let (Some(ip4), Some(prefix4)) = (wan_ip, wan_prefix) {
+                    h.add_addr4(&wan_if, ip4, prefix4).await?;
+                    h.add_default_route_v4(gw_ip).await?;
+                }
+                if let (Some(ip6), Some(prefix6), Some(g6)) = (wan_ip_v6, wan_prefix_v6, gw_ip_v6) {
+                    h.add_addr6(&wan_if, ip6, prefix6).await?;
+                    h.add_default_route_v6(g6).await?;
+                }
                 Ok(())
             }
         })
         .await?;
-        set_sysctl_in(&router.ns, "net/ipv4/ip_forward", "1")?;
 
-        apply_nat(
-            &router.ns,
-            router.cfg.nat,
-            &router.downlink_bridge,
-            &wan_if,
-            router.upstream_ip.unwrap(),
-        )
-        .await?;
+        if let Some(upstream_ip4) = router.upstream_ip {
+            apply_nat(
+                &router.ns,
+                router.cfg.nat,
+                &router.downlink_bridge,
+                &wan_if,
+                upstream_ip4,
+            )
+            .await?;
+        }
+
+        // IPv6 NAT (sub-router).
+        if router.cfg.nat_v6 != NatV6Mode::None {
+            if let (Some(up_v6), Some(up_prefix), Some((dl_gw_v6, dl_prefix))) = (
+                router.upstream_ip_v6,
+                data.upstream_cidr_prefix_v6,
+                data.downlink_bridge_v6,
+            ) {
+                let wan_pfx = Ipv6Net::new(up_v6, up_prefix)
+                    .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
+                let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
+                    .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
+                apply_nat_v6(&router.ns, router.cfg.nat_v6, &wan_if, lan_pfx, wan_pfx).await?;
+            }
+        }
     }
 
     // Create downlink bridge.
-    if let Some((br, lan_ip, lan_prefix)) = &data.downlink_bridge {
+    if let Some((br, v4_addr)) = &data.downlink_bridge {
+        let downlink_v6 = data.downlink_bridge_v6;
+        let v4_addr = *v4_addr;
         nl_run(netns, &router.ns, {
             let br = br.clone();
-            let lan_ip = *lan_ip;
-            let lan_prefix = *lan_prefix;
             async move |h| {
                 h.set_link_up("lo").await?;
                 h.ensure_link_deleted(&br).await.ok();
                 h.add_bridge(&br).await?;
                 h.set_link_up(&br).await?;
-                h.add_addr4(&br, lan_ip, lan_prefix).await?;
+                if let Some((lan_ip, lan_prefix)) = v4_addr {
+                    h.add_addr4(&br, lan_ip, lan_prefix).await?;
+                }
+                if let Some((gw_v6, prefix_v6)) = downlink_v6 {
+                    h.add_addr6(&br, gw_v6, prefix_v6).await?;
+                }
                 Ok(())
             }
         })
@@ -1007,6 +1236,14 @@ pub(crate) async fn setup_router_async(
     if let Some((net, prefix_len, via)) = data.return_route {
         nl_run(netns, &data.root_ns, async move |h| {
             h.add_route_v4(net, prefix_len, via).await.ok();
+            Ok(())
+        })
+        .await
+        .ok();
+    }
+    if let Some((net6, prefix6, via6)) = data.return_route_v6 {
+        nl_run(netns, &data.root_ns, async move |h| {
+            h.add_route_v6(net6, prefix6, via6).await.ok();
             Ok(())
         })
         .await
@@ -1068,6 +1305,14 @@ pub(crate) async fn wire_iface_async(
     let ifname = dev.ifname.clone();
     let is_default = dev.is_default;
     let gw_ip = dev.gw_ip;
+    let dev_ip_v6 = dev.dev_ip_v6;
+    let gw_ip_v6 = dev.gw_ip_v6;
+    let prefix_len_v6 = dev.prefix_len_v6;
+    // Disable DAD before adding v6 addresses so they go straight to valid state.
+    if dev_ip_v6.is_some() {
+        set_sysctl_in(&dev.dev_ns, "net/ipv6/conf/all/accept_dad", "0").ok();
+        set_sysctl_in(&dev.dev_ns, "net/ipv6/conf/default/accept_dad", "0").ok();
+    }
     nl_run(netns, &dev.dev_ns, {
         let root_dev = root_dev.clone();
         let ifname = ifname.clone();
@@ -1075,9 +1320,21 @@ pub(crate) async fn wire_iface_async(
             h.set_link_up("lo").await?;
             h.rename_link(&root_dev, &ifname).await?;
             h.set_link_up(&ifname).await?;
-            h.add_addr4(&ifname, dev_ip, dev_prefix).await?;
-            if is_default {
-                h.add_default_route_v4(gw_ip).await?;
+            if let Some(ip4) = dev_ip {
+                h.add_addr4(&ifname, ip4, dev_prefix).await?;
+                if is_default {
+                    if let Some(gw4) = gw_ip {
+                        h.add_default_route_v4(gw4).await?;
+                    }
+                }
+            }
+            if let Some(ip6) = dev_ip_v6 {
+                h.add_addr6(&ifname, ip6, prefix_len_v6).await?;
+                if is_default {
+                    if let Some(gw6) = gw_ip_v6 {
+                        h.add_default_route_v6(gw6).await?;
+                    }
+                }
             }
             Ok(())
         }
@@ -1262,6 +1519,57 @@ pub async fn apply_nat(
     }
 }
 
+/// Applies IPv6 NAT rules in `ns`.
+pub async fn apply_nat_v6(
+    ns: &str,
+    mode: NatV6Mode,
+    wan_if: &str,
+    lan_prefix: Ipv6Net,
+    wan_prefix: Ipv6Net,
+) -> Result<()> {
+    match mode {
+        NatV6Mode::None => Ok(()),
+        NatV6Mode::Nptv6 => {
+            let rules = format!(
+                r#"
+table ip6 nat {{
+    chain postrouting {{
+        type nat hook postrouting priority 100; policy accept;
+        oif "{wan}" snat prefix to {wan_pfx}
+    }}
+    chain prerouting {{
+        type nat hook prerouting priority -100; policy accept;
+        iif "{wan}" dnat prefix to {lan_pfx}
+    }}
+}}
+"#,
+                wan = wan_if,
+                wan_pfx = wan_prefix,
+                lan_pfx = lan_prefix,
+            );
+            run_nft_in(ns, &rules).await
+        }
+        NatV6Mode::Masquerade => {
+            let rules = format!(
+                r#"
+table ip6 nat {{
+    chain postrouting {{
+        type nat hook postrouting priority 100; policy accept;
+        oif "{wan}" masquerade
+    }}
+    chain forward {{
+        type filter hook forward priority 0; policy accept;
+        meta l4proto ipv6-icmp accept
+    }}
+}}
+"#,
+                wan = wan_if,
+            );
+            run_nft_in(ns, &rules).await
+        }
+    }
+}
+
 /// Applies ISP CGNAT masquerade rules in `ns` on `ix_if`.
 pub async fn apply_isp_cgnat(ns: &str, ix_if: &str) -> Result<()> {
     let rules = format!(
@@ -1276,14 +1584,6 @@ table ip nat {{
         ix = ix_if,
     );
     run_nft_in(ns, &rules).await
-}
-
-/// Applies per-destination latency filters on `ifname` inside `ns`.
-pub fn apply_region_latency(ns: &str, ifname: &str, filters: &[(Ipv4Net, u32)]) -> Result<()> {
-    if filters.is_empty() {
-        return Ok(());
-    }
-    qdisc::apply_region_latency(ns, ifname, filters)
 }
 
 /// Applies an impairment preset or manual limits on `ifname` inside `ns`.

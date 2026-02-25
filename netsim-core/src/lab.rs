@@ -1,11 +1,11 @@
 //! High-level lab API: [`Lab`], [`DeviceBuilder`], [`NatMode`], [`Impair`], [`ObservedAddr`].
 
 use anyhow::{anyhow, bail, Context, Result};
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
     process::Command,
     sync::{
@@ -17,9 +17,10 @@ use std::{
 };
 
 use crate::core::{
-    apply_impair_in, apply_nat, cleanup_netns, resources, run_closure_in_namespace, run_nft_in,
-    setup_device_async, setup_root_ns_async, setup_router_async, spawn_command_in_namespace,
-    CoreConfig, DownstreamPool, IfaceBuild, NetworkCore, NodeId, RouterSetupData, TaskHandle,
+    apply_impair_in, apply_nat, apply_nat_v6, cleanup_netns, resources, run_closure_in_namespace,
+    run_nft_in, setup_device_async, setup_root_ns_async, setup_router_async,
+    spawn_command_in_namespace, CoreConfig, DownstreamPool, IfaceBuild, NetworkCore, NodeId,
+    RouterSetupData, TaskHandle,
 };
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -43,6 +44,43 @@ pub enum NatMode {
     DestinationIndependent,
     /// Endpoint-dependent (symmetric-ish): different port per destination.
     DestinationDependent,
+}
+
+/// IPv6 NAT mode for a router.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NatV6Mode {
+    /// No translation — devices use global unicast directly.
+    #[default]
+    None,
+    /// RFC 6296 stateless prefix translation (1:1 prefix mapping).
+    Nptv6,
+    /// Stateful masquerade (useful for testing symmetric behaviour on IPv6).
+    Masquerade,
+}
+
+/// Selects which IP address families a router supports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IpSupport {
+    /// IPv4 only (default, backwards-compatible).
+    #[default]
+    V4Only,
+    /// IPv6 only.
+    V6Only,
+    /// Both IPv4 and IPv6.
+    DualStack,
+}
+
+impl IpSupport {
+    /// Returns `true` when IPv4 is enabled.
+    pub fn has_v4(self) -> bool {
+        matches!(self, IpSupport::V4Only | IpSupport::DualStack)
+    }
+    /// Returns `true` when IPv6 is enabled.
+    pub fn has_v6(self) -> bool {
+        matches!(self, IpSupport::V6Only | IpSupport::DualStack)
+    }
 }
 
 /// Link-layer impairment profile applied via `tc netem`.
@@ -165,6 +203,9 @@ impl Lab {
             ix_cidr: "203.0.113.0/24".parse().expect("valid ix cidr"),
             private_cidr: "10.0.0.0/16".parse().expect("valid private cidr"),
             public_cidr: "203.0.113.0/24".parse().expect("valid public cidr"),
+            ix_gw_v6: "2001:db8::1".parse().expect("valid ix gw v6"),
+            ix_cidr_v6: "2001:db8::/32".parse().expect("valid ix cidr v6"),
+            private_cidr_v6: "fd10::/48".parse().expect("valid private cidr v6"),
         });
         Self {
             inner: Arc::new(Mutex::new(LabInner {
@@ -236,7 +277,11 @@ impl Lab {
                         .as_deref()
                         .and_then(|n| inner.core.router_id_by_name(n))
                 };
-                let mut rb = lab.add_router(&rcfg.name).nat(rcfg.nat);
+                let mut rb = lab
+                    .add_router(&rcfg.name)
+                    .nat(rcfg.nat)
+                    .ip_support(rcfg.ip_support)
+                    .nat_v6(rcfg.nat_v6);
                 if let Some(r) = &rcfg.region {
                     rb = rb.region(r);
                 }
@@ -378,7 +423,7 @@ impl Lab {
         }
 
         // Build region → target CIDRs map from IX-connected routers.
-        let mut region_targets: HashMap<String, Vec<ipnet::Ipv4Net>> = HashMap::new();
+        let mut region_targets: HashMap<String, Vec<ipnet::IpNet>> = HashMap::new();
         for router in inner.core.all_routers() {
             let Some(uplink) = router.uplink else {
                 continue;
@@ -389,14 +434,38 @@ impl Lab {
             let Some(region) = router.region.as_ref() else {
                 continue;
             };
+            // v4 targets
             if let Some(ix_ip) = router.upstream_ip {
                 if let Ok(cidr) = ipnet::Ipv4Net::new(ix_ip, 32) {
-                    region_targets.entry(region.clone()).or_default().push(cidr);
+                    region_targets
+                        .entry(region.clone())
+                        .or_default()
+                        .push(cidr.into());
                 }
             }
             if router.cfg.downstream_pool == crate::core::DownstreamPool::Public {
                 if let Some(cidr) = router.downstream_cidr {
-                    region_targets.entry(region.clone()).or_default().push(cidr);
+                    region_targets
+                        .entry(region.clone())
+                        .or_default()
+                        .push(cidr.into());
+                }
+            }
+            // v6 targets
+            if let Some(ix_ip_v6) = router.upstream_ip_v6 {
+                if let Ok(cidr) = ipnet::Ipv6Net::new(ix_ip_v6, 128) {
+                    region_targets
+                        .entry(region.clone())
+                        .or_default()
+                        .push(cidr.into());
+                }
+            }
+            if router.cfg.downstream_pool == crate::core::DownstreamPool::Public {
+                if let Some(cidr6) = router.downstream_cidr_v6 {
+                    region_targets
+                        .entry(region.clone())
+                        .or_default()
+                        .push(cidr6.into());
                 }
             }
         }
@@ -424,7 +493,7 @@ impl Lab {
                 }
             }
             if !filters.is_empty() {
-                crate::core::apply_region_latency(&router.ns, "ix", &filters)?;
+                crate::qdisc::apply_region_latency_dual(&router.ns, "ix", &filters)?;
             }
         }
         Ok(())
@@ -448,6 +517,8 @@ impl Lab {
                 region: None,
                 upstream: None,
                 nat: NatMode::None,
+                ip_support: IpSupport::V4Only,
+                nat_v6: NatV6Mode::None,
                 result: Err(anyhow!("router '{}' already exists", name)),
             };
         }
@@ -457,6 +528,8 @@ impl Lab {
             region: None,
             upstream: None,
             nat: NatMode::None,
+            ip_support: IpSupport::V4Only,
+            nat_v6: NatV6Mode::None,
             result: Ok(()),
         }
     }
@@ -484,7 +557,6 @@ impl Lab {
 
     // ── build ────────────────────────────────────────────────────────────
 
-    /// Creates all namespaces, links, addresses, routes, and NAT rules.
     // ── User-facing API ─────────────────────────────────────────────────
 
     /// Adds a one-way inter-region latency in milliseconds.
@@ -856,6 +928,8 @@ pub struct RouterBuilder {
     region: Option<String>,
     upstream: Option<NodeId>,
     nat: NatMode,
+    ip_support: IpSupport,
+    nat_v6: NatV6Mode,
     result: Result<()>,
 }
 
@@ -886,6 +960,22 @@ impl RouterBuilder {
         self
     }
 
+    /// Sets which IP address families this router supports. Defaults to [`IpSupport::V4Only`].
+    pub fn ip_support(mut self, support: IpSupport) -> Self {
+        if self.result.is_ok() {
+            self.ip_support = support;
+        }
+        self
+    }
+
+    /// Sets the IPv6 NAT mode. Defaults to [`NatV6Mode::None`].
+    pub fn nat_v6(mut self, mode: NatV6Mode) -> Self {
+        if self.result.is_ok() {
+            self.nat_v6 = mode;
+        }
+        self
+    }
+
     /// Finalises the router, creates its namespace and links, and returns a [`Router`] handle.
     pub async fn build(self) -> Result<Router> {
         self.result?;
@@ -899,18 +989,37 @@ impl RouterBuilder {
             } else {
                 DownstreamPool::Private
             };
-            let id = inner
-                .core
-                .add_router(&self.name, nat, downstream_pool, self.region);
-            let sub_switch = inner
-                .core
-                .add_switch(&format!("{}-sub", self.name), None, None);
+            let id = inner.core.add_router(
+                &self.name,
+                nat,
+                downstream_pool,
+                self.region,
+                self.ip_support,
+                self.nat_v6,
+            );
+            let has_v4 = self.ip_support.has_v4();
+            let has_v6 = self.ip_support.has_v6();
+            let sub_switch =
+                inner
+                    .core
+                    .add_switch(&format!("{}-sub", self.name), None, None, None, None);
             inner.core.connect_router_downlink(id, sub_switch)?;
             match self.upstream {
                 None => {
-                    let ix_ip = inner.core.alloc_ix_ip_low();
+                    let ix_ip = if has_v4 {
+                        Some(inner.core.alloc_ix_ip_low())
+                    } else {
+                        None
+                    };
+                    let ix_ip_v6 = if has_v6 {
+                        Some(inner.core.alloc_ix_ip_v6_low())
+                    } else {
+                        None
+                    };
                     let ix_sw = inner.core.ix_sw();
-                    inner.core.connect_router_uplink(id, ix_sw, Some(ix_ip))?;
+                    inner
+                        .core
+                        .connect_router_uplink(id, ix_sw, ix_ip, ix_ip_v6)?;
                 }
                 Some(parent_id) => {
                     let parent_downlink = inner
@@ -918,9 +1027,14 @@ impl RouterBuilder {
                         .router(parent_id)
                         .and_then(|r| r.downlink)
                         .ok_or_else(|| anyhow!("parent router missing downlink switch"))?;
+                    let uplink_ip_v6 = if has_v6 {
+                        Some(inner.core.alloc_from_switch_v6(parent_downlink)?)
+                    } else {
+                        None
+                    };
                     inner
                         .core
-                        .connect_router_uplink(id, parent_downlink, None)?;
+                        .connect_router_uplink(id, parent_downlink, None, uplink_ip_v6)?;
                 }
             }
 
@@ -930,31 +1044,41 @@ impl RouterBuilder {
             let ix_sw = inner.core.ix_sw();
 
             // Upstream info for sub-routers.
-            let (upstream_owner_ns, upstream_bridge, upstream_gw, upstream_cidr_prefix) =
-                if let Some(uplink) = router.uplink {
-                    if uplink != ix_sw {
-                        let sw = inner.core.switch(uplink).unwrap();
-                        let owner = sw.owner_router.unwrap();
-                        let owner_ns = inner.core.router(owner).unwrap().ns.clone();
-                        let bridge = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
-                        let gw = sw.gw;
-                        let prefix = sw.cidr.map(|c| c.prefix_len());
-                        (Some(owner_ns), Some(bridge), gw, prefix)
-                    } else {
-                        (None, None, None, None)
-                    }
+            let (
+                upstream_owner_ns,
+                upstream_bridge,
+                upstream_gw,
+                upstream_cidr_prefix,
+                upstream_gw_v6,
+                upstream_cidr_prefix_v6,
+            ) = if let Some(uplink) = router.uplink {
+                if uplink != ix_sw {
+                    let sw = inner.core.switch(uplink).unwrap();
+                    let owner = sw.owner_router.unwrap();
+                    let owner_ns = inner.core.router(owner).unwrap().ns.clone();
+                    let bridge = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
+                    let gw = sw.gw;
+                    let prefix = sw.cidr.map(|c| c.prefix_len());
+                    let gw_v6 = sw.gw_v6;
+                    let prefix_v6 = sw.cidr_v6.map(|c| c.prefix_len());
+                    (Some(owner_ns), Some(bridge), gw, prefix, gw_v6, prefix_v6)
                 } else {
-                    (None, None, None, None)
-                };
+                    (None, None, None, None, None, None)
+                }
+            } else {
+                (None, None, None, None, None, None)
+            };
 
             // Downlink bridge info.
             let downlink_bridge = router.downlink.and_then(|sw_id| {
                 let sw = inner.core.switch(sw_id)?;
-                Some((
-                    sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string()),
-                    sw.gw?,
-                    sw.cidr?.prefix_len(),
-                ))
+                let br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
+                let v4 = sw.gw.and_then(|gw| Some((gw, sw.cidr?.prefix_len())));
+                Some((br, v4))
+            });
+            let downlink_bridge_v6 = router.downlink.and_then(|sw_id| {
+                let sw = inner.core.switch(sw_id)?;
+                Some((sw.gw_v6?, sw.cidr_v6?.prefix_len()))
             });
 
             // Return route for public downstreams.
@@ -969,7 +1093,21 @@ impl RouterBuilder {
             } else {
                 None
             };
+            let return_route_v6 = if router.uplink == Some(ix_sw)
+                && router.cfg.downstream_pool == DownstreamPool::Public
+            {
+                if let (Some(cidr6), Some(via6)) =
+                    (router.downstream_cidr_v6, router.upstream_ip_v6)
+                {
+                    Some((cidr6.addr(), cidr6.prefix_len(), via6))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
+            let has_v6 = router.cfg.ip_support.has_v6();
             let setup_data = RouterSetupData {
                 router,
                 root_ns: cfg.root_ns.clone(),
@@ -984,6 +1122,16 @@ impl RouterBuilder {
                 upstream_cidr_prefix,
                 return_route,
                 downlink_bridge,
+                ix_gw_v6: if has_v6 { Some(cfg.ix_gw_v6) } else { None },
+                ix_cidr_v6_prefix: if has_v6 {
+                    Some(cfg.ix_cidr_v6.prefix_len())
+                } else {
+                    None
+                },
+                upstream_gw_v6,
+                upstream_cidr_prefix_v6,
+                return_route_v6,
+                downlink_bridge_v6,
             };
 
             let netns = Arc::clone(&inner.core.netns);
@@ -1117,16 +1265,18 @@ impl DeviceBuilder {
                         iface.ifname
                     )
                 })?;
-                let gw = sw.gw.ok_or_else(|| anyhow!("device switch missing gw"))?;
                 let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
                 let gw_ns = inner.core.router(gw_router).unwrap().ns.clone();
                 iface_data.push(IfaceBuild {
                     dev_ns: dev.ns.clone(),
                     gw_ns,
-                    gw_ip: gw,
+                    gw_ip: sw.gw,
                     gw_br,
-                    dev_ip: iface.ip.unwrap(),
-                    prefix_len: sw.cidr.unwrap().prefix_len(),
+                    dev_ip: iface.ip,
+                    prefix_len: sw.cidr.map(|c| c.prefix_len()).unwrap_or(24),
+                    gw_ip_v6: sw.gw_v6,
+                    dev_ip_v6: iface.ip_v6,
+                    prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
                     impair: iface.impair,
                     ifname: iface.ifname.clone(),
                     is_default: iface.ifname == dev.default_via,
@@ -1182,6 +1332,7 @@ impl DeviceBuilder {
 pub struct DeviceIface {
     ifname: String,
     ip: Ipv4Addr,
+    ip_v6: Option<Ipv6Addr>,
     impair: Option<Impair>,
 }
 
@@ -1194,6 +1345,11 @@ impl DeviceIface {
     /// Returns the assigned IPv4 address.
     pub fn ip(&self) -> Ipv4Addr {
         self.ip
+    }
+
+    /// Returns the assigned IPv6 address, if any.
+    pub fn ip6(&self) -> Option<Ipv6Addr> {
+        self.ip_v6
     }
 
     /// Returns the impairment profile, if any.
@@ -1252,6 +1408,15 @@ impl Device {
             .unwrap_or(Ipv4Addr::UNSPECIFIED)
     }
 
+    /// Returns the IPv6 address of the default interface, if assigned.
+    pub fn ip6(&self) -> Option<Ipv6Addr> {
+        let inner = self.lab.lock().unwrap();
+        inner
+            .core
+            .device(self.id)
+            .and_then(|d| d.default_iface().ip_v6)
+    }
+
     /// Returns a snapshot of the named interface, if it exists.
     pub fn iface(&self, name: &str) -> Option<DeviceIface> {
         let inner = self.lab.lock().unwrap();
@@ -1260,6 +1425,7 @@ impl Device {
         Some(DeviceIface {
             ifname: iface.ifname.clone(),
             ip: iface.ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
+            ip_v6: iface.ip_v6,
             impair: iface.impair,
         })
     }
@@ -1275,6 +1441,7 @@ impl Device {
         DeviceIface {
             ifname: iface.ifname.clone(),
             ip: iface.ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
+            ip_v6: iface.ip_v6,
             impair: iface.impair,
         }
     }
@@ -1291,6 +1458,7 @@ impl Device {
             .map(|iface| DeviceIface {
                 ifname: iface.ifname.clone(),
                 ip: iface.ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
+                ip_v6: iface.ip_v6,
                 impair: iface.impair,
             })
             .collect()
@@ -1519,12 +1687,18 @@ impl Device {
                 .switch(downlink_sw)
                 .ok_or_else(|| anyhow!("target router's downlink switch missing"))?
                 .clone();
-            let gw = sw
-                .gw
-                .ok_or_else(|| anyhow!("target switch missing gateway"))?;
             let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".to_string());
-            let new_ip = inner.core.alloc_from_switch(downlink_sw)?;
-            let prefix_len = sw.cidr.unwrap().prefix_len();
+            let new_ip = if sw.cidr.is_some() {
+                Some(inner.core.alloc_from_switch(downlink_sw)?)
+            } else {
+                None
+            };
+            let new_ip_v6 = if sw.cidr_v6.is_some() {
+                Some(inner.core.alloc_from_switch_v6(downlink_sw)?)
+            } else {
+                None
+            };
+            let prefix_len = sw.cidr.map(|c| c.prefix_len()).unwrap_or(24);
 
             let netns = Arc::clone(&inner.core.netns);
             let prefix = inner.core.cfg.prefix.clone();
@@ -1533,10 +1707,13 @@ impl Device {
             let build = IfaceBuild {
                 dev_ns: dev.ns.clone(),
                 gw_ns: target_router.ns.clone(),
-                gw_ip: gw,
+                gw_ip: sw.gw,
                 gw_br,
                 dev_ip: new_ip,
                 prefix_len,
+                gw_ip_v6: sw.gw_v6,
+                dev_ip_v6: new_ip_v6,
+                prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
                 impair: iface.impair,
                 ifname: ifname.to_string(),
                 is_default: ifname == dev.default_via,
@@ -1561,6 +1738,7 @@ impl Device {
 
         // Phase 3: Wire new interface (reuses existing wiring logic)
         let new_ip = iface_build.dev_ip;
+        let new_ip_v6 = iface_build.dev_ip_v6;
         let new_uplink = {
             let inner = self.lab.lock().unwrap();
             inner.core.router(to_router).unwrap().downlink.unwrap()
@@ -1576,7 +1754,8 @@ impl Device {
                 .ok_or_else(|| anyhow!("device disappeared"))?;
             if let Some(iface) = dev.interfaces.iter_mut().find(|i| i.ifname == ifname) {
                 iface.uplink = new_uplink;
-                iface.ip = Some(new_ip);
+                iface.ip = new_ip;
+                iface.ip_v6 = new_ip_v6;
             }
         }
 
@@ -1657,6 +1836,47 @@ impl Router {
         inner.core.router(self.id).and_then(|r| r.downstream_gw)
     }
 
+    /// Returns which IP address families this router supports.
+    pub fn ip_support(&self) -> IpSupport {
+        let inner = self.lab.lock().unwrap();
+        inner
+            .core
+            .router(self.id)
+            .map(|r| r.cfg.ip_support)
+            .unwrap_or_default()
+    }
+
+    /// Returns the uplink (WAN-side) IPv6 address, if connected.
+    pub fn uplink_ip_v6(&self) -> Option<Ipv6Addr> {
+        let inner = self.lab.lock().unwrap();
+        inner.core.router(self.id).and_then(|r| r.upstream_ip_v6)
+    }
+
+    /// Returns the downstream IPv6 subnet CIDR, if allocated.
+    pub fn downstream_cidr_v6(&self) -> Option<Ipv6Net> {
+        let inner = self.lab.lock().unwrap();
+        inner
+            .core
+            .router(self.id)
+            .and_then(|r| r.downstream_cidr_v6)
+    }
+
+    /// Returns the downstream IPv6 gateway address, if allocated.
+    pub fn downstream_gw_v6(&self) -> Option<Ipv6Addr> {
+        let inner = self.lab.lock().unwrap();
+        inner.core.router(self.id).and_then(|r| r.downstream_gw_v6)
+    }
+
+    /// Returns the IPv6 NAT mode.
+    pub fn nat_v6_mode(&self) -> NatV6Mode {
+        let inner = self.lab.lock().unwrap();
+        inner
+            .core
+            .router(self.id)
+            .map(|r| r.cfg.nat_v6)
+            .unwrap_or_default()
+    }
+
     // ── Dynamic operations ──────────────────────────────────────────────
 
     /// Replaces NAT rules on this router at runtime.
@@ -1672,6 +1892,51 @@ impl Router {
             .unwrap()
             .core
             .set_router_nat_mode(self.id, mode)
+    }
+
+    /// Replaces IPv6 NAT rules on this router at runtime.
+    pub async fn set_nat_v6_mode(&self, mode: NatV6Mode) -> Result<()> {
+        let (ns, wan_if, lan_prefix, wan_prefix) = {
+            let inner = self.lab.lock().unwrap();
+            let router = inner
+                .core
+                .router(self.id)
+                .ok_or_else(|| anyhow!("unknown router id"))?;
+            let wan_if = if router.uplink == Some(inner.core.ix_sw()) {
+                "ix".to_string()
+            } else {
+                "wan".to_string()
+            };
+            let lan_prefix = router
+                .downstream_cidr_v6
+                .unwrap_or_else(|| "fd10::/64".parse().unwrap());
+            let wan_prefix = {
+                let up_ip = router.upstream_ip_v6.unwrap_or(Ipv6Addr::UNSPECIFIED);
+                let up_prefix = if router.uplink == Some(inner.core.ix_sw()) {
+                    inner.core.cfg.ix_cidr_v6.prefix_len()
+                } else {
+                    router
+                        .uplink
+                        .and_then(|sw| inner.core.switch(sw))
+                        .and_then(|sw| sw.cidr_v6)
+                        .map(|c| c.prefix_len())
+                        .unwrap_or(64)
+                };
+                Ipv6Net::new(up_ip, up_prefix).unwrap_or_else(|_| Ipv6Net::new(up_ip, 128).unwrap())
+            };
+            (router.ns.clone(), wan_if, lan_prefix, wan_prefix)
+        };
+        run_nft_in(&ns, "flush table ip6 nat").await.ok();
+        apply_nat_v6(&ns, mode, &wan_if, lan_prefix, wan_prefix).await?;
+        {
+            let mut inner = self.lab.lock().unwrap();
+            let router = inner
+                .core
+                .router_mut(self.id)
+                .ok_or_else(|| anyhow!("unknown router id"))?;
+            router.cfg.nat_v6 = mode;
+        }
+        Ok(())
     }
 
     /// Flushes the conntrack table, forcing all active NAT mappings to expire.
@@ -4923,6 +5188,467 @@ gateway = "dc1"
         if !failures.is_empty() {
             bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
         }
+        Ok(())
+    }
+
+    // ── IPv6 tests ──────────────────────────────────────────────────────
+
+    /// Smoke test: dual-stack DC + device, v6 UDP roundtrip succeeds.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn smoke_dual_stack_roundtrip() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .region("eu")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc.id(), None)
+            .build()
+            .await?;
+
+        // Verify device got both v4 and v6 addresses.
+        assert_ne!(
+            dev.ip(),
+            Ipv4Addr::UNSPECIFIED,
+            "device should have v4 addr"
+        );
+        assert!(dev.ip6().is_some(), "device should have v6 addr");
+
+        // v4 roundtrip
+        let dc_ip_v4 = dc.uplink_ip().expect("dc should have v4 uplink");
+        let r_v4 = SocketAddr::new(IpAddr::V4(dc_ip_v4), 3480);
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        lab.spawn_reflector(&dc_ns, r_v4)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let o_v4 = udp_roundtrip_in_ns(&lab.node_ns(dev.id())?.to_string(), r_v4)?;
+        assert_eq!(
+            o_v4.observed.ip(),
+            IpAddr::V4(dev.ip()),
+            "v4 reflexive should be device IP (no NAT)"
+        );
+
+        // Dump v6 state for debugging.
+        let dev_ns_str = lab.node_ns(dev.id())?.to_string();
+        let root_ns = lab.root_namespace_name();
+        for ns_name in [root_ns, dc_ns.clone(), dev_ns_str.clone()] {
+            let ns_label = ns_name.clone();
+            let out = crate::core::run_closure_in_namespace(&ns_name, move || {
+                let ns_name = ns_label;
+                let ip6a = std::process::Command::new("ip")
+                    .args(["-6", "addr"])
+                    .output()?;
+                let ip6r = std::process::Command::new("ip")
+                    .args(["-6", "route"])
+                    .output()?;
+                Ok(format!(
+                    "=== {} ===\nADDR:\n{}\nROUTE:\n{}",
+                    ns_name,
+                    String::from_utf8_lossy(&ip6a.stdout),
+                    String::from_utf8_lossy(&ip6r.stdout),
+                ))
+            })?;
+            eprintln!("{}", out);
+        }
+
+        // v6 roundtrip
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc should have v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3481);
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+        let o_v6 = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        assert!(o_v6.observed.ip().is_ipv6(), "v6 reflexive should be IPv6");
+
+        Ok(())
+    }
+
+    /// Smoke test: v6-only DC + device, v6 roundtrip succeeds, v4 probe fails.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn smoke_v6_only_roundtrip() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::V6Only)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc.id(), None)
+            .build()
+            .await?;
+
+        // Device must have v6 but no v4.
+        let dev_ip6 = dev.ip6().expect("device should have v6 addr");
+        assert!(!dev_ip6.is_unspecified(), "v6 addr must not be unspecified");
+        assert_eq!(
+            dev.ip(),
+            Ipv4Addr::UNSPECIFIED,
+            "V6Only device should have no v4 addr"
+        );
+        assert!(
+            dc.uplink_ip().is_none(),
+            "V6Only router should have no v4 uplink"
+        );
+
+        // v6 roundtrip
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3490);
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+        let o = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        assert!(o.observed.ip().is_ipv6(), "reflexive should be v6");
+        Ok(())
+    }
+
+    /// Dual-stack sub-router with v6 masquerade NAT.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn nat_v6_masquerade() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let isp = lab
+            .add_router("isp")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let home = lab
+            .add_router("nat")
+            .upstream(isp.id())
+            .nat(NatMode::DestinationIndependent)
+            .ip_support(IpSupport::DualStack)
+            .nat_v6(NatV6Mode::Masquerade)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", home.id(), None)
+            .build()
+            .await?;
+
+        // v6 reflector in DC.
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3500);
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+        let o = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        // With masquerade, the reflexive address should be the router's WAN IP.
+        let home_wan_v6 = home.uplink_ip_v6().expect("home v6 uplink");
+        assert_eq!(
+            o.observed.ip(),
+            IpAddr::V6(home_wan_v6),
+            "v6 masquerade: reflexive should be router WAN IP"
+        );
+        Ok(())
+    }
+
+    /// Router handle v6 accessors return correct values.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn router_v6_accessors() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::DualStack)
+            .nat_v6(NatV6Mode::Masquerade)
+            .build()
+            .await?;
+
+        assert_eq!(dc.ip_support(), IpSupport::DualStack);
+        assert_eq!(dc.nat_v6_mode(), NatV6Mode::Masquerade);
+        assert!(dc.uplink_ip_v6().is_some(), "should have v6 uplink");
+        assert!(
+            dc.downstream_cidr_v6().is_some(),
+            "should have v6 downstream CIDR"
+        );
+        assert!(
+            dc.downstream_gw_v6().is_some(),
+            "should have v6 downstream gw"
+        );
+
+        // V4-only router should not have v6 addresses.
+        let dc4 = lab.add_router("dc4").build().await?;
+        assert_eq!(dc4.ip_support(), IpSupport::V4Only);
+        assert!(
+            dc4.uplink_ip_v6().is_none(),
+            "v4-only should have no v6 uplink"
+        );
+        assert!(
+            dc4.downstream_cidr_v6().is_none(),
+            "v4-only should have no v6 downstream"
+        );
+        Ok(())
+    }
+
+    /// Device handle v6 accessor.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn device_v6_accessors() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc.id(), None)
+            .build()
+            .await?;
+
+        assert!(dev.ip6().is_some(), "dual-stack device should have v6");
+        let iface = dev.default_iface();
+        assert!(iface.ip6().is_some(), "dual-stack iface should have v6");
+
+        // V4-only device
+        let dc4 = lab.add_router("dc4").build().await?;
+        let dev4 = lab
+            .add_device("dev4")
+            .iface("eth0", dc4.id(), None)
+            .build()
+            .await?;
+        assert!(dev4.ip6().is_none(), "v4-only device should have no v6");
+        Ok(())
+    }
+
+    /// Smoke: v6-only DC + device, v6 roundtrip, v4 ping fails.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn v6_only_no_v4() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::V6Only)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc.id(), None)
+            .build()
+            .await?;
+
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+
+        // v6 roundtrip succeeds.
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3491);
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let o = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        assert!(o.observed.ip().is_ipv6(), "reflexive should be v6");
+
+        // v4 ping to the IX gateway should fail (no v4 routes).
+        let res = ping_in_ns(&dev_ns, "203.0.113.1");
+        assert!(res.is_err(), "v4 ping should fail under V6Only");
+
+        Ok(())
+    }
+
+    /// Dual-stack DC, no NAT: v4 reflexive is v4, v6 reflexive is v6.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn dual_stack_public_addrs() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", dc.id(), None)
+            .build()
+            .await?;
+
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+
+        // v4 reflector
+        let dc_ip_v4 = dc.uplink_ip().expect("dc v4 uplink");
+        let r_v4 = SocketAddr::new(IpAddr::V4(dc_ip_v4), 3492);
+        lab.spawn_reflector(&dc_ns, r_v4)?;
+
+        // v6 reflector
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3493);
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let o_v4 = udp_roundtrip_in_ns(&dev_ns, r_v4)?;
+        assert!(o_v4.observed.ip().is_ipv4(), "v4 reflexive should be v4");
+
+        let o_v6 = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        assert!(o_v6.observed.ip().is_ipv6(), "v6 reflexive should be v6");
+
+        Ok(())
+    }
+
+    /// NAT v6 none: reflexive = device's global v6 address (no translation).
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn nat_v6_none_global() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        let dc = lab
+            .add_router("dc")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let isp = lab
+            .add_router("isp")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let home = lab
+            .add_router("home")
+            .upstream(isp.id())
+            .nat(NatMode::DestinationIndependent)
+            .ip_support(IpSupport::DualStack)
+            .nat_v6(NatV6Mode::None)
+            .build()
+            .await?;
+        let dev = lab
+            .add_device("dev1")
+            .iface("eth0", home.id(), None)
+            .build()
+            .await?;
+
+        let dc_ns = lab.node_ns(dc.id())?.to_string();
+        let dev_ns = lab.node_ns(dev.id())?.to_string();
+
+        // v6 reflector in DC
+        let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3494);
+        lab.spawn_reflector(&dc_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let o_v6 = udp_roundtrip_in_ns(&dev_ns, r_v6)?;
+        // No v6 NAT → reflexive ip should be the device's own ULA address.
+        let dev_ip6 = dev.ip6().expect("device v6 addr");
+        assert_eq!(
+            o_v6.observed.ip(),
+            IpAddr::V6(dev_ip6),
+            "v6 reflexive should be device's own v6 address (no NAT)"
+        );
+
+        Ok(())
+    }
+
+    /// V6-only region latency: v6 inter-region RTT includes latency.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_v6_region() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        lab.add_region_latency("eu", "us", 65);
+        lab.add_region_latency("us", "eu", 65);
+
+        let dc_eu = lab
+            .add_router("dc-eu")
+            .region("eu")
+            .ip_support(IpSupport::V6Only)
+            .build()
+            .await?;
+        let dc_us = lab
+            .add_router("dc-us")
+            .region("us")
+            .ip_support(IpSupport::V6Only)
+            .build()
+            .await?;
+
+        // v6 reflector
+        let eu_ip_v6 = dc_eu.uplink_ip_v6().expect("eu v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(eu_ip_v6), 3495);
+        let eu_ns = lab.node_ns(dc_eu.id())?.to_string();
+        lab.spawn_reflector(&eu_ns, r_v6)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let us_ns = lab.node_ns(dc_us.id())?.to_string();
+        let rtt_v6 = udp_rtt_in_ns(&us_ns, r_v6)?;
+        assert!(
+            rtt_v6.as_millis() >= 120,
+            "v6 RTT {}ms should be >= 120ms (2x65ms)",
+            rtt_v6.as_millis()
+        );
+
+        Ok(())
+    }
+
+    /// Dual-stack inter-region latency applies to both v4 and v6.
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_dual_stack_region() -> Result<()> {
+        check_caps()?;
+        let lab = Lab::new();
+        lab.add_region_latency("eu", "us", 65);
+        lab.add_region_latency("us", "eu", 65);
+
+        let dc_eu = lab
+            .add_router("dc-eu")
+            .region("eu")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dc_us = lab
+            .add_router("dc-us")
+            .region("us")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+
+        // v4 reflector
+        let eu_ip_v4 = dc_eu.uplink_ip().expect("eu v4 uplink");
+        let r_v4 = SocketAddr::new(IpAddr::V4(eu_ip_v4), 3510);
+        let eu_ns = lab.node_ns(dc_eu.id())?.to_string();
+        lab.spawn_reflector(&eu_ns, r_v4)?;
+
+        // v6 reflector
+        let eu_ip_v6 = dc_eu.uplink_ip_v6().expect("eu v6 uplink");
+        let r_v6 = SocketAddr::new(IpAddr::V6(eu_ip_v6), 3511);
+        lab.spawn_reflector(&eu_ns, r_v6)?;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let us_ns = lab.node_ns(dc_us.id())?.to_string();
+
+        // v4 RTT
+        let rtt_v4 = udp_rtt_in_ns(&us_ns, r_v4)?;
+        assert!(
+            rtt_v4.as_millis() >= 120,
+            "v4 RTT {}ms should be >= 120ms (2×65ms)",
+            rtt_v4.as_millis()
+        );
+
+        // v6 RTT
+        let rtt_v6 = udp_rtt_in_ns(&us_ns, r_v6)?;
+        assert!(
+            rtt_v6.as_millis() >= 120,
+            "v6 RTT {}ms should be >= 120ms (2×65ms)",
+            rtt_v6.as_millis()
+        );
+
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 //! TOML configuration structures used by [`crate::Lab::load`].
 
-use crate::NatMode;
+use crate::{IpSupport, NatMode, NatV6Mode};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -37,4 +37,10 @@ pub struct RouterConfig {
     /// NAT mode.  Defaults to `"none"` (public downstream, no NAT).
     #[serde(default)]
     pub nat: NatMode,
+    /// IP address family support.  Defaults to `"v4-only"`.
+    #[serde(default)]
+    pub ip_support: IpSupport,
+    /// IPv6 NAT mode.  Defaults to `"none"`.
+    #[serde(default)]
+    pub nat_v6: NatV6Mode,
 }

@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use futures::stream::TryStreamExt;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::fs::File;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
@@ -222,6 +222,89 @@ impl Netlink {
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {
                 debug!(dst = %dst, prefix, via = %via, "netlink: route already exists");
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    // ── IPv6 methods ──
+
+    pub(crate) async fn add_addr6(&mut self, ifname: &str, ip: Ipv6Addr, prefix: u8) -> Result<()> {
+        debug!(ifname = %ifname, ip = %ip, prefix, "netlink: add IPv6 address");
+        let idx = self.link_index(ifname).await?;
+        if let Err(err) = self
+            .handle
+            .address()
+            .add(idx, ip.into(), prefix)
+            .execute()
+            .await
+        {
+            if is_eexist(&err) {
+                debug!(ifname = %ifname, ip = %ip, prefix, "netlink: IPv6 address already exists");
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn add_default_route_v6(&mut self, via: Ipv6Addr) -> Result<()> {
+        debug!(via = %via, "netlink: add default route v6");
+        let msg = RouteMessageBuilder::<Ipv6Addr>::new().gateway(via).build();
+        if let Err(err) = self.handle.route().add(msg).execute().await {
+            if is_eexist(&err) {
+                debug!(via = %via, "netlink: default route v6 already exists");
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn replace_default_route_v6(
+        &mut self,
+        ifname: &str,
+        via: Ipv6Addr,
+    ) -> Result<()> {
+        debug!(ifname = %ifname, via = %via, "netlink: replace default route v6");
+        let ifindex = self.link_index(ifname).await?;
+
+        let mut routes = self
+            .handle
+            .route()
+            .get(RouteMessageBuilder::<Ipv6Addr>::new().build())
+            .execute();
+        while let Some(route) = routes.try_next().await? {
+            if route.header.destination_prefix_length == 0 {
+                let _ = self.handle.route().del(route).execute().await;
+            }
+        }
+
+        let msg = RouteMessageBuilder::<Ipv6Addr>::new()
+            .output_interface(ifindex)
+            .gateway(via)
+            .build();
+        self.handle.route().add(msg).execute().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_route_v6(
+        &mut self,
+        dst: Ipv6Addr,
+        prefix: u8,
+        via: Ipv6Addr,
+    ) -> Result<()> {
+        debug!(dst = %dst, prefix, via = %via, "netlink: add route v6");
+        let msg = RouteMessageBuilder::<Ipv6Addr>::new()
+            .destination_prefix(dst, prefix)
+            .gateway(via)
+            .build();
+        if let Err(err) = self.handle.route().add(msg).execute().await {
+            if is_eexist(&err) {
+                debug!(dst = %dst, prefix, via = %via, "netlink: route v6 already exists");
                 return Ok(());
             }
             return Err(err.into());

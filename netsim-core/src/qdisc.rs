@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use ipnet::Ipv4Net;
+use ipnet::IpNet;
 use std::process::Command;
 
 use crate::core::run_command_in_namespace;
@@ -21,10 +21,13 @@ pub(crate) fn apply_impair(ns: &str, ifname: &str, limits: ImpairLimits) -> Resu
     Ok(())
 }
 
-pub(crate) fn apply_region_latency(
+/// Applies region latency filters for both v4 and v6 CIDRs.
+///
+/// Each `IpNet` entry maps to either a v4 or v6 tc filter on the same HTB class tree.
+pub(crate) fn apply_region_latency_dual(
     ns: &str,
     ifname: &str,
-    filters: &[(Ipv4Net, u32)],
+    filters: &[(IpNet, u32)],
 ) -> Result<()> {
     if filters.is_empty() {
         return Ok(());
@@ -42,7 +45,10 @@ pub(crate) fn apply_region_latency(
 
         qdisc.add_htb_class(ns, &class_id)?;
         qdisc.add_netem_class(ns, &class_id, &handle, *latency)?;
-        qdisc.add_filter(ns, &cidr_str, &class_id)?;
+        match cidr {
+            IpNet::V4(_) => qdisc.add_filter(ns, &cidr_str, &class_id)?,
+            IpNet::V6(_) => qdisc.add_filter_v6(ns, &cidr_str, &class_id)?,
+        }
     }
 
     Ok(())
@@ -226,6 +232,32 @@ impl<'a> Qdisc<'a> {
         ]);
         cmd.stderr(std::process::Stdio::null());
         ensure_success(ns, cmd, "tc filter add")?;
+        Ok(())
+    }
+
+    fn add_filter_v6(&self, ns: &str, cidr: &str, class_id: &str) -> Result<()> {
+        let mut cmd = Command::new("tc");
+        cmd.args([
+            "filter",
+            "add",
+            "dev",
+            self.ifname,
+            "protocol",
+            "ipv6",
+            "parent",
+            "1:",
+            "prio",
+            "2",
+            "u32",
+            "match",
+            "ip6",
+            "dst",
+            cidr,
+            "flowid",
+            class_id,
+        ]);
+        cmd.stderr(std::process::Stdio::null());
+        ensure_success(ns, cmd, "tc filter v6 add")?;
         Ok(())
     }
 }

@@ -116,6 +116,8 @@ gateway = "r1"
                     region: None,
                     upstream: None,
                     nat: netsim_core::NatMode::None,
+                    ip_support: netsim_core::IpSupport::V4Only,
+                    nat_v6: netsim_core::NatV6Mode::None,
                 }],
                 ..Default::default()
             },

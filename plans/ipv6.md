@@ -3,12 +3,13 @@
 ## TODO
 
 - [x] Write plan
-- [ ] Phase 1: Data model + netlink + allocators
-- [ ] Phase 2: Builder + async setup + handle accessors
-- [ ] Phase 3: NAT v6 + qdisc dual-protocol + config/TOML
-- [ ] Phase 4: Tests
+- [x] Phase 1: Data model + netlink + allocators
+- [x] Phase 2: Builder + async setup + handle accessors
+- [x] Phase 3: NAT v6 + qdisc dual-protocol + config/TOML
+- [x] Phase 4: Tests
+- [ ] Final review
 
-**Status:** in progress
+**Status:** implementation complete, pending final review
 
 ---
 
