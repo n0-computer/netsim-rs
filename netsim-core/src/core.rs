@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::process::ExitStatus;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::thread;
 use tracing::debug;
 use tracing::warn;
@@ -191,20 +191,24 @@ pub struct NetworkCore {
     routers: HashMap<NodeId, Router>,
     switches: HashMap<NodeId, Switch>,
     nodes_by_name: HashMap<String, NodeId>,
+    /// Links created by this instance; cleaned up on drop.
+    own_links: Arc<Mutex<Vec<String>>>,
+    /// Namespaces created by this instance; cleaned up on drop.
+    own_netns: Vec<String>,
 }
 
 // ─────────────────────────────────────────────
 // Global resource tracking / cleanup
 // ─────────────────────────────────────────────
 
+/// Process-wide prefix registry — used only as a safety net at process exit and on panic.
+/// Per-instance resource tracking (links, namespaces) lives in `NetworkCore`.
 #[derive(Default)]
 struct ResourceState {
-    links: HashSet<String>,
-    netns: HashSet<String>,
     prefixes: HashSet<String>,
 }
 
-/// Tracks resources for best-effort cleanup on panic/exit.
+/// Tracks lab prefixes for best-effort cleanup on panic/exit.
 pub struct ResourceList {
     state: Mutex<ResourceState>,
     cleanup_enabled: AtomicBool,
@@ -231,7 +235,7 @@ pub fn resources() -> &'static ResourceList {
             }
             let prev = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
-                resources().cleanup_registered();
+                resources().cleanup_registered_prefixes();
                 prev(info);
             }));
         });
@@ -240,7 +244,7 @@ pub fn resources() -> &'static ResourceList {
 }
 
 extern "C" fn cleanup_at_exit() {
-    resources().cleanup_registered();
+    resources().cleanup_registered_prefixes();
 }
 
 impl ResourceList {
@@ -249,51 +253,10 @@ impl ResourceList {
         self.cleanup_enabled.store(enabled, Ordering::Relaxed);
     }
 
-    /// Registers a link name for cleanup.
-    pub fn register_link(&self, name: &str) {
-        // Only track names we own by prefix; generic names like "ix" are moved
-        // into namespaces and may collide with host interfaces.
-        if !(name.starts_with("lab-") || name.starts_with("br-")) {
-            return;
-        }
-        let mut st = self.state.lock().unwrap();
-        st.links.insert(name.to_string());
-    }
-
-    /// Registers a namespace name for cleanup.
-    pub fn register_netns(&self, name: &str) {
-        let mut st = self.state.lock().unwrap();
-        st.netns.insert(name.to_string());
-    }
-
-    /// Registers a resource-name prefix for broad cleanup.
+    /// Registers a resource-name prefix for broad cleanup at process exit or on panic.
     pub fn register_prefix(&self, prefix: &str) {
         let mut st = self.state.lock().unwrap();
         st.prefixes.insert(prefix.to_string());
-    }
-
-    /// Removes all explicitly registered links and namespaces.
-    pub fn cleanup_registered(&self) {
-        if !self.cleanup_enabled.load(Ordering::Relaxed) {
-            debug!("netsim cleanup: skipped (disabled)");
-            return;
-        }
-        let (links, netns) = {
-            let mut st = self.state.lock().unwrap();
-            (std::mem::take(&mut st.links), std::mem::take(&mut st.netns))
-        };
-        debug!(
-            "netsim cleanup: explicit resources: {} links, {} namespaces",
-            links.len(),
-            netns.len()
-        );
-        for ns in netns {
-            debug!("netsim cleanup: cleanup netns {ns}");
-            cleanup_netns_logged(&ns);
-        }
-        for link in links {
-            delete_link_logged(&link);
-        }
     }
 
     /// Removes links and namespaces that match `prefix`.
@@ -304,8 +267,13 @@ impl ResourceList {
         netns::cleanup_registry_prefix(prefix);
     }
 
-    /// Removes resources for all registered prefixes.
+    /// Safety-net cleanup: removes all resources matching any registered prefix.
+    /// Called at process exit and on panic. Normal cleanup goes through `NetworkCore::drop`.
     pub fn cleanup_registered_prefixes(&self) {
+        if !self.cleanup_enabled.load(Ordering::Relaxed) {
+            debug!("netsim cleanup: skipped (disabled)");
+            return;
+        }
         let prefixes = {
             let st = self.state.lock().unwrap();
             st.prefixes.clone()
@@ -322,11 +290,6 @@ impl ResourceList {
             self.cleanup_by_prefix(&prefix);
         }
     }
-}
-
-fn cleanup_netns_logged(name: &str) {
-    debug!("netsim cleanup: drop fd netns handle {name}");
-    netns::cleanup_netns(name);
 }
 
 fn cleanup_links_with_prefix_ip(prefix: &str) {
@@ -366,6 +329,26 @@ fn delete_link_logged(name: &str) {
         }
     }
 }
+
+impl Drop for NetworkCore {
+    fn drop(&mut self) {
+        let links: Vec<String> = std::mem::take(&mut *self.own_links.lock().unwrap());
+        let netns: Vec<String> = std::mem::take(&mut self.own_netns);
+        debug!(
+            "netsim cleanup: NetworkCore drop: {} links, {} namespaces",
+            links.len(),
+            netns.len()
+        );
+        for ns in netns {
+            debug!("netsim cleanup: drop netns {ns}");
+            netns::cleanup_netns(&ns);
+        }
+        for link in links {
+            delete_link_logged(&link);
+        }
+    }
+}
+
 impl NetworkCore {
     /// Constructs a new topology core and pre-creates the IX switch.
     pub fn new(cfg: CoreConfig) -> Self {
@@ -384,6 +367,8 @@ impl NetworkCore {
             routers: HashMap::new(),
             switches: HashMap::new(),
             nodes_by_name: HashMap::new(),
+            own_links: Arc::new(Mutex::new(Vec::new())),
+            own_netns: Vec::new(),
         };
         let ix_sw = core.add_switch("ix", Some(core.cfg.ix_cidr), Some(core.cfg.ix_gw));
         core.ix_sw = ix_sw;
@@ -406,16 +391,17 @@ impl NetworkCore {
     where
         F: AsyncFnOnce(&mut Netlink) -> Result<()> + Send + 'static,
     {
-        let ns_name = ns.to_string();
+        let own_links = self.own_links.clone();
         self.netns
-            .run_in(&ns_name, move || async move {
+            .spawn_task_in(&ns, move || async move {
                 let (conn, handle, _) =
                     new_connection().context("rtnetlink new_connection in netns")?;
                 tokio::spawn(conn);
-                let mut nl = Netlink::new(handle);
+                let mut nl = Netlink::new_tracked(handle, own_links);
                 f(&mut nl).await
             })
             .await
+            .map_err(|_| anyhow!("netns async task cancelled"))?
     }
 
     /// Returns the IX gateway address.
@@ -505,6 +491,40 @@ impl NetworkCore {
     pub fn device_id_by_name(&self, name: &str) -> Option<NodeId> {
         let id = *self.nodes_by_name.get(name)?;
         self.devices.contains_key(&id).then_some(id)
+    }
+
+    /// Returns `(ns, downlink_bridge_name, wan_if_name, upstream_ip)` for a built router.
+    pub fn router_nat_params(&self, id: NodeId) -> Result<(String, String, String, Ipv4Addr)> {
+        let router = self.routers.get(&id).context("unknown router id")?;
+        let wan_if = if router.uplink == Some(self.ix_sw) {
+            "ix"
+        } else {
+            "wan"
+        };
+        let upstream_ip = router
+            .upstream_ip
+            .context("router has no upstream ip (not yet built?)")?;
+        Ok((
+            router.ns.clone(),
+            router.downlink_bridge.clone(),
+            wan_if.to_string(),
+            upstream_ip,
+        ))
+    }
+
+    /// Stores an updated NAT mode on the router record.
+    pub fn set_router_nat_mode(&mut self, id: NodeId, mode: NatMode) -> Result<()> {
+        let router = self.routers.get_mut(&id).context("unknown router id")?;
+        router.cfg.nat = mode;
+        Ok(())
+    }
+
+    /// Returns the current NAT mode for a router.
+    pub fn router_nat_mode(&self, id: NodeId) -> Result<NatMode> {
+        self.routers
+            .get(&id)
+            .map(|r| r.cfg.nat)
+            .context("unknown router id")
     }
 
     /// Adds a router node and returns its identifier.
@@ -638,7 +658,7 @@ impl NetworkCore {
                     .enable_all()
                     .build()
                     .context("create tokio runtime for link state change")?;
-                rt.block_on(self.netns.run_in(&ns_name, move || async move {
+                rt.block_on(self.netns.spawn_task_in(&ns_name, move || async move {
                     let (conn, handle, _) = new_connection().context("rtnetlink new_connection")?;
                     tokio::spawn(conn);
                     let mut nl = Netlink::new(handle);
@@ -648,6 +668,7 @@ impl NetworkCore {
                         nl.set_link_down(&ifname).await
                     }
                 }))
+                .map_err(|_| anyhow!("netns async task cancelled"))?
             });
             join.join()
                 .map_err(|_| anyhow!("link state thread panicked"))?
@@ -669,12 +690,13 @@ impl NetworkCore {
                     .enable_all()
                     .build()
                     .context("create tokio runtime for route switch")?;
-                rt.block_on(self.netns.run_in(&ns_name, move || async move {
+                rt.block_on(self.netns.spawn_task_in(&ns_name, move || async move {
                     let (conn, handle, _) = new_connection().context("rtnetlink new_connection")?;
                     tokio::spawn(conn);
                     let mut nl = Netlink::new(handle);
                     nl.replace_default_route_v4(&ifname, via).await
                 }))
+                .map_err(|_| anyhow!("netns async task cancelled"))?
             });
             join.join()
                 .map_err(|_| anyhow!("route switch thread panicked"))?
@@ -792,6 +814,7 @@ impl NetworkCore {
         for ns in self.all_ns_names() {
             debug!(ns = %ns, "build: create named netns");
             create_named_netns(&ns).await?;
+            self.own_netns.push(ns.clone());
         }
 
         // Namespaces may inherit host nftables rules (including drop policies).
@@ -1268,10 +1291,9 @@ pub fn cleanup_netns(name: &str) {
     netns::cleanup_netns(name);
 }
 
-/// Creates a namespace entry and registers it for cleanup.
+/// Creates a named network namespace.
 pub async fn create_named_netns(name: &str) -> Result<()> {
     netns::create_named_netns(name).await?;
-    resources().register_netns(name);
     Ok(())
 }
 

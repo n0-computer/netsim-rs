@@ -4,17 +4,37 @@ use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use std::fs::File;
 use std::net::Ipv4Addr;
 use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 use tracing::debug;
-
-use crate::core::resources;
 
 pub(crate) struct Netlink {
     handle: Handle,
+    /// Receives names of links created by this handle; `None` for read-only contexts.
+    tracker: Option<Arc<Mutex<Vec<String>>>>,
 }
 
 impl Netlink {
+    /// Creates a handle without resource tracking (for read-only / mutate-only operations).
     pub(crate) fn new(handle: Handle) -> Self {
-        Self { handle }
+        Self { handle, tracker: None }
+    }
+
+    /// Creates a handle that registers every created link into `tracker`.
+    pub(crate) fn new_tracked(handle: Handle, tracker: Arc<Mutex<Vec<String>>>) -> Self {
+        Self { handle, tracker: Some(tracker) }
+    }
+
+    fn register_link(&self, name: &str) {
+        // Only track root-namespace links (lab-* veths and br-* bridges).
+        // In-namespace interfaces (ix, wan, eth0, …) are cleaned up automatically
+        // when their namespace is deleted, so we must not attempt to delete them
+        // from outside.
+        if !(name.starts_with("lab-") || name.starts_with("br-")) {
+            return;
+        }
+        if let Some(t) = &self.tracker {
+            t.lock().unwrap().push(name.to_string());
+        }
     }
 
     pub(crate) async fn link_index(&mut self, ifname: &str) -> Result<u32> {
@@ -56,7 +76,7 @@ impl Netlink {
                 return Err(err.into());
             }
         }
-        resources().register_link(name);
+        self.register_link(name);
         Ok(())
     }
 
@@ -67,8 +87,8 @@ impl Netlink {
             .add(LinkVeth::new(a, b).build())
             .execute()
             .await?;
-        resources().register_link(a);
-        resources().register_link(b);
+        self.register_link(a);
+        self.register_link(b);
         Ok(())
     }
 

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow               = "1"
-tokio                = { version = "1", features = ["rt", "macros", "sync", "time", "fs"] }
+tokio                = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "net", "io-util"] }
 rtnetlink            = "0.20"
 netlink-packet-route = "0.28"
 futures              = "0.3"
@@ -16,6 +16,7 @@ tracing              = "0.1"
 ipnet                = "2.11"
 libc                 = "0.2"
 chrono               = { version = "0.4", default-features = false, features = ["clock"] }
+strum                = { version = "0.26", features = ["derive"] }
 
 [dev-dependencies]
 serial_test      = "3"

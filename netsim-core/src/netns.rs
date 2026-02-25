@@ -1,7 +1,6 @@
 //! Network namespace lifecycle helpers using an in-memory FD registry.
 
-use anyhow::{anyhow, bail, Context, Result};
-use futures::executor;
+use anyhow::{anyhow, Context, Result};
 use nix::sched::{setns, unshare, CloneFlags};
 use nix::unistd::gettid;
 use std::collections::HashMap;
@@ -10,11 +9,15 @@ use std::future::Future;
 use std::os::unix::fs::MetadataExt;
 use std::pin::Pin;
 use std::process::{Child, Command, ExitStatus};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::task::{Context as TaskContext, Poll};
 use std::thread;
 use tokio::sync::oneshot;
-use tracing::debug;
+use tracing::{debug, error};
+
+// ─────────────────────────────────────────────
+// FD registry
+// ─────────────────────────────────────────────
 
 #[derive(Default)]
 struct FdRegistry {
@@ -109,7 +112,7 @@ pub async fn create_named_netns(name: &str) -> Result<()> {
         .context("metadata for current thread netns")?
         .ino();
     if created_ino == current_ino {
-        bail!(
+        anyhow::bail!(
             "fd backend namespace creation returned current namespace inode {}; not isolated",
             created_ino
         );
@@ -142,29 +145,50 @@ fn create_unshared_netns_fd() -> Result<File> {
         .context("receive netns fd from helper thread")?
 }
 
-type BoxFutureUnit = Pin<Box<dyn Future<Output = Result<()>> + 'static>>;
-type WorkerTask = Box<dyn FnOnce() -> BoxFutureUnit + Send + 'static>;
+// ─────────────────────────────────────────────
+// TaskHandle / TaskCancelled
+// ─────────────────────────────────────────────
 
-enum WorkerMsg {
-    Run {
-        task: WorkerTask,
-        done: oneshot::Sender<Result<()>>,
-    },
+/// Returned when a namespace task's result could not be received (worker dropped).
+pub struct TaskCancelled;
+
+/// A handle to an async task running inside a namespace worker.
+/// Implements `Future`; resolves to `Result<T, TaskCancelled>`.
+pub struct TaskHandle<T>(oneshot::Receiver<T>);
+
+impl<T> Future for TaskHandle<T> {
+    type Output = Result<T, TaskCancelled>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0)
+            .poll(cx)
+            .map(|r| r.map_err(|_| TaskCancelled))
+    }
+}
+
+// ─────────────────────────────────────────────
+// AsyncWorker — persistent LocalSet
+// ─────────────────────────────────────────────
+
+type BoxFuture = Pin<Box<dyn Future<Output = ()> + 'static>>;
+
+enum AsyncMsg {
+    Task(Box<dyn FnOnce() -> BoxFuture + Send>),
     Shutdown,
 }
 
-struct Worker {
-    tx: mpsc::Sender<WorkerMsg>,
+struct AsyncWorker {
+    tx: tokio::sync::mpsc::UnboundedSender<AsyncMsg>,
     join: Option<thread::JoinHandle<()>>,
 }
 
-impl Worker {
+impl AsyncWorker {
     fn spawn(ns: &str) -> Result<Self> {
+        let target = open_netns_fd(ns)
+            .with_context(|| format!("open namespace fd for async worker '{ns}'"))?;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let ns_name = ns.to_string();
-        let target = open_netns_fd(&ns_name)
-            .with_context(|| format!("open namespace fd for worker '{ns_name}'"))?;
-        let (tx, rx) = mpsc::channel::<WorkerMsg>();
-        let join = thread::spawn(move || worker_main(ns_name, target, rx));
+        let join = thread::spawn(move || async_worker_main(ns_name, target, rx));
         Ok(Self {
             tx,
             join: Some(join),
@@ -172,18 +196,22 @@ impl Worker {
     }
 }
 
-impl Drop for Worker {
+impl Drop for AsyncWorker {
     fn drop(&mut self) {
-        let _ = self.tx.send(WorkerMsg::Shutdown);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+        let _ = self.tx.send(AsyncMsg::Shutdown);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
         }
     }
 }
 
-fn worker_main(ns: String, target: File, rx: mpsc::Receiver<WorkerMsg>) {
+fn async_worker_main(
+    ns: String,
+    target: File,
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AsyncMsg>,
+) {
     if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-        debug!(ns = %ns, error = %err, "netns worker: setns failed");
+        error!(ns = %ns, error = %err, "async netns worker: setns failed");
         return;
     }
 
@@ -193,40 +221,122 @@ fn worker_main(ns: String, target: File, rx: mpsc::Receiver<WorkerMsg>) {
     {
         Ok(rt) => rt,
         Err(err) => {
-            debug!(ns = %ns, error = %err, "netns worker: runtime build failed");
+            error!(ns = %ns, error = %err, "async netns worker: runtime build failed");
             return;
         }
     };
 
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            WorkerMsg::Run { task, done } => {
-                let local = tokio::task::LocalSet::new();
-                let join = local.spawn_local(async move { task().await });
-                let res = rt.block_on(local.run_until(async move {
-                    match join.await {
-                        Ok(v) => v,
-                        Err(err) => {
-                            if err.is_panic() {
-                                Err(anyhow!("netns worker task panicked"))
-                            } else {
-                                Err(anyhow!("netns worker task cancelled"))
-                            }
-                        }
-                    }
-                }));
-                let _ = done.send(res);
+    let local = tokio::task::LocalSet::new();
+    rt.block_on(local.run_until(async move {
+        while let Some(msg) = rx.recv().await {
+            match msg {
+                AsyncMsg::Task(f) => {
+                    tokio::task::spawn_local(f());
+                }
+                AsyncMsg::Shutdown => break,
             }
-            WorkerMsg::Shutdown => break,
+        }
+    }));
+}
+
+// ─────────────────────────────────────────────
+// SyncWorker — dedicated thread, std::sync::mpsc
+// ─────────────────────────────────────────────
+
+enum SyncMsg {
+    Task(Box<dyn FnOnce() + Send>),
+    Shutdown,
+}
+
+struct SyncWorker {
+    tx: mpsc::SyncSender<SyncMsg>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl SyncWorker {
+    fn spawn(ns: &str) -> Result<Self> {
+        let target = open_netns_fd(ns)
+            .with_context(|| format!("open namespace fd for sync worker '{ns}'"))?;
+        let (tx, rx) = mpsc::sync_channel(64);
+        let ns_name = ns.to_string();
+        let join = thread::spawn(move || sync_worker_main(ns_name, target, rx));
+        Ok(Self {
+            tx,
+            join: Some(join),
+        })
+    }
+}
+
+impl Drop for SyncWorker {
+    fn drop(&mut self) {
+        let _ = self.tx.send(SyncMsg::Shutdown);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
         }
     }
 }
 
-/// Executes async tasks inside dedicated per-namespace worker threads.
+fn sync_worker_main(ns: String, target: File, rx: mpsc::Receiver<SyncMsg>) {
+    if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
+        debug!(ns = %ns, error = %err, "sync netns worker: setns failed");
+        return;
+    }
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            SyncMsg::Task(f) => f(),
+            SyncMsg::Shutdown => break,
+        }
+    }
+}
+
+// ─────────────────────────────────────────────
+// Worker — holds lazy async + sync workers
+// ─────────────────────────────────────────────
+
+struct Worker {
+    ns: String,
+    async_worker: Mutex<Option<AsyncWorker>>,
+    sync_worker: Mutex<Option<SyncWorker>>,
+}
+
+impl Worker {
+    fn new(ns: &str) -> Self {
+        Self {
+            ns: ns.to_string(),
+            async_worker: Mutex::new(None),
+            sync_worker: Mutex::new(None),
+        }
+    }
+
+    fn async_tx(&self) -> Result<tokio::sync::mpsc::UnboundedSender<AsyncMsg>> {
+        let mut guard = self
+            .async_worker
+            .lock()
+            .expect("async worker mutex poisoned");
+        if guard.is_none() {
+            *guard = Some(AsyncWorker::spawn(&self.ns)?);
+        }
+        Ok(guard.as_ref().unwrap().tx.clone())
+    }
+
+    fn sync_tx(&self) -> Result<mpsc::SyncSender<SyncMsg>> {
+        let mut guard = self.sync_worker.lock().expect("sync worker mutex poisoned");
+        if guard.is_none() {
+            *guard = Some(SyncWorker::spawn(&self.ns)?);
+        }
+        Ok(guard.as_ref().unwrap().tx.clone())
+    }
+}
+
+// ─────────────────────────────────────────────
+// NetnsManager
+// ─────────────────────────────────────────────
+
+/// Executes tasks inside dedicated per-namespace worker threads.
 ///
-/// Each namespace gets one long-lived thread with:
-/// - `setns(2)` called once to enter that namespace.
-/// - a single-threaded Tokio runtime used to execute submitted async closures.
+/// Each namespace gets one long-lived async worker thread with a persistent
+/// `LocalSet`, and one sync worker thread for short-lived blocking operations.
+/// Workers are started lazily on first use.
 #[derive(Default)]
 pub struct NetnsManager {
     workers: Mutex<HashMap<String, Worker>>,
@@ -238,53 +348,111 @@ impl NetnsManager {
         Self::default()
     }
 
-    fn worker_sender(&self, ns: &str) -> Result<mpsc::Sender<WorkerMsg>> {
+    fn async_tx_for(&self, ns: &str) -> Result<tokio::sync::mpsc::UnboundedSender<AsyncMsg>> {
         let mut workers = self.workers.lock().expect("netns worker map poisoned");
         if !workers.contains_key(ns) {
-            workers.insert(ns.to_string(), Worker::spawn(ns)?);
+            workers.insert(ns.to_string(), Worker::new(ns));
         }
-        workers
-            .get(ns)
-            .map(|w| w.tx.clone())
-            .ok_or_else(|| anyhow!("missing netns worker for '{ns}'"))
+        workers.get(ns).expect("just inserted").async_tx()
     }
 
-    /// Run one async task in the worker assigned to `ns`.
+    fn sync_tx_for(&self, ns: &str) -> Result<mpsc::SyncSender<SyncMsg>> {
+        let mut workers = self.workers.lock().expect("netns worker map poisoned");
+        if !workers.contains_key(ns) {
+            workers.insert(ns.to_string(), Worker::new(ns));
+        }
+        workers.get(ns).expect("just inserted").sync_tx()
+    }
+
+    /// Enqueue an async task on the namespace's persistent tokio RT.
     ///
-    /// Panics inside the async task are forwarded as an error.
-    pub async fn run_in<F, Fut>(&self, ns: &str, task: F) -> Result<()>
+    /// Returns a `TaskHandle` (a `Future`) that resolves to the task's output.
+    /// This call is sync and non-blocking — safe from any async or sync context.
+    pub fn spawn_task_in<F, Fut, T>(&self, ns: &str, f: F) -> TaskHandle<T>
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Result<()>> + 'static,
+        Fut: Future<Output = T> + 'static,
+        T: Send + 'static,
     {
-        let tx = self.worker_sender(ns)?;
-        let (done_tx, done_rx) = oneshot::channel();
-        let msg = WorkerMsg::Run {
-            task: Box::new(move || Box::pin(task())),
-            done: done_tx,
-        };
-        tx.send(msg)
-            .map_err(|_| anyhow!("send task to netns worker '{ns}' failed"))?;
-        done_rx
-            .await
-            .with_context(|| format!("receive result from netns worker '{ns}'"))?
+        let (result_tx, result_rx) = oneshot::channel();
+        match self.async_tx_for(ns) {
+            Ok(tx) => {
+                let _ = tx.send(AsyncMsg::Task(Box::new(move || {
+                    Box::pin(async move {
+                        let result = f().await;
+                        let _ = result_tx.send(result);
+                    })
+                })));
+            }
+            Err(e) => {
+                debug!("spawn_task_in ns={ns}: {e}");
+                // result_tx drops here → TaskHandle resolves to Err(TaskCancelled)
+            }
+        }
+        TaskHandle(result_rx)
+    }
+
+    /// Spawn a persistent OS thread inside `ns`. Non-blocking.
+    pub fn spawn_thread_in<F>(&self, ns: &str, f: F) -> thread::JoinHandle<()>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        let ns = ns.to_string();
+        thread::spawn(move || match open_netns_fd(&ns) {
+            Ok(fd) => {
+                if setns(&fd, CloneFlags::CLONE_NEWNET).is_ok() {
+                    f();
+                }
+            }
+            Err(e) => debug!("spawn_thread_in ns={ns}: {e}"),
+        })
+    }
+
+    /// Run a short-lived sync closure inside `ns`. Blocks the caller.
+    ///
+    /// Only for fast, non-blocking work (e.g. sysctl writes, `Command::spawn`).
+    /// Never pass TCP/UDP I/O here — use `spawn_task_in` instead.
+    pub fn run_closure_in<F, R>(&self, ns: &str, f: F) -> Result<R>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let tx = self.sync_tx_for(ns)?;
+        tx.send(SyncMsg::Task(Box::new(move || {
+            let _ = result_tx.send(f());
+        })))
+        .map_err(|_| anyhow!("send task to sync netns worker for '{ns}' failed"))?;
+        result_rx
+            .recv()
+            .context("receive closure result from sync netns worker")?
     }
 }
 
+// ─────────────────────────────────────────────
+// Global convenience functions
+// ─────────────────────────────────────────────
+
+/// Enqueue an async task in `ns` on the global namespace manager.
+/// Returns a `TaskHandle` that resolves to the task's output.
+pub fn spawn_task_in_netns<F, Fut, T>(ns: &str, f: F) -> TaskHandle<T>
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = T> + 'static,
+    T: Send + 'static,
+{
+    global_netns_manager().spawn_task_in(ns, f)
+}
+
 /// Run a synchronous closure in `ns` using the global namespace worker manager.
+///
+/// Only for fast, non-blocking work. Never use for TCP/UDP I/O.
 pub fn run_closure_in_netns<F, R>(ns: &str, f: F) -> Result<R>
 where
     F: FnOnce() -> Result<R> + Send + 'static,
     R: Send + 'static,
 {
-    let ns_name = ns.to_string();
-    let (tx, rx) = mpsc::sync_channel::<Result<R>>(1);
-    executor::block_on(global_netns_manager().run_in(&ns_name, move || async move {
-        let _ = tx.send(f());
-        Ok(())
-    }))?;
-    rx.recv()
-        .context("receive closure result from netns worker")?
+    global_netns_manager().run_closure_in(ns, f)
 }
 
 /// Spawn a host thread that runs a closure inside `ns`.

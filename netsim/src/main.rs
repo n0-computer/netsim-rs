@@ -567,9 +567,6 @@ fn perform_cleanup(prefixes: &[String]) -> Result<()> {
             resources.cleanup_by_prefix(prefix);
         }
     } else {
-        resources.cleanup_registered();
-    }
-    if !prefixes.is_empty() {
         resources.cleanup_registered_prefixes();
     }
     tracing::info!("netsim cleanup: complete");
