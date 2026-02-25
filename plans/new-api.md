@@ -531,24 +531,24 @@ The new public `Device` and `Router` handle types will conflict with the existin
 
 ### Phase 7: `impair_link`, `switch_uplink`, `set_uplink`
 
-- [ ] Implement `Lab::impair_link(from, to, impair)` — resolve topology, apply tc netem bidirectionally
-- [ ] Implement `Device::switch_uplink(ifname, to_router)` — delete old veth, alloc new IP, wire new link, re-apply impair
-- [ ] Implement `Router::set_uplink(upstream)` — delete old WAN veth, alloc new IP, wire new link, re-apply NAT
-- [ ] Update tests that used `set_router_impair` + `router_downlink_bridge` to use `impair_link`
-- [ ] Write new tests for `switch_uplink` and `set_uplink`
+- [x] Implement `Lab::impair_link(from, to, impair)` — resolve topology, apply tc netem bidirectionally
+- [x] Implement `Device::switch_uplink(ifname, to_router)` — delete old veth, alloc new IP, wire new link, re-apply impair
+- [ ] Implement `Router::set_uplink(upstream)` — deferred (complex veth teardown/rewire)
+- [x] Update tests that used `set_router_impair` + `router_downlink_bridge` to use `impair_link`
+- [x] Write new tests for `switch_uplink` (set_uplink deferred)
 
 ### Phase 8: Remove `build()`, make construction instant
 
-- [ ] Refactor `NetworkCore::build()` into per-node setup methods:
-  - [ ] `setup_root_ns()` — IX bridge, root namespace (called once from `Lab::new()` or lazily)
-  - [ ] `setup_router(id)` — create ns, veth, addressing, NAT, sysctl, downstream bridge
-  - [ ] `setup_device(id)` — create ns, wire all interfaces
-- [ ] `RouterBuilder::build()` calls `setup_root_ns()` (idempotent) then `setup_router()`
-- [ ] `DeviceBuilder::build()` calls `setup_device()`
-- [ ] Handle region latency: `set_region_latency` stores rule + immediately (re)applies tc filters on affected IX interfaces
-- [ ] Refactor `Lab::load()` to use instant construction (sequential `add_router().build().await` in topological order, then `add_device().build().await`)
-- [ ] Remove `Lab::build()` and `NetworkCore::build()`
-- [ ] Run full test suite
+- [x] Refactor `NetworkCore::build()` into per-node setup methods:
+  - [x] `setup_root_ns_async()` — IX bridge, root namespace (called lazily from first `RouterBuilder::build()`)
+  - [x] `setup_router_async(id)` — create ns, veth, addressing, NAT, sysctl, downstream bridge
+  - [x] `setup_device_async(id)` — create ns, wire all interfaces via `wire_iface_async`
+- [x] `RouterBuilder::build()` calls `setup_root_ns_async()` (idempotent) then `setup_router_async()`
+- [x] `DeviceBuilder::build()` calls `wire_iface_async()` for each interface
+- [x] Handle region latency: `set_region_latency` stores rule + immediately (re)applies tc filters on affected IX interfaces
+- [x] Refactor `Lab::load()` to use instant construction (sequential `add_router().build().await` in topological order, then `add_device().build().await`)
+- [x] Remove `Lab::build()` and `NetworkCore::build()`
+- [x] Run full test suite
 
 ### Phase 9: `test_utils` and `ResourceList` cleanup
 
@@ -558,7 +558,7 @@ The new public `Device` and `Router` handle types will conflict with the existin
 - [ ] Promote `spawn_tcp_echo` and `tcp_roundtrip` from test-private into `test_utils`
 - [ ] Rename `resources()` → `ResourceList::global()`
 - [ ] Migrate all tests from raw ns names to `Device`/`Router` handles
-- [ ] Remove `smoke_debug_netns_exit_trace` test (accesses `lab.core` directly)
+- [x] Remove `smoke_debug_netns_exit_trace` test (accesses `lab.core` directly)
 - [ ] Migrate netsim crate from `core::resources()` to `ResourceList::global()`
 
 ### Phase 10: Internalize and final cleanup
@@ -570,7 +570,7 @@ The new public `Device` and `Router` handle types will conflict with the existin
 - [ ] Remove `Lab::run_on()`, `Lab::run_in_namespace()`, `Lab::run_in_namespace_thread()`
 - [ ] Remove `Lab::spawn_on()`
 - [ ] Drop `NETSIM_NS_*` from `Lab::env_vars()`
-- [ ] Rename `Lab::add_region_latency` → `Lab::set_region_latency` (if not already done)
+- [x] Rename `Lab::add_region_latency` → `Lab::set_region_latency`
 - [ ] Update netsim crate imports and call sites for all changes
 - [ ] Final audit: `cargo doc` to verify only intended items are public
 - [ ] Run full test suite + netsim integration tests

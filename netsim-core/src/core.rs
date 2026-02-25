@@ -160,6 +160,13 @@ pub struct RouterData {
     pub downstream_gw_v6: Option<Ipv6Addr>,
 }
 
+impl RouterData {
+    /// Returns the WAN interface name: `"ix"` for IX-connected routers, `"wan"` for sub-routers.
+    pub fn wan_ifname(&self, ix_sw: NodeId) -> &'static str {
+        if self.uplink == Some(ix_sw) { "ix" } else { "wan" }
+    }
+}
+
 /// Represents an L2 switch/bridge attachment point.
 #[derive(Clone, Debug)]
 pub struct Switch {
@@ -496,11 +503,7 @@ impl NetworkCore {
     /// Returns `(ns, downlink_bridge_name, wan_if_name, upstream_ip)` for a built router.
     pub fn router_nat_params(&self, id: NodeId) -> Result<(String, String, String, Ipv4Addr)> {
         let router = self.routers.get(&id).context("unknown router id")?;
-        let wan_if = if router.uplink == Some(self.ix_sw) {
-            "ix"
-        } else {
-            "wan"
-        };
+        let wan_if = router.wan_ifname(self.ix_sw);
         let upstream_ip = router
             .upstream_ip
             .context("router has no upstream ip (not yet built?)")?;
