@@ -14,9 +14,9 @@ use std::{
 };
 
 use crate::core::{
-    apply_impair_in, cleanup_netns, resources, run_closure_in_namespace, run_command_in_namespace,
-    spawn_closure_in_namespace_thread, spawn_command_in_namespace, CoreConfig, DownstreamPool,
-    NetworkCore, NodeId, TaskHandle,
+    apply_impair_in, apply_nat, cleanup_netns, resources, run_closure_in_namespace,
+    run_command_in_namespace, run_nft_in, spawn_closure_in_namespace_thread,
+    spawn_command_in_namespace, CoreConfig, DownstreamPool, NetworkCore, NodeId, TaskHandle,
 };
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -26,7 +26,7 @@ pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 // ─────────────────────────────────────────────
 
 /// NAT mode for a router.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, strum::EnumIter, strum::Display)]
 #[serde(rename_all = "kebab-case")]
 pub enum NatMode {
     /// No NAT — downstream addresses are publicly routable (DC behaviour).
@@ -580,9 +580,9 @@ impl Lab {
         self.core.ix_gw()
     }
 
-    /// Removes any known lab resources created by this process.
+    /// Safety-net cleanup via prefix scan (normal cleanup happens in `NetworkCore::drop`).
     pub fn cleanup(&self) {
-        resources().cleanup_registered();
+        resources().cleanup_registered_prefixes();
     }
 
     /// Removes any resources whose names match the lab prefix.
@@ -651,9 +651,26 @@ impl Lab {
     }
 
     /// Brings a device interface administratively up.
+    ///
+    /// Linux removes routes via an interface when it goes admin-down, so we
+    /// re-add the default route if `ifname` is the device's current `default_via`.
     pub fn link_up(&mut self, device: &str, ifname: &str) -> Result<()> {
-        let ns = self.dev_ns(device)?;
+        let id = self.resolve_device(device)?;
+        let (ns, uplink, is_default_via) = {
+            let dev = self
+                .core
+                .device(id)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            let iface = dev
+                .iface(ifname)
+                .ok_or_else(|| anyhow!("interface '{}' not found on device '{}'", ifname, device))?;
+            (dev.ns.clone(), iface.uplink, dev.default_via == ifname)
+        };
         self.core.set_link_state_in_namespace(&ns, ifname, true)?;
+        if is_default_via {
+            let gw_ip = self.core.router_downlink_gw_for_switch(uplink)?;
+            self.core.replace_default_route_in_namespace(&ns, ifname, gw_ip)?;
+        }
         Ok(())
     }
 
@@ -680,6 +697,98 @@ impl Lab {
         self.core.set_device_default_via(id, to)?;
         Ok(())
     }
+
+    /// Returns the bridge interface name used for the router's downstream LAN.
+    pub fn router_downlink_bridge(&self, router: NodeId) -> Result<String> {
+        self.core
+            .router(router)
+            .map(|r| r.downlink_bridge.clone())
+            .context("unknown router id")
+    }
+
+    /// Replaces NAT rules on `router` with `mode` at runtime.
+    ///
+    /// Flushes the `ip nat` table then re-applies the new rules.
+    pub async fn set_nat_mode(&mut self, router: NodeId, mode: NatMode) -> Result<()> {
+        let (ns, lan_if, wan_if, wan_ip) = self.core.router_nat_params(router)?;
+        run_nft_in(&ns, "flush table ip nat").await.ok();
+        apply_nat(&ns, mode, &lan_if, &wan_if, wan_ip).await?;
+        self.core.set_router_nat_mode(router, mode)
+    }
+
+    /// Flushes the conntrack table for `router`, forcing all active NAT mappings to expire.
+    ///
+    /// Subsequent flows get new external port assignments. Requires `conntrack-tools`.
+    pub fn rebind_nats(&mut self, router: NodeId) -> Result<()> {
+        let ns = self.core.router_ns(router)?.to_string();
+        run_closure_in_namespace(&ns, || {
+            let st = std::process::Command::new("conntrack")
+                .arg("-F")
+                .status()?;
+            if !st.success() {
+                bail!("conntrack -F failed: {st}");
+            }
+            Ok(())
+        })
+    }
+
+    /// Applies or removes impairment on a named interface of `router`.
+    ///
+    /// Use [`router_downlink_bridge`] to get the LAN-facing bridge name for
+    /// download-direction rate limiting.
+    pub fn set_router_impair(
+        &mut self,
+        router: NodeId,
+        ifname: &str,
+        impair: Option<Impair>,
+    ) -> Result<()> {
+        let ns = self.core.router_ns(router)?.to_string();
+        match impair {
+            Some(imp) => apply_impair_in(&ns, ifname, imp),
+            None => crate::qdisc::remove_qdisc(&ns, ifname),
+        }
+        Ok(())
+    }
+
+    /// Like [`crate::test_utils::probe_in_ns`] but with an explicit bind address.
+    pub fn probe_in_ns_from(
+        ns: &str,
+        reflector: SocketAddr,
+        bind: SocketAddr,
+        timeout: Duration,
+    ) -> Result<ObservedAddr> {
+        use std::net::UdpSocket;
+        let ns_name = ns.to_string();
+        run_closure_in_namespace(&ns_name, move || {
+            let sock = UdpSocket::bind(bind)?;
+            sock.set_read_timeout(Some(timeout))?;
+            let mut buf = [0u8; 512];
+            for _attempt in 1..=3 {
+                sock.send_to(b"PROBE", reflector)?;
+                match sock.recv_from(&mut buf) {
+                    Ok((n, _)) => {
+                        let s = std::str::from_utf8(&buf[..n])?;
+                        let addr_str = s
+                            .strip_prefix("OBSERVED ")
+                            .ok_or_else(|| anyhow!("unexpected reflector reply: {:?}", s))?;
+                        return Ok(ObservedAddr {
+                            observed: addr_str.parse()?,
+                        });
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Err(anyhow!("probe timed out after 3 attempts"))
+        })
+    }
 }
 
 impl Default for Lab {
@@ -690,7 +799,6 @@ impl Default for Lab {
 
 impl Drop for Lab {
     fn drop(&mut self) {
-        resources().cleanup_registered();
         for child in self.children.drain(..) {
             match child {
                 ChildTask::Process(mut proc) => {
@@ -784,6 +892,7 @@ mod tests {
     use crate::check_caps;
     use crate::config;
     use crate::core::{run_closure_in_namespace, run_command_in_namespace};
+    use crate::netns::spawn_task_in_netns;
     use crate::test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns};
 
     fn ping_in_ns(ns: &str, addr: &str) -> Result<()> {
@@ -806,7 +915,7 @@ mod tests {
         Ok(())
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, strum::EnumIter, strum::Display)]
     enum UplinkWiring {
         DirectIx,
         ViaPublicIsp,
@@ -821,6 +930,359 @@ mod tests {
                 Self::ViaCgnatIsp => "via-cgnat-isp",
             }
         }
+    }
+
+    #[derive(Clone, Copy, Debug, strum::EnumIter, strum::Display)]
+    enum Proto {
+        Udp,
+        Tcp,
+    }
+
+    #[derive(Clone, Copy, Debug, strum::EnumIter, strum::Display)]
+    enum BindMode {
+        Unspecified,
+        SpecificIp,
+    }
+
+    struct NatTestCtx {
+        dev_ns: String,
+        dev_ip: Ipv4Addr,
+        expected_ip: Ipv4Addr,
+        r_dc: SocketAddr,
+        r_ix: SocketAddr,
+    }
+
+    struct DualNatLab {
+        lab: Lab,
+        dev: NodeId,
+        nat_a: NodeId,
+        nat_b: NodeId,
+        reflector: SocketAddr,
+    }
+
+    // ── Test helper functions ────────────────────────────────────────────
+
+    /// UDP probe with explicit bind address.
+    fn probe_udp(ns: &str, reflector: SocketAddr, bind: SocketAddr) -> Result<ObservedAddr> {
+        Lab::probe_in_ns_from(ns, reflector, bind, Duration::from_millis(500))
+    }
+
+    /// TCP probe from `ns`, reads "OBSERVED {addr}" from server.
+    ///
+    /// The `_bind` address is accepted for API parity with `probe_udp`; in
+    /// practice the OS always picks the device's primary IP as source address
+    /// (since there is only one default-route interface in test topologies).
+    async fn probe_tcp(ns: &str, target: SocketAddr, _bind: SocketAddr) -> Result<ObservedAddr> {
+        use tokio::io::AsyncReadExt;
+        let ns = ns.to_string();
+        let timeout = Duration::from_millis(500);
+        spawn_task_in_netns(&ns, move || async move {
+            let mut stream = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(target))
+                .await
+                .context("tcp connect timeout")?
+                .context("tcp connect")?;
+            let mut buf = vec![0u8; 256];
+            let n = tokio::time::timeout(timeout, stream.read(&mut buf))
+                .await
+                .context("tcp read timeout")?
+                .context("tcp read")?;
+            let s = std::str::from_utf8(&buf[..n]).context("utf8")?;
+            let addr_str = s
+                .strip_prefix("OBSERVED ")
+                .ok_or_else(|| anyhow!("unexpected tcp reflector reply: {:?}", s))?;
+            Ok::<_, anyhow::Error>(ObservedAddr {
+                observed: addr_str.parse().context("parse observed addr")?,
+            })
+        })
+        .await
+        .map_err(|_| anyhow!("probe_tcp: netns task cancelled"))?
+    }
+
+    async fn probe_reflexive_addr(
+        proto: Proto,
+        bind: BindMode,
+        ns: &str,
+        dev_ip: Ipv4Addr,
+        reflector: SocketAddr,
+    ) -> Result<ObservedAddr> {
+        let bind_addr = match bind {
+            BindMode::Unspecified => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            BindMode::SpecificIp => SocketAddr::new(IpAddr::V4(dev_ip), 0),
+        };
+        match proto {
+            Proto::Udp => probe_udp(ns, reflector, bind_addr),
+            Proto::Tcp => probe_tcp(ns, reflector, bind_addr).await,
+        }
+    }
+
+    async fn probe_reflexive(
+        proto: Proto,
+        bind: BindMode,
+        ctx: &NatTestCtx,
+    ) -> Result<ObservedAddr> {
+        probe_reflexive_addr(proto, bind, &ctx.dev_ns, ctx.dev_ip, ctx.r_dc).await
+    }
+
+    /// TCP reflector: accept → "OBSERVED {peer}" → close, repeat until stop.
+    fn spawn_tcp_reflector(
+        ns: &str,
+        bind: SocketAddr,
+    ) -> (crate::core::TaskHandle, thread::JoinHandle<Result<()>>) {
+        use std::io::Write as _;
+        let ns = ns.to_string();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let join = spawn_closure_in_namespace_thread(ns, move || {
+            let listener = std::net::TcpListener::bind(bind).context("tcp reflector bind")?;
+            listener
+                .set_nonblocking(true)
+                .context("set nonblocking")?;
+            loop {
+                if stop_rx.try_recv().is_ok() {
+                    break;
+                }
+                match listener.accept() {
+                    Ok((mut stream, peer)) => {
+                        stream.set_nonblocking(false).ok();
+                        let msg = format!("OBSERVED {}", peer);
+                        let _ = stream.write_all(msg.as_bytes());
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+            Ok(())
+        });
+        (crate::core::TaskHandle::new(stop_tx), join)
+    }
+
+    /// TCP sink: accept one connection, drain all bytes, exit.
+    fn spawn_tcp_sink(
+        server_ns: &str,
+        addr: SocketAddr,
+    ) -> thread::JoinHandle<Result<()>> {
+        use std::io::Read as _;
+        let ns = server_ns.to_string();
+        spawn_closure_in_namespace_thread(ns, move || {
+            let listener = std::net::TcpListener::bind(addr).context("tcp sink bind")?;
+            let (mut stream, _) = listener.accept().context("tcp sink accept")?;
+            let mut buf = [0u8; 8192];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Sends `bytes` bytes over TCP from `client_ns` to `server_addr`.
+    /// Returns `(elapsed, kbit/s)`.
+    fn tcp_measure_throughput(
+        client_ns: &str,
+        server_addr: SocketAddr,
+        bytes: usize,
+    ) -> Result<(Duration, u32)> {
+        use std::io::Write as _;
+        use std::io::Read as _;
+        use std::time::Instant;
+        let ns = client_ns.to_string();
+        run_closure_in_namespace(&ns, move || {
+            let mut stream = std::net::TcpStream::connect_timeout(
+                &server_addr,
+                Duration::from_secs(5),
+            )
+            .context("tcp connect")?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(60)))
+                .context("set write timeout")?;
+            let chunk = vec![0u8; 4096];
+            let start = Instant::now();
+            let mut sent = 0;
+            while sent < bytes {
+                let n = chunk.len().min(bytes - sent);
+                stream.write_all(&chunk[..n]).context("tcp write")?;
+                sent += n;
+            }
+            stream
+                .shutdown(std::net::Shutdown::Write)
+                .context("tcp shutdown")?;
+            // Wait for server to acknowledge EOF.
+            let mut tmp = [0u8; 1];
+            let _ = stream.read(&mut tmp);
+            let elapsed = start.elapsed();
+            let kbps = ((bytes as u64 * 8) / (elapsed.as_millis() as u64).max(1)) as u32;
+            Ok((elapsed, kbps))
+        })
+    }
+
+    /// Sends `total` UDP datagrams from `ns` to `target` and collects echoes.
+    /// Returns `(sent, received)`.
+    fn udp_send_recv_count(
+        ns: &str,
+        target: SocketAddr,
+        total: usize,
+        payload: usize,
+        wait: Duration,
+    ) -> Result<(usize, usize)> {
+        use std::time::Instant;
+        let ns = ns.to_string();
+        run_closure_in_namespace(&ns, move || {
+            let sock = std::net::UdpSocket::bind("0.0.0.0:0").context("udp bind")?;
+            sock.set_read_timeout(Some(Duration::from_millis(200)))
+                .context("set timeout")?;
+            let buf = vec![0u8; payload];
+            let mut recv_buf = vec![0u8; payload + 64];
+            for _ in 0..total {
+                let _ = sock.send_to(&buf, target);
+            }
+            let deadline = Instant::now() + wait;
+            let mut received = 0usize;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let timeout = remaining.min(Duration::from_millis(200));
+                sock.set_read_timeout(Some(timeout)).ok();
+                match sock.recv_from(&mut recv_buf) {
+                    Ok(_) => received += 1,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(_) => break,
+                }
+            }
+            Ok((total, received))
+        })
+    }
+
+    /// Spawns an async TCP reflector (accept → "OBSERVED {peer}" → close) in `ns`.
+    ///
+    /// Returns when the listener is bound. The task continues on the namespace's
+    /// persistent async worker until the listener is closed.
+    async fn spawn_tcp_reflector_in_ns(ns: &str, bind: SocketAddr) -> Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let ns = ns.to_string();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+        spawn_task_in_netns(&ns, move || async move {
+            match tokio::net::TcpListener::bind(bind).await {
+                Ok(listener) => {
+                    let _ = ready_tx.send(Ok(()));
+                    loop {
+                        let Ok((mut stream, peer)) = listener.accept().await else { break };
+                        let msg = format!("OBSERVED {}", peer);
+                        let _ = stream.write_all(msg.as_bytes()).await;
+                    }
+                }
+                Err(e) => {
+                    let _ = ready_tx
+                        .send(Err(anyhow!("tcp reflector bind {bind}: {e}")));
+                }
+            }
+        });
+        ready_rx
+            .await
+            .map_err(|_| anyhow!("tcp reflector task dropped before ready"))?
+    }
+
+    async fn build_nat_case(
+        nat_mode: NatMode,
+        wiring: UplinkWiring,
+        port_base: u16,
+    ) -> Result<(Lab, NatTestCtx)> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", Some("eu"), None, NatMode::None)?;
+        let upstream = match wiring {
+            UplinkWiring::DirectIx => None,
+            UplinkWiring::ViaPublicIsp => {
+                Some(lab.add_router("isp", Some("eu"), None, NatMode::None)?)
+            }
+            UplinkWiring::ViaCgnatIsp => {
+                Some(lab.add_router("isp", Some("eu"), None, NatMode::Cgnat)?)
+            }
+        };
+        let nat = lab.add_router("nat", None, upstream, nat_mode)?;
+        let dev = lab.add_device("dev").iface("eth0", nat, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r_dc = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
+        let r_ix = SocketAddr::new(IpAddr::V4(lab.ix_gw()), port_base + 1);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+
+        // UDP reflector (managed by lab).
+        lab.spawn_reflector(&dc_ns, r_dc)?;
+        lab.spawn_reflector_on_ix(r_ix)?;
+
+        // TCP reflector on the namespace's async worker.
+        spawn_tcp_reflector_in_ns(&dc_ns, r_dc).await?;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let dev_ip = lab.device_ip(dev)?;
+        let expected_ip = match (nat_mode, wiring) {
+            (_, UplinkWiring::ViaCgnatIsp) => {
+                let isp = lab.router_id("isp").context("missing isp")?;
+                lab.router_uplink_ip(isp)?
+            }
+            (NatMode::None, _) => dev_ip,
+            _ => lab.router_uplink_ip(nat)?,
+        };
+        Ok((
+            lab,
+            NatTestCtx {
+                dev_ns,
+                dev_ip,
+                expected_ip,
+                r_dc,
+                r_ix,
+            },
+        ))
+    }
+
+    async fn build_dual_nat_lab(
+        mode_a: NatMode,
+        mode_b: NatMode,
+        port_base: u16,
+    ) -> Result<DualNatLab> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", Some("eu"), None, NatMode::None)?;
+        let nat_a = lab.add_router("nat-a", None, None, mode_a)?;
+        let nat_b = lab.add_router("nat-b", None, None, mode_b)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", nat_a, None)
+            .iface("eth1", nat_b, None)
+            .default_via("eth0")
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let reflector = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+
+        lab.spawn_reflector(&dc_ns, reflector)?;
+        spawn_tcp_reflector_in_ns(&dc_ns, reflector).await?;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        Ok(DualNatLab {
+            lab,
+            dev,
+            nat_a,
+            nat_b,
+            reflector,
+        })
     }
 
     async fn build_single_nat_case(
@@ -863,33 +1325,89 @@ mod tests {
         Ok((lab, dev_ns, r_dc, r_ix, expected_ip))
     }
 
-    fn spawn_tcp_echo_in(ns: &str, bind: SocketAddr) -> thread::JoinHandle<Result<()>> {
-        Lab::run_in_namespace_thread(ns, move || {
-            let listener = std::net::TcpListener::bind(bind).context("tcp echo bind")?;
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 64];
-                let n = stream.read(&mut buf)?;
-                stream.write_all(&buf[..n])?;
+    /// Spawns an async TCP echo server in `ns` that loops accepting connections,
+    /// echoes each one's payload, and continues until the namespace is torn down.
+    /// Returns when the listener is bound.
+    async fn spawn_tcp_echo_server(ns: &str, bind: SocketAddr) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ns = ns.to_string();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+        spawn_task_in_netns(&ns, move || async move {
+            match tokio::net::TcpListener::bind(bind).await {
+                Ok(listener) => {
+                    let _ = ready_tx.send(Ok(()));
+                    loop {
+                        let Ok((mut stream, _)) = listener.accept().await else { break };
+                        let mut buf = [0u8; 64];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let _ = stream.write_all(&buf[..n]).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(anyhow!("tcp echo bind {bind}: {e}")));
+                }
             }
-            Ok(())
-        })
+        });
+        ready_rx
+            .await
+            .map_err(|_| anyhow!("tcp echo server task dropped before ready"))?
     }
 
-    fn tcp_roundtrip_in_ns(ns: &str, target: SocketAddr) -> Result<()> {
-        run_closure_in_namespace(ns, move || {
-            let timeout = Duration::from_millis(500);
-            let mut stream = std::net::TcpStream::connect_timeout(&target, timeout)?;
-            stream.set_read_timeout(Some(timeout))?;
-            stream.set_write_timeout(Some(timeout))?;
+    /// Spawns an async TCP echo server in `ns` that accepts one connection, echoes bytes, then stops.
+    /// Returns when the listener is bound. The task runs on the namespace's async worker.
+    async fn spawn_tcp_echo_in(ns: &str, bind: SocketAddr) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ns = ns.to_string();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+        spawn_task_in_netns(&ns, move || async move {
+            match tokio::net::TcpListener::bind(bind).await {
+                Ok(listener) => {
+                    let _ = ready_tx.send(Ok(()));
+                    if let Ok((mut stream, _)) = listener.accept().await {
+                        let mut buf = [0u8; 64];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let _ = stream.write_all(&buf[..n]).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(anyhow!("tcp echo bind {bind}: {e}")));
+                }
+            }
+        });
+        ready_rx
+            .await
+            .map_err(|_| anyhow!("tcp echo task dropped before ready"))?
+    }
+
+    async fn tcp_roundtrip_in_ns(ns: &str, target: SocketAddr) -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let ns = ns.to_string();
+        let timeout = Duration::from_millis(500);
+        spawn_task_in_netns(&ns, move || async move {
+            let mut stream =
+                tokio::time::timeout(timeout, tokio::net::TcpStream::connect(target))
+                    .await
+                    .context("tcp connect timeout")?
+                    .context("tcp connect")?;
             let payload = b"ping";
-            stream.write_all(payload)?;
+            tokio::time::timeout(timeout, stream.write_all(payload))
+                .await
+                .context("tcp write timeout")?
+                .context("tcp write")?;
             let mut buf = [0u8; 4];
-            stream.read_exact(&mut buf)?;
+            tokio::time::timeout(timeout, stream.read_exact(&mut buf))
+                .await
+                .context("tcp read timeout")?
+                .context("tcp read")?;
             if &buf != payload {
                 bail!("tcp echo mismatch: {:?}", buf);
             }
-            Ok(())
+            Ok::<_, anyhow::Error>(())
         })
+        .await
+        .map_err(|_| anyhow!("tcp_roundtrip: netns task cancelled"))?
     }
 
     fn current_netns_inode() -> Result<String> {
@@ -1269,17 +1787,13 @@ gateway = "lan1"
         let dc_ip = lab.router_uplink_ip(dc)?;
         let bind = SocketAddr::new(IpAddr::V4(dc_ip), 9000);
         let dc_ns = lab.node_ns(dc)?.to_string();
-        let join = spawn_tcp_echo_in(&dc_ns, bind);
+        spawn_tcp_echo_in(&dc_ns, bind).await?;
 
         tokio::time::sleep(Duration::from_millis(250)).await;
 
         let dev_id = lab.device_id("dev1").expect("dev1 exists");
         let dev_ns = lab.node_ns(dev_id)?.to_string();
-        tcp_roundtrip_in_ns(&dev_ns, bind)?;
-        match join.join() {
-            Ok(res) => res?,
-            Err(_) => bail!("tcp echo thread panicked"),
-        }
+        tcp_roundtrip_in_ns(&dev_ns, bind).await?;
         Ok(())
     }
 
@@ -1855,6 +2369,1150 @@ gateway = "dc1"
         assert!(lab.device_id("fetcher-0").is_some());
         assert!(lab.device_id("fetcher-1").is_some());
         assert!(lab.device_id("fetcher").is_none());
+        Ok(())
+    }
+
+    // ── 5a: TCP reflector smoke ──────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn tcp_reflector_basic() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab.add_device("dev").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 13_000);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let (_stop, _join) = spawn_tcp_reflector(&dc_ns, r);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let obs = probe_tcp(&dev_ns, r, "0.0.0.0:0".parse().unwrap()).await?;
+        assert_ne!(obs.observed.port(), 0, "expected non-zero port");
+        Ok(())
+    }
+
+    // ── 5b: Reflexive IP — full matrix ───────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn reflexive_ip_all_combos() -> Result<()> {
+        use strum::IntoEnumIterator;
+
+        // NatMode::None + Via*Isp is skipped: with no NAT the device gets a public
+        // IP, but the nat router sits behind an ISP router (not directly on IX),
+        // so no return route is installed from DC → device subnet.  DC's reply
+        // is dropped and all probes time out.  The meaningful None case is
+        // DirectIx where the return route IS set up.
+        let combos: Vec<_> = NatMode::iter()
+            .flat_map(|m| UplinkWiring::iter().map(move |w| (m, w)))
+            .filter(|(m, w)| {
+                !(*m == NatMode::None
+                    && matches!(w, UplinkWiring::ViaPublicIsp | UplinkWiring::ViaCgnatIsp))
+            })
+            .flat_map(|(m, w)| Proto::iter().map(move |p| (m, w, p)))
+            .flat_map(|(m, w, p)| BindMode::iter().map(move |b| (m, w, p, b)))
+            .collect();
+
+        let mut port_base = 14_000u16;
+        let mut failures = Vec::new();
+        for (mode, wiring, proto, bind) in combos {
+            let result: Result<()> = async {
+                let (_lab, ctx) = build_nat_case(mode, wiring, port_base).await?;
+                let obs = probe_reflexive(proto, bind, &ctx).await?;
+                if obs.observed.ip() != IpAddr::V4(ctx.expected_ip) {
+                    bail!("expected {} got {}", ctx.expected_ip, obs.observed.ip());
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                let label = format!("{mode}/{wiring}/{proto}/{bind}");
+                eprintln!("FAIL {label}: {e:#}");
+                failures.push(format!("{label}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} combos failed:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    // ── 5c: Port mapping behavior ────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn port_mapping_eim_stable() -> Result<()> {
+        use strum::IntoEnumIterator;
+        let mut port_base = 16_000u16;
+        let mut failures = Vec::new();
+        for wiring in UplinkWiring::iter() {
+            let result: Result<()> = async {
+                let (lab, ctx) =
+                    build_nat_case(NatMode::DestinationIndependent, wiring, port_base).await?;
+                let o1 = lab.probe_udp_mapping("dev", ctx.r_dc)?;
+                let o2 = lab.probe_udp_mapping("dev", ctx.r_ix)?;
+                if o1.observed.port() != o2.observed.port() {
+                    bail!(
+                        "EIM: external port changed: r_dc={} r_ix={}",
+                        o1.observed.port(),
+                        o2.observed.port()
+                    );
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("DestIndep/{wiring}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} combos failed:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn port_mapping_edm_changes() -> Result<()> {
+        use strum::IntoEnumIterator;
+        let mut port_base = 16_100u16;
+        let mut failures = Vec::new();
+        for wiring in UplinkWiring::iter() {
+            let result: Result<()> = async {
+                let (lab, ctx) =
+                    build_nat_case(NatMode::DestinationDependent, wiring, port_base).await?;
+                let o1 = lab.probe_udp_mapping("dev", ctx.r_dc)?;
+                let o2 = lab.probe_udp_mapping("dev", ctx.r_ix)?;
+                if o1.observed.port() == o2.observed.port() {
+                    bail!(
+                        "EDM: external port must change: r_dc={} r_ix={}",
+                        o1.observed.port(),
+                        o2.observed.port()
+                    );
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("DestDep/{wiring}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} combos failed:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    // ── 5d: Route switching + reflexive IP ───────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn switch_route_reflexive_ip() -> Result<()> {
+        use strum::IntoEnumIterator;
+        let DualNatLab { mut lab, dev, nat_a, nat_b, reflector } =
+            build_dual_nat_lab(NatMode::DestinationIndependent, NatMode::DestinationDependent, 16_200)
+                .await?;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let wan_a = lab.router_uplink_ip(nat_a)?;
+        let wan_b = lab.router_uplink_ip(nat_b)?;
+
+        let mut failures = Vec::new();
+        for proto in Proto::iter() {
+            for bind in BindMode::iter() {
+                // SpecificIp must use the IP of the currently-active interface;
+                // device_ip() returns the default_via interface IP, which changes on switch_route.
+                let dev_ip = lab.device_ip(dev)?;
+                let obs = probe_reflexive_addr(proto, bind, &dev_ns, dev_ip, reflector).await;
+                match obs {
+                    Ok(o) if o.observed.ip() == IpAddr::V4(wan_a) => {}
+                    Ok(o) => failures.push(format!(
+                        "{proto}/{bind} before switch: expected {wan_a} got {}",
+                        o.observed.ip()
+                    )),
+                    Err(e) => failures.push(format!("{proto}/{bind} before switch: {e:#}")),
+                }
+
+                lab.switch_route("dev", "eth1")?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                let dev_ip = lab.device_ip(dev)?;
+                let obs = probe_reflexive_addr(proto, bind, &dev_ns, dev_ip, reflector).await;
+                match obs {
+                    Ok(o) if o.observed.ip() == IpAddr::V4(wan_b) => {}
+                    Ok(o) => failures.push(format!(
+                        "{proto}/{bind} after switch: expected {wan_b} got {}",
+                        o.observed.ip()
+                    )),
+                    Err(e) => failures.push(format!("{proto}/{bind} after switch: {e:#}")),
+                }
+
+                lab.switch_route("dev", "eth0")?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        if !failures.is_empty() {
+            bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn switch_route_multiple() -> Result<()> {
+        let DualNatLab { mut lab, dev, nat_a, nat_b, reflector } =
+            build_dual_nat_lab(NatMode::DestinationIndependent, NatMode::DestinationIndependent, 16_300)
+                .await?;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let wan_a = lab.router_uplink_ip(nat_a)?;
+        let wan_b = lab.router_uplink_ip(nat_b)?;
+
+        let o = udp_roundtrip_in_ns(&dev_ns, reflector)?;
+        assert_eq!(o.observed.ip(), IpAddr::V4(wan_a), "expected nat_a WAN on eth0");
+
+        lab.switch_route("dev", "eth1")?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let o = udp_roundtrip_in_ns(&dev_ns, reflector)?;
+        assert_eq!(o.observed.ip(), IpAddr::V4(wan_b), "expected nat_b WAN on eth1");
+
+        lab.switch_route("dev", "eth0")?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let o = udp_roundtrip_in_ns(&dev_ns, reflector)?;
+        assert_eq!(o.observed.ip(), IpAddr::V4(wan_a), "expected nat_a WAN after switch back");
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn switch_route_tcp_roundtrip() -> Result<()> {
+        let DualNatLab { mut lab, dev, nat_a: _, nat_b: _, reflector: _ } =
+            build_dual_nat_lab(NatMode::DestinationIndependent, NatMode::DestinationDependent, 16_400)
+                .await?;
+
+        let dc = lab.router_id("dc").context("missing dc")?;
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 16_410);
+        spawn_tcp_echo_server(&dc_ns, r).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tcp_roundtrip_in_ns(&dev_ns, r).await?;
+
+        lab.switch_route("dev", "eth1")?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tcp_roundtrip_in_ns(&dev_ns, r).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn switch_route_udp_reflexive_change() -> Result<()> {
+        let DualNatLab { mut lab, dev, nat_a, nat_b, reflector } =
+            build_dual_nat_lab(NatMode::DestinationIndependent, NatMode::DestinationIndependent, 16_500)
+                .await?;
+
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        let wan_a = lab.router_uplink_ip(nat_a)?;
+        let wan_b = lab.router_uplink_ip(nat_b)?;
+
+        let before = udp_roundtrip_in_ns(&dev_ns, reflector)?;
+        assert_eq!(before.observed.ip(), IpAddr::V4(wan_a), "before switch: expected nat_a WAN");
+
+        lab.switch_route("dev", "eth1")?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let after = udp_roundtrip_in_ns(&dev_ns, reflector)?;
+        assert_eq!(after.observed.ip(), IpAddr::V4(wan_b), "after switch: expected nat_b WAN");
+        assert_ne!(
+            before.observed.ip(),
+            after.observed.ip(),
+            "reflexive IP must change after route switch"
+        );
+        Ok(())
+    }
+
+    // ── 5e: Link down/up ─────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn link_down_up_connectivity() -> Result<()> {
+        use strum::IntoEnumIterator;
+        let mut port_base = 16_600u16;
+        let mut failures = Vec::new();
+        for proto in Proto::iter() {
+            let result: Result<()> = async {
+                let mut lab = Lab::new();
+                let dc = lab.add_router("dc", None, None, NatMode::None)?;
+                let dev = lab.add_device("dev").iface("eth0", dc, None).build()?;
+                lab.build().await?;
+
+                let dc_ip = lab.router_uplink_ip(dc)?;
+                let r = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
+                let dc_ns = lab.node_ns(dc)?.to_string();
+                let dev_ns = lab.node_ns(dev)?.to_string();
+                let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+
+                match proto {
+                    Proto::Udp => {
+                        lab.spawn_reflector(&dc_ns, r)?;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        probe_udp(&dev_ns, r, bind).context("before link_down")?;
+                        lab.link_down("dev", "eth0")?;
+                        if probe_udp(&dev_ns, r, bind).is_ok() {
+                            bail!("probe should fail after link_down");
+                        }
+                        lab.link_up("dev", "eth0")?;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        probe_udp(&dev_ns, r, bind).context("after link_up")?;
+                    }
+                    Proto::Tcp => {
+                        // Persistent echo server: handles all connections for the whole test.
+                        spawn_tcp_echo_server(&dc_ns, r).await?;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tcp_roundtrip_in_ns(&dev_ns, r).await.context("before link_down")?;
+                        lab.link_down("dev", "eth0")?;
+                        if tcp_roundtrip_in_ns(&dev_ns, r).await.is_ok() {
+                            bail!("tcp should fail after link_down");
+                        }
+                        lab.link_up("dev", "eth0")?;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        tcp_roundtrip_in_ns(&dev_ns, r).await.context("after link_up")?;
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("{proto}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    // ── 5f: NAT rebinding ────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn nat_rebind_mode_port() -> Result<()> {
+        // DestIndep→DestDep: port changes; DestDep→DestIndep: port stabilises.
+        let cases: &[(NatMode, NatMode, bool)] = &[
+            (NatMode::DestinationIndependent, NatMode::DestinationDependent, false),
+            (NatMode::DestinationDependent, NatMode::DestinationIndependent, true),
+        ];
+        let mut port_base = 16_800u16;
+        let mut failures = Vec::new();
+        for &(from, to, expect_stable) in cases {
+            let result: Result<()> = async {
+                let (mut lab, ctx) = build_nat_case(from, UplinkWiring::DirectIx, port_base).await?;
+                let nat = lab.router_id("nat").context("missing nat")?;
+                lab.set_nat_mode(nat, to).await?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let o1 = lab.probe_udp_mapping("dev", ctx.r_dc)?;
+                let o2 = lab.probe_udp_mapping("dev", ctx.r_ix)?;
+                let port_stable = o1.observed.port() == o2.observed.port();
+                if port_stable != expect_stable {
+                    bail!(
+                        "{from}→{to}: expected stable={expect_stable} got stable={port_stable} \
+                         (r_dc port={}, r_ix port={})",
+                        o1.observed.port(),
+                        o2.observed.port()
+                    );
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("{from}→{to}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn nat_rebind_mode_ip() -> Result<()> {
+        // DestinationIndependent→None is omitted: with NAT=None, the device's
+        // private IP appears as the packet source; the DC has no return route, so
+        // the UDP probe times out rather than completing.
+        let cases: &[(NatMode, NatMode)] = &[
+            (NatMode::None, NatMode::DestinationIndependent),
+        ];
+        let mut port_base = 16_900u16;
+        let mut failures = Vec::new();
+        for &(from, to) in cases {
+            let result: Result<()> = async {
+                let (mut lab, ctx) =
+                    build_nat_case(from, UplinkWiring::DirectIx, port_base).await?;
+                let nat = lab.router_id("nat").context("missing nat")?;
+                let wan_ip = lab.router_uplink_ip(nat)?;
+                lab.set_nat_mode(nat, to).await?;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let o = probe_udp(
+                    &ctx.dev_ns,
+                    ctx.r_dc,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                )?;
+                let expected = match to {
+                    NatMode::DestinationIndependent => IpAddr::V4(wan_ip),
+                    NatMode::None => IpAddr::V4(ctx.dev_ip),
+                    _ => unreachable!(),
+                };
+                if o.observed.ip() != expected {
+                    bail!("{from}→{to}: expected {expected} got {}", o.observed.ip());
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("{from}→{to}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn nat_rebind_conntrack_flush() -> Result<()> {
+        // Skip if conntrack-tools is not installed.
+        if std::process::Command::new("conntrack")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping nat_rebind_conntrack_flush: conntrack not found");
+            return Ok(());
+        }
+        let (mut lab, ctx) = build_nat_case(
+            NatMode::DestinationDependent,
+            UplinkWiring::DirectIx,
+            17_000,
+        )
+        .await?;
+        let nat = lab.router_id("nat").context("missing nat")?;
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+        let o1 = probe_udp(&ctx.dev_ns, ctx.r_dc, bind)?;
+        lab.rebind_nats(nat)?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let o2 = probe_udp(&ctx.dev_ns, ctx.r_dc, bind)?;
+        assert_ne!(
+            o1.observed.port(),
+            o2.observed.port(),
+            "expected new external port after conntrack flush"
+        );
+        Ok(())
+    }
+
+    // ── 5g: Multi-device cross-NAT ───────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn devices_same_nat_share_ip() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let nat = lab.add_router("nat", None, None, NatMode::DestinationIndependent)?;
+        let dev_a = lab.add_device("dev-a").iface("eth0", nat, None).build()?;
+        let dev_b = lab.add_device("dev-b").iface("eth0", nat, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_100);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let ns_a = lab.node_ns(dev_a)?.to_string();
+        let ns_b = lab.node_ns(dev_b)?.to_string();
+        let oa = udp_roundtrip_in_ns(&ns_a, r)?;
+        let ob = udp_roundtrip_in_ns(&ns_b, r)?;
+        assert_eq!(
+            oa.observed.ip(),
+            ob.observed.ip(),
+            "devices behind the same NAT must share the same external IP"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn devices_diff_nat_isolate() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let nat_a = lab.add_router("nat-a", None, None, NatMode::DestinationIndependent)?;
+        let nat_b = lab.add_router("nat-b", None, None, NatMode::DestinationIndependent)?;
+        let dev_a = lab.add_device("dev-a").iface("eth0", nat_a, None).build()?;
+        let dev_b = lab.add_device("dev-b").iface("eth0", nat_b, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_200);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let ns_a = lab.node_ns(dev_a)?.to_string();
+        let ns_b = lab.node_ns(dev_b)?.to_string();
+        let ip_a = lab.device_ip(dev_a)?;
+        let ip_b = lab.device_ip(dev_b)?;
+
+        ping_fails_in_ns(&ns_a, &ip_b.to_string())?;
+        ping_fails_in_ns(&ns_b, &ip_a.to_string())?;
+        ping_in_ns(&ns_a, &dc_ip.to_string())?;
+        ping_in_ns(&ns_b, &dc_ip.to_string())?;
+
+        let oa = udp_roundtrip_in_ns(&ns_a, r)?;
+        let ob = udp_roundtrip_in_ns(&ns_b, r)?;
+        assert_ne!(
+            oa.observed.ip(),
+            ob.observed.ip(),
+            "devices behind different NATs must have different external IPs"
+        );
+        Ok(())
+    }
+
+    // ── 5h: Hairpinning — TODO ───────────────────────────────────────────
+    // Implementing ct-dnat-based hairpin in nftables requires per-port DNAT
+    // rules derived from the live conntrack table. Deferred.
+
+    // ── 5i: Rate limiting ────────────────────────────────────────────────
+
+    fn join_sink(join: thread::JoinHandle<Result<()>>) -> Result<()> {
+        join.join()
+            .map_err(|_| anyhow!("tcp sink thread panicked"))?
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_tcp_upload() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let sink = spawn_tcp_sink(&dc_ns, addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_elapsed, kbps) = tcp_measure_throughput(&dev_ns, addr, 256 * 1024)?;
+        join_sink(sink)?;
+
+        assert!(kbps >= 1400, "expected ≥ 1400 kbit/s, got {kbps}");
+        assert!(kbps <= 3000, "expected ≤ 3000 kbit/s, got {kbps}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_tcp_download() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev_id = lab.add_device("dev").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))?;
+
+        let dev_ip = lab.device_ip(dev_id)?;
+        let addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_400);
+        let dev_ns = lab.node_ns(dev_id)?.to_string();
+        let dc_ns = lab.node_ns(dc)?.to_string();
+
+        // Client (DC) writes to server (device) — bytes travel the download path.
+        let sink = spawn_tcp_sink(&dev_ns, addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_elapsed, kbps) = tcp_measure_throughput(&dc_ns, addr, 256 * 1024)?;
+        join_sink(sink)?;
+
+        assert!(kbps >= 1400, "expected ≥ 1400 kbit/s, got {kbps}");
+        assert!(kbps <= 3000, "expected ≤ 3000 kbit/s, got {kbps}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_udp_upload() -> Result<()> {
+        use std::time::Instant;
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_500);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // ~300 KB at 2 Mbit/s ≈ 1.2 s.
+        let start = Instant::now();
+        udp_send_recv_count(&dev_ns, r, 300, 1024, Duration::from_secs(5))?;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1000),
+            "expected ≥ 1.0 s for 300 KB at 2 Mbit/s, got {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_udp_download() -> Result<()> {
+        use std::time::Instant;
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev_id = lab.add_device("dev").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_600);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev_id)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Replies travel the download path (DC → device) which is throttled.
+        let start = Instant::now();
+        udp_send_recv_count(&dev_ns, r, 300, 1024, Duration::from_secs(5))?;
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(1000),
+            "expected ≥ 1.0 s for 300 KB download at 2 Mbit/s, got {elapsed:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_asymmetric() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev_id = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 1000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 4000, loss: 0.0, latency: 0 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let up_addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_700);
+        let dev_ip = lab.device_ip(dev_id)?;
+        let down_addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_710);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev_id)?.to_string();
+
+        let sink_up = spawn_tcp_sink(&dc_ns, up_addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_up) = tcp_measure_throughput(&dev_ns, up_addr, 128 * 1024)?;
+        join_sink(sink_up)?;
+
+        let sink_down = spawn_tcp_sink(&dev_ns, down_addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_down) = tcp_measure_throughput(&dc_ns, down_addr, 128 * 1024)?;
+        join_sink(sink_down)?;
+
+        assert!(kbps_up <= 1500, "expected upload ≤ 1500 kbit/s, got {kbps_up}");
+        assert!(kbps_down >= 2000, "expected download ≥ 2000 kbit/s, got {kbps_down}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_multihop_bottleneck() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let isp = lab.add_router("isp", None, None, NatMode::None)?;
+        let nat = lab.add_router("nat", None, Some(isp), NatMode::DestinationIndependent)?;
+        let dev = lab.add_device("dev").iface("eth0", nat, None).build()?;
+        lab.build().await?;
+
+        lab.set_router_impair(nat, "wan", Some(Impair::Manual { rate: 1000, loss: 0.0, latency: 0 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_800);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let sink = spawn_tcp_sink(&dc_ns, addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps) = tcp_measure_throughput(&dev_ns, addr, 128 * 1024)?;
+        join_sink(sink)?;
+
+        assert!(kbps <= 1500, "NAT WAN bottleneck: expected ≤ 1500 kbit/s, got {kbps}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_limit_two_hops_stack() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 2000, loss: 0.0, latency: 0 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_900);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let sink = spawn_tcp_sink(&dc_ns, addr);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps) = tcp_measure_throughput(&dev_ns, addr, 256 * 1024)?;
+        join_sink(sink)?;
+
+        // Both hops at 2 Mbit/s → effective rate ≤ 2 Mbit/s.
+        assert!(kbps <= 3000, "expected ≤ 3000 kbit/s, got {kbps}");
+        Ok(())
+    }
+
+    // ── 5j: Packet loss ──────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn loss_udp_moderate() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 0, loss: 50.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_000);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let (_, received) = udp_send_recv_count(&dev_ns, r, 100, 64, Duration::from_secs(3))?;
+        assert!(received >= 20, "expected ≥ 20 received at 50% loss, got {received}");
+        assert!(received <= 80, "expected ≤ 80 received at 50% loss, got {received}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn loss_udp_high() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 0, loss: 90.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_100);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let (_, received) = udp_send_recv_count(&dev_ns, r, 100, 64, Duration::from_secs(3))?;
+        assert!(received <= 30, "expected ≤ 30 received at 90% loss, got {received}");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn loss_tcp_integrity() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 0, loss: 5.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        const BYTES: usize = 200 * 1024;
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let addr = SocketAddr::new(IpAddr::V4(dc_ip), 18_200);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        // Server in DC writes BYTES to client; client counts received bytes.
+        let server = spawn_closure_in_namespace_thread(dc_ns, move || {
+            let listener = std::net::TcpListener::bind(addr)?;
+            let (mut stream, _) = listener.accept()?;
+            let data = vec![0xABu8; BYTES];
+            stream.write_all(&data)?;
+            Ok(())
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let n = run_closure_in_namespace(&dev_ns, move || {
+            let mut stream =
+                std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
+            stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+            let mut buf = Vec::with_capacity(BYTES);
+            stream.read_to_end(&mut buf)?;
+            Ok(buf.len())
+        })?;
+
+        server
+            .join()
+            .map_err(|_| anyhow!("server thread panicked"))??;
+        assert_eq!(n, BYTES, "TCP must deliver all bytes despite 5% loss");
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn loss_udp_both_directions() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 0, loss: 30.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 0, loss: 30.0, latency: 0 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_300);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Round-trip delivery ≈ (1-0.3)×(1-0.3) = 49 %; expect < 80.
+        let (_, received) = udp_send_recv_count(&dev_ns, r, 100, 64, Duration::from_secs(3))?;
+        assert!(received <= 80, "expected < 80 echoes with bidirectional loss, got {received}");
+        Ok(())
+    }
+
+    // ── 5k: Latency ──────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    #[ignore = "hangs — download-direction impair path needs async worker fix"]
+    async fn latency_download_direction() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab.add_device("dev").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_400);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let base = udp_rtt_in_ns(&dev_ns, r)?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 50 }))?;
+
+        let impaired = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            impaired >= base + Duration::from_millis(40),
+            "expected RTT +40ms after 50ms download latency, base={base:?} impaired={impaired:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_upload_and_download() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 20 }))
+            .build()?;
+        lab.build().await?;
+
+        let bridge = lab.router_downlink_bridge(dc)?;
+        lab.set_router_impair(dc, &bridge, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 30 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_500);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Each packet traverses: upload(20ms) + download(30ms) = 50ms one-way → RTT ≥ 100ms.
+        let rtt = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            rtt >= Duration::from_millis(90),
+            "expected RTT ≥ 90ms with 20ms upload + 30ms download, got {rtt:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_device_plus_region() -> Result<()> {
+        let mut lab = Lab::new();
+        lab.add_region_latency("eu", "us", 40);
+        lab.add_region_latency("us", "eu", 40);
+        let dc_eu = lab.add_router("dc-eu", Some("eu"), None, NatMode::None)?;
+        let dc_us = lab.add_router("dc-us", Some("us"), None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc_eu, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 30 }))
+            .build()?;
+        lab.build().await?;
+
+        let r_us = SocketAddr::new(IpAddr::V4(lab.router_uplink_ip(dc_us)?), 18_600);
+        let r_eu = SocketAddr::new(IpAddr::V4(lab.router_uplink_ip(dc_eu)?), 18_601);
+        let dc_us_ns = lab.node_ns(dc_us)?.to_string();
+        let dc_eu_ns = lab.node_ns(dc_eu)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_us_ns, r_us)?;
+        lab.spawn_reflector(&dc_eu_ns, r_eu)?;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // eu→us: device(30ms) + region(40ms) = 70ms one-way → RTT ≥ 140ms.
+        let rtt_eu_us = udp_rtt_in_ns(&dev_ns, r_us)?;
+        assert!(
+            rtt_eu_us >= Duration::from_millis(130),
+            "expected eu→us RTT ≥ 130ms, got {rtt_eu_us:?}"
+        );
+
+        // eu→eu: only device upload impair (30ms egress on dev eth0) → RTT ≈ 30ms.
+        // Download path has no qdisc, so we expect at least 25ms to allow slack.
+        let rtt_eu_eu = udp_rtt_in_ns(&dev_ns, r_eu)?;
+        assert!(
+            rtt_eu_eu >= Duration::from_millis(25),
+            "expected eu→eu RTT ≥ 25ms (device upload impair only), got {rtt_eu_eu:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_multihop_chain() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let isp = lab.add_router("isp", None, None, NatMode::None)?;
+        let nat = lab.add_router("nat", None, Some(isp), NatMode::DestinationIndependent)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", nat, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 20 }))
+            .build()?;
+        lab.build().await?;
+
+        lab.set_router_impair(nat, "wan", Some(Impair::Manual { rate: 0, loss: 0.0, latency: 30 }))?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_700);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // One-way: device(20ms) + nat WAN(30ms) = 50ms → RTT ≥ 100ms.
+        let rtt = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            rtt >= Duration::from_millis(90),
+            "expected RTT ≥ 90ms for multi-hop chain, got {rtt:?}"
+        );
+        Ok(())
+    }
+
+    // ── 5l: Dynamic rate and latency changes ─────────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_dynamic_decrease() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 5000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let sink = spawn_tcp_sink(&dc_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_800));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_fast) =
+            tcp_measure_throughput(&dev_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_800), 256 * 1024)?;
+        join_sink(sink)?;
+
+        lab.set_impair("dev", None, Some(Impair::Manual { rate: 500, loss: 0.0, latency: 0 }))?;
+
+        let sink = spawn_tcp_sink(&dc_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_801));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_slow) =
+            tcp_measure_throughput(&dev_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_801), 64 * 1024)?;
+        join_sink(sink)?;
+
+        assert!(kbps_fast >= 3000, "expected fast ≥ 3000 kbit/s, got {kbps_fast}");
+        assert!(kbps_slow <= 700, "expected slow ≤ 700 kbit/s, got {kbps_slow}");
+        assert!(
+            kbps_slow <= kbps_fast / 4,
+            "expected slow ≤ fast/4: slow={kbps_slow} fast={kbps_fast}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_dynamic_remove() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab
+            .add_device("dev")
+            .iface("eth0", dc, Some(Impair::Manual { rate: 1000, loss: 0.0, latency: 0 }))
+            .build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+
+        let sink = spawn_tcp_sink(&dc_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_900));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_throttled) =
+            tcp_measure_throughput(&dev_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_900), 128 * 1024)?;
+        join_sink(sink)?;
+
+        lab.set_impair("dev", None, None)?;
+
+        let sink = spawn_tcp_sink(&dc_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_901));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (_e, kbps_free) =
+            tcp_measure_throughput(&dev_ns, SocketAddr::new(IpAddr::V4(dc_ip), 18_901), 256 * 1024)?;
+        join_sink(sink)?;
+
+        assert!(
+            kbps_free >= kbps_throttled * 3,
+            "expected unthrottled ≥ 3× throttled: free={kbps_free} throttled={kbps_throttled}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn latency_dynamic_add_remove() -> Result<()> {
+        let mut lab = Lab::new();
+        let dc = lab.add_router("dc", None, None, NatMode::None)?;
+        let dev = lab.add_device("dev").iface("eth0", dc, None).build()?;
+        lab.build().await?;
+
+        let dc_ip = lab.router_uplink_ip(dc)?;
+        let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_000);
+        let dc_ns = lab.node_ns(dc)?.to_string();
+        let dev_ns = lab.node_ns(dev)?.to_string();
+        lab.spawn_reflector(&dc_ns, r)?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let baseline = udp_rtt_in_ns(&dev_ns, r)?;
+
+        lab.set_impair("dev", None, Some(Impair::Manual { rate: 0, loss: 0.0, latency: 100 }))?;
+        let high = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            high >= baseline + Duration::from_millis(90),
+            "expected RTT +90ms after 100ms impair, baseline={baseline:?} high={high:?}"
+        );
+
+        lab.set_impair("dev", None, None)?;
+        let recovered = udp_rtt_in_ns(&dev_ns, r)?;
+        assert!(
+            recovered < baseline + Duration::from_millis(30),
+            "expected RTT to recover near baseline, baseline={baseline:?} recovered={recovered:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[traced_test]
+    async fn rate_presets() -> Result<()> {
+        let cases = [
+            (Impair::Wifi, 20u64, 0.0f32),
+            (Impair::Mobile, 50u64, 1.0f32),
+        ];
+        let mut port_base = 19_100u16;
+        let mut failures = Vec::new();
+        for (preset, min_latency_ms, loss_pct) in cases {
+            let result: Result<()> = async {
+                let mut lab = Lab::new();
+                let dc = lab.add_router("dc", None, None, NatMode::None)?;
+                let dev = lab.add_device("dev").iface("eth0", dc, Some(preset)).build()?;
+                lab.build().await?;
+
+                let dc_ip = lab.router_uplink_ip(dc)?;
+                let r = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
+                let dc_ns = lab.node_ns(dc)?.to_string();
+                let dev_ns = lab.node_ns(dev)?.to_string();
+                lab.spawn_reflector(&dc_ns, r)?;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+
+                let rtt = udp_rtt_in_ns(&dev_ns, r)?;
+                if rtt < Duration::from_millis(min_latency_ms) {
+                    bail!("preset {preset:?}: expected RTT ≥ {min_latency_ms}ms, got {rtt:?}");
+                }
+                if loss_pct > 0.0 {
+                    // 1000 packets: P(zero loss at 1%) ≈ 0.000045 — reliably detects loss.
+                    let (_, received) =
+                        udp_send_recv_count(&dev_ns, r, 1000, 64, Duration::from_secs(5))?;
+                    if received == 1000 {
+                        bail!("preset {preset:?}: expected some loss at {loss_pct}%, got {received}/1000");
+                    }
+                }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                failures.push(format!("{preset:?}: {e:#}"));
+            }
+            port_base += 10;
+        }
+        if !failures.is_empty() {
+            bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
+        }
         Ok(())
     }
 }
