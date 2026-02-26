@@ -1,34 +1,33 @@
+use std::{
+    collections::{BTreeSet, HashMap},
+    io::{BufRead, BufReader},
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
+
 use anyhow::{anyhow, bail, Context, Result};
+use netsim_core::{config::LabConfig, Lab};
 use netsim_utils::assets::{
     parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode,
 };
-use std::collections::{BTreeSet, HashMap};
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant, SystemTime};
-
-use netsim_core::config::LabConfig;
-use netsim_core::Lab;
 use serde::Serialize;
 
-use crate::sim::build::{
-    build_local_binaries, build_local_binary, build_or_fetch_binary, BuildArtifact,
-};
-use crate::sim::capture::CaptureStore;
-use crate::sim::env::SimEnv;
-use crate::sim::progress::{
-    collect_run_environment, format_timestamp, now_stamp, write_json, write_progress,
-    write_run_manifest, ManifestSimSummary, ProgressSim, RunManifest, RunProgress,
-};
-use crate::sim::report::{
-    print_run_summary_table_for_runs, write_combined_results_for_runs, write_results,
-    StepResultRecord,
-};
-use crate::sim::steps::{execute_step, join_pump, step_action, step_device, step_id};
-use crate::sim::topology::load_topology;
 use crate::sim::{
+    build::{build_local_binaries, build_local_binary, build_or_fetch_binary, BuildArtifact},
+    capture::CaptureStore,
+    env::SimEnv,
+    progress::{
+        collect_run_environment, format_timestamp, now_stamp, write_json, write_progress,
+        write_run_manifest, ManifestSimSummary, ProgressSim, RunManifest, RunProgress,
+    },
+    report::{
+        print_run_summary_table_for_runs, write_combined_results_for_runs, write_results,
+        StepResultRecord,
+    },
+    steps::{execute_step, join_pump, step_action, step_device, step_id},
+    topology::load_topology,
     BinarySpec, PrepareSpec, SimFile, Step, StepEntry, StepGroupDef, StepResults, StepTemplateDef,
     UseStep,
 };
@@ -1626,9 +1625,12 @@ fn merge_use_step(use_step: UseStep, template: &StepTemplateDef) -> Result<Step>
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::*;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let ts = SystemTime::now()

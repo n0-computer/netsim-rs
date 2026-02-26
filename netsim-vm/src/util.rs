@@ -1,10 +1,13 @@
-use anyhow::{bail, Context, Result};
-use netsim_utils::assets::{
-    parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode,
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
 };
-use netsim_utils::binary_cache::{cached_binary_for_url, set_executable};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use anyhow::{bail, Context, Result};
+use netsim_utils::{
+    assets::{parse_binary_overrides, resolve_binary_source_path, BinaryOverride, PathResolveMode},
+    binary_cache::{cached_binary_for_url, set_executable},
+};
 
 /// Resolve `--binary` override arguments, copy the resulting binaries into
 /// `<work_dir>/binaries/`, and return rewritten `"name:path:/work/binaries/..."` overrides

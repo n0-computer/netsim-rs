@@ -21,9 +21,22 @@
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> anyhow::Result<()> {
 //! let lab = Lab::new();
-//! let isp  = lab.add_router("isp1").region("eu").nat(NatMode::Cgnat).build().await?;
-//! let home = lab.add_router("home1").upstream(isp.id()).nat(NatMode::DestinationIndependent).build().await?;
-//! lab.add_device("dev1").iface("eth0", home.id(), None).build().await?;
+//! let isp = lab
+//!     .add_router("isp1")
+//!     .region("eu")
+//!     .nat(NatMode::Cgnat)
+//!     .build()
+//!     .await?;
+//! let home = lab
+//!     .add_router("home1")
+//!     .upstream(isp.id())
+//!     .nat(NatMode::DestinationIndependent)
+//!     .build()
+//!     .await?;
+//! lab.add_device("dev1")
+//!     .iface("eth0", home.id(), None)
+//!     .build()
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -48,12 +61,15 @@ mod userns;
 /// Shared string sanitizers.
 pub mod util;
 
-pub use crate::core::{spawn_command_in_namespace, NodeId};
-pub use crate::netns::cleanup_registry_prefix;
-pub use crate::userns::{init_userns, init_userns_for_ctor};
 pub use lab::{
     Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Lab, NatMode, NatV6Mode, ObservedAddr,
     Router, RouterBuilder,
+};
+
+pub use crate::{
+    core::{spawn_command_in_namespace, NodeId},
+    netns::cleanup_registry_prefix,
+    userns::{init_userns, init_userns_for_ctor},
 };
 
 /// Verifies the process has enough privileges to manage namespaces, routes, and raw sockets.

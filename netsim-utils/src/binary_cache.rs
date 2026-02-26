@@ -1,10 +1,13 @@
 //! Shared binary caching helpers for URL assets.
 
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
+
 use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use tar::Archive;
 
 /// Resolve (and cache) a URL-backed binary in `cache_dir`.

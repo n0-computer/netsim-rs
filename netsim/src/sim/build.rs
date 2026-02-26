@@ -1,11 +1,16 @@
-use anyhow::{anyhow, bail, Context, Result};
-use netsim_utils::assets::{
-    infer_binary_mode, resolve_binary_source_path, resolve_target_artifact, resolve_target_dir,
-    BinarySpec, PathResolveMode,
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
 };
-use netsim_utils::binary_cache::cached_binary_for_url;
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+use netsim_utils::{
+    assets::{
+        infer_binary_mode, resolve_binary_source_path, resolve_target_artifact, resolve_target_dir,
+        BinarySpec, PathResolveMode,
+    },
+    binary_cache::cached_binary_for_url,
+};
 
 /// Resolve a binary spec to a local path, building or downloading as needed.
 pub async fn build_or_fetch_binary(
@@ -446,11 +451,12 @@ fn extract_first_binary(archive: &Path, extract_dir: &Path) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use flate2::write::GzEncoder;
-    use flate2::Compression;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use flate2::{write::GzEncoder, Compression};
     use tar::{Builder, Header};
+
+    use super::*;
 
     fn temp_dir(prefix: &str) -> PathBuf {
         let ts = SystemTime::now()

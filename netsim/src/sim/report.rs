@@ -1,8 +1,11 @@
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+};
+
 use anyhow::{Context, Result};
 use comfy_table::{presets::UTF8_FULL, Table};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
 
 /// A step result record collected from `[step.results]` capture mappings.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -354,8 +357,9 @@ fn load_runs(work_root: &Path, run_names: &[String]) -> Result<Vec<RunResults>> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
 
     fn temp_dir(prefix: &str) -> std::path::PathBuf {
         let ts = SystemTime::now()

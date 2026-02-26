@@ -1,6 +1,7 @@
+use std::process::Command;
+
 use anyhow::{bail, Result};
 use ipnet::IpNet;
-use std::process::Command;
 
 use crate::core::run_command_in_namespace;
 

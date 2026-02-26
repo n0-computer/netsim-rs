@@ -2,18 +2,16 @@
 
 mod sim;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command as ProcessCommand;
-use std::time::Duration;
+use std::{
+    collections::HashMap, path::PathBuf, process::Command as ProcessCommand, time::Duration,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
 use netsim_core::check_caps;
 use netsim_utils::ui::{start_ui_server, DEFAULT_UI_BIND};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Parser)]
 #[command(name = "netsim", about = "Run a netsim simulation")]
@@ -554,7 +552,9 @@ fn cleanup_command(prefixes: Vec<String>) -> Result<()> {
 
 fn perform_cleanup(prefixes: &[String]) -> Result<()> {
     if prefixes.is_empty() {
-        tracing::info!("netsim cleanup: no prefixes specified and fd-based namespaces need no cleanup");
+        tracing::info!(
+            "netsim cleanup: no prefixes specified and fd-based namespaces need no cleanup"
+        );
         return Ok(());
     }
     tracing::debug!(
@@ -786,8 +786,9 @@ fn run_in_command(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn env_key_suffix_normalizes_names() {

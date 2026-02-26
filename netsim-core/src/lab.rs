@@ -1,8 +1,5 @@
 //! High-level lab API: [`Lab`], [`DeviceBuilder`], [`NatMode`], [`Impair`], [`ObservedAddr`].
 
-use anyhow::{anyhow, bail, Context, Result};
-use ipnet::{Ipv4Net, Ipv6Net};
-use serde::Deserialize;
 use std::{
     collections::HashMap,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -16,13 +13,16 @@ use std::{
     time::Duration,
 };
 
+use anyhow::{anyhow, bail, Context, Result};
+use ipnet::{Ipv4Net, Ipv6Net};
+use serde::Deserialize;
+use tracing::{debug, debug_span, Instrument as _};
+
 use crate::core::{
     apply_impair_in, apply_nat, apply_nat_v6, cleanup_netns, run_closure_in_namespace, run_nft_in,
     setup_device_async, setup_root_ns_async, setup_router_async, spawn_command_in_namespace,
     CoreConfig, DownstreamPool, IfaceBuild, NetworkCore, NodeId, RouterSetupData, TaskHandle,
 };
-
-use tracing::{debug, debug_span, Instrument as _};
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -2088,21 +2088,25 @@ fn normalize_env_name(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read, Write},
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        thread,
+        time::Duration,
+    };
+
     use anyhow::{anyhow, bail, Context, Result};
     use n0_tracing_test::traced_test;
-    use std::io::{Read, Write};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::thread;
-    use std::time::Duration;
 
     use super::*;
-    use crate::check_caps;
-    use crate::config;
-    use crate::core::{
-        run_closure_in_namespace, run_command_in_namespace, spawn_closure_in_namespace_thread,
+    use crate::{
+        check_caps, config,
+        core::{
+            run_closure_in_namespace, run_command_in_namespace, spawn_closure_in_namespace_thread,
+        },
+        netns::spawn_task_in_netns,
+        test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns},
     };
-    use crate::netns::spawn_task_in_netns;
-    use crate::test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns};
 
     #[ctor::ctor]
     fn init() {
@@ -2264,9 +2268,10 @@ mod tests {
         server_addr: SocketAddr,
         bytes: usize,
     ) -> Result<(Duration, u32)> {
-        use std::io::Read as _;
-        use std::io::Write as _;
-        use std::time::Instant;
+        use std::{
+            io::{Read as _, Write as _},
+            time::Instant,
+        };
         let ns = client_ns.to_string();
         run_closure_in_namespace(&ns, move || {
             let mut stream =

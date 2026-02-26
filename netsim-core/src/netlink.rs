@@ -1,9 +1,12 @@
+use std::{
+    fs::File,
+    net::{Ipv4Addr, Ipv6Addr},
+    os::fd::AsRawFd,
+};
+
 use anyhow::{anyhow, Result};
 use futures::stream::TryStreamExt;
 use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
-use std::fs::File;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::os::fd::AsRawFd;
 use tracing::trace;
 
 /// Wraps an rtnetlink `Handle` for namespace-scoped network operations.
@@ -143,11 +146,7 @@ impl Netlink {
         Ok(())
     }
 
-    pub(crate) async fn replace_default_route_v4(
-        &self,
-        ifname: &str,
-        via: Ipv4Addr,
-    ) -> Result<()> {
+    pub(crate) async fn replace_default_route_v4(&self, ifname: &str, via: Ipv4Addr) -> Result<()> {
         trace!(ifname = %ifname, via = %via, "replace default route v4");
         let ifindex = self.link_index(ifname).await?;
 
@@ -223,11 +222,7 @@ impl Netlink {
     }
 
     #[allow(dead_code)]
-    pub(crate) async fn replace_default_route_v6(
-        &self,
-        ifname: &str,
-        via: Ipv6Addr,
-    ) -> Result<()> {
+    pub(crate) async fn replace_default_route_v6(&self, ifname: &str, via: Ipv6Addr) -> Result<()> {
         trace!(ifname = %ifname, via = %via, "replace default route v6");
         let ifindex = self.link_index(ifname).await?;
 

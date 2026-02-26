@@ -1,8 +1,11 @@
 //! UI build and server helpers.
 
+use std::{
+    path::Path,
+    process::{Command, Stdio},
+};
+
 use anyhow::{Context, Result};
-use std::path::Path;
-use std::process::{Command, Stdio};
 
 pub use crate::serve::{start_ui_server, DEFAULT_UI_BIND};
 

@@ -1,8 +1,10 @@
 //! TOML configuration structures used by [`crate::Lab::load`].
 
-use crate::{IpSupport, NatMode, NatV6Mode};
-use serde::Deserialize;
 use std::collections::HashMap;
+
+use serde::Deserialize;
+
+use crate::{IpSupport, NatMode, NatV6Mode};
 
 /// Parsed lab configuration from TOML.
 #[derive(Deserialize, Clone, Default)]

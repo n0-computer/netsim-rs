@@ -1,17 +1,22 @@
 //! Network namespace lifecycle helpers using an in-memory FD registry.
 
+use std::{
+    collections::HashMap,
+    fs::File,
+    future::Future,
+    os::unix::fs::MetadataExt,
+    pin::Pin,
+    process::{Child, Command, ExitStatus},
+    sync::{mpsc, Arc, Mutex, OnceLock},
+    task::{Context as TaskContext, Poll},
+    thread,
+};
+
 use anyhow::{anyhow, Context, Result};
-use nix::sched::{setns, unshare, CloneFlags};
-use nix::unistd::gettid;
-use std::collections::HashMap;
-use std::fs::File;
-use std::future::Future;
-use std::os::unix::fs::MetadataExt;
-use std::pin::Pin;
-use std::process::{Child, Command, ExitStatus};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::task::{Context as TaskContext, Poll};
-use std::thread;
+use nix::{
+    sched::{setns, unshare, CloneFlags},
+    unistd::gettid,
+};
 use tokio::sync::oneshot;
 use tracing::{debug, debug_span, error, Instrument as _};
 

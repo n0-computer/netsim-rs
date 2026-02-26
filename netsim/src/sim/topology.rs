@@ -1,6 +1,6 @@
-use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+use anyhow::{bail, Context, Result};
 use netsim_core::config::LabConfig;
 
 use crate::sim::SimFile;

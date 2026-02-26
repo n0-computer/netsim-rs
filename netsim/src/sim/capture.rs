@@ -1,7 +1,10 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
+
 use anyhow::{bail, Result};
-use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
 
 /// A single named capture slot.
 #[derive(Default, Clone)]

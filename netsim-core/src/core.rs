@@ -1,18 +1,18 @@
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::Write as IoWrite,
+    net::{Ipv4Addr, Ipv6Addr},
+    process::ExitStatus,
+    sync::{mpsc, Arc},
+    thread,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Write as IoWrite;
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::process::ExitStatus;
-use std::sync::mpsc;
-use std::sync::Arc;
-use std::thread;
 use tracing::{debug, instrument, Instrument as _};
 
-use crate::netlink::Netlink;
-use crate::netns;
-use crate::{qdisc, Impair, IpSupport, NatMode, NatV6Mode};
+use crate::{netlink::Netlink, netns, qdisc, Impair, IpSupport, NatMode, NatV6Mode};
 
 /// Defines static addressing and naming for one lab instance.
 #[derive(Clone, Debug)]
@@ -161,7 +161,11 @@ pub struct RouterData {
 impl RouterData {
     /// Returns the WAN interface name: `"ix"` for IX-connected routers, `"wan"` for sub-routers.
     pub fn wan_ifname(&self, ix_sw: NodeId) -> &'static str {
-        if self.uplink == Some(ix_sw) { "ix" } else { "wan" }
+        if self.uplink == Some(ix_sw) {
+            "ix"
+        } else {
+            "wan"
+        }
     }
 }
 
@@ -775,9 +779,7 @@ where
 {
     let span = tracing::Span::current();
     netns
-        .spawn_netlink_task_in(ns, move |nl| {
-            async move { f(&nl).await }.instrument(span)
-        })
+        .spawn_netlink_task_in(ns, move |nl| async move { f(&nl).await }.instrument(span))
         .await
         .map_err(|_| anyhow!("netns task cancelled"))?
 }
@@ -806,8 +808,10 @@ pub(crate) async fn setup_root_ns_async(
         h.ensure_link_deleted(&cfg.ix_br).await.ok();
         h.add_bridge(&cfg.ix_br).await?;
         h.set_link_up(&cfg.ix_br).await?;
-        h.add_addr4(&cfg.ix_br, cfg.ix_gw, cfg.ix_cidr.prefix_len()).await?;
-        h.add_addr6(&cfg.ix_br, cfg.ix_gw_v6, cfg.ix_cidr_v6.prefix_len()).await?;
+        h.add_addr4(&cfg.ix_br, cfg.ix_gw, cfg.ix_cidr.prefix_len())
+            .await?;
+        h.add_addr6(&cfg.ix_br, cfg.ix_gw_v6, cfg.ix_cidr_v6.prefix_len())
+            .await?;
         Ok(())
     })
     .await?;
@@ -1004,15 +1008,15 @@ pub(crate) async fn setup_router_async(
                 h.set_link_up("lo").await?;
                 h.rename_link(&root_b, &wan_if).await?;
                 h.set_link_up(&wan_if).await?;
-                if let (Some(ip4), Some(prefix4)) =
-                    (d.router.upstream_ip, d.upstream_cidr_prefix)
-                {
+                if let (Some(ip4), Some(prefix4)) = (d.router.upstream_ip, d.upstream_cidr_prefix) {
                     h.add_addr4(&wan_if, ip4, prefix4).await?;
                     h.add_default_route_v4(gw_ip).await?;
                 }
-                if let (Some(ip6), Some(prefix6), Some(g6)) =
-                    (d.router.upstream_ip_v6, d.upstream_cidr_prefix_v6, d.upstream_gw_v6)
-                {
+                if let (Some(ip6), Some(prefix6), Some(g6)) = (
+                    d.router.upstream_ip_v6,
+                    d.upstream_cidr_prefix_v6,
+                    d.upstream_gw_v6,
+                ) {
                     h.add_addr6(&wan_if, ip6, prefix6).await?;
                     h.add_default_route_v6(g6).await?;
                 }
@@ -1246,7 +1250,10 @@ pub(crate) async fn create_named_netns(name: &str) -> Result<()> {
 }
 
 /// Spawns a worker-thread task that runs a closure inside `ns`.
-pub(crate) fn spawn_closure_in_namespace_thread<F, R>(ns: String, f: F) -> thread::JoinHandle<Result<R>>
+pub(crate) fn spawn_closure_in_namespace_thread<F, R>(
+    ns: String,
+    f: F,
+) -> thread::JoinHandle<Result<R>>
 where
     F: FnOnce() -> Result<R> + Send + 'static,
     R: Send + 'static,

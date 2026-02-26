@@ -1,22 +1,23 @@
+use std::{
+    future::Future,
+    io::{Read, Write},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    thread,
+    time::Duration,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use n0_tracing_test::traced_test;
-use std::future::Future;
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::thread;
-use std::time::Duration;
-use tokio::net::UdpSocket;
-use tokio::sync::oneshot;
+use tokio::{net::UdpSocket, sync::oneshot};
 use tracing::{error, error_span, info, Instrument};
 
 use super::*;
-use crate::check_caps;
-use crate::config;
-use crate::core::{
-    run_closure_in_namespace, run_command_in_namespace, spawn_closure_in_namespace_thread,
+use crate::{
+    check_caps, config,
+    core::{run_closure_in_namespace, run_command_in_namespace, spawn_closure_in_namespace_thread},
+    netns::spawn_task_in_netns,
+    test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns},
 };
-use crate::netns::spawn_task_in_netns;
-use crate::test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns};
 
 #[ctor::ctor]
 fn init() {
@@ -174,9 +175,10 @@ fn tcp_measure_throughput(
     server_addr: SocketAddr,
     bytes: usize,
 ) -> Result<(Duration, u32)> {
-    use std::io::Read as _;
-    use std::io::Write as _;
-    use std::time::Instant;
+    use std::{
+        io::{Read as _, Write as _},
+        time::Instant,
+    };
     let ns = client_ns.to_string();
     run_closure_in_namespace(&ns, move || {
         let mut stream = std::net::TcpStream::connect_timeout(&server_addr, Duration::from_secs(5))

@@ -1,14 +1,19 @@
 //! Embedded UI server for netsim run artifacts.
 
+use std::{
+    fs,
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    net::{SocketAddr, TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
 use anyhow::{Context, Result};
-use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
 
 const UI_INDEX: &str = include_str!("../../ui/dist/index.html");
 /// Default bind address for the embedded UI server.

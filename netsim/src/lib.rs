@@ -11,8 +11,9 @@ pub use netsim_utils::assets::BinaryOverride;
 mod init;
 pub(crate) mod sim;
 
-use anyhow::Result;
 use std::path::PathBuf;
+
+use anyhow::Result;
 
 /// Run one or more simulations from sim-file paths.
 ///

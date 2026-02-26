@@ -1,9 +1,12 @@
 //! Shared asset and binary-path helpers used by CLI frontends.
 
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 /// Parsed override mode from `--binary <name>:<mode>:<value>`.
 #[derive(Debug, Clone, PartialEq, Eq)]

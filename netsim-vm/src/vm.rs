@@ -1,15 +1,21 @@
-use crate::util::stage_binary_overrides;
+use std::{
+    collections::HashMap,
+    fs::File,
+    net::TcpListener,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
-use netsim_utils::assets::{infer_binary_mode, parse_binary_overrides, BinarySpec};
-use netsim_utils::binary_cache::set_executable;
+use netsim_utils::{
+    assets::{infer_binary_mode, parse_binary_overrides, BinarySpec},
+    binary_cache::set_executable,
+};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::fs::File;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::Duration;
+
+use crate::util::stage_binary_overrides;
 
 const VM_STATE_DIR: &str = ".qemu-vm";
 const DEFAULT_VM_NAME: &str = "netsim-vm";

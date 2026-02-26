@@ -1,7 +1,7 @@
+use std::{path::Path, time::SystemTime};
+
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::path::Path;
-use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct RunEnvironment {

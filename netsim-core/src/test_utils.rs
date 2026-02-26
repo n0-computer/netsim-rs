@@ -1,17 +1,20 @@
 //! Probe and reflector helpers for integration tests.
 
-pub use crate::core::TaskHandle;
+use std::{
+    io::ErrorKind,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{anyhow, Context, Result};
-use std::io::ErrorKind;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
-use std::thread;
-use std::time::{Duration, Instant};
 use tracing::debug;
 
-use crate::core::run_closure_in_namespace;
-use crate::core::spawn_closure_in_namespace_thread;
-use crate::ObservedAddr;
+pub use crate::core::TaskHandle;
+use crate::{
+    core::{run_closure_in_namespace, spawn_closure_in_namespace_thread},
+    ObservedAddr,
+};
 
 /// Spawns a UDP reflector in the named netns. Returns the task handle.
 pub fn spawn_reflector_in(

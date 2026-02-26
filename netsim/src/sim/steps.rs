@@ -1,21 +1,22 @@
-use anyhow::{anyhow, bail, Context, Result};
-use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    fs::OpenOptions,
+    io::{BufRead, BufReader, Read, Write},
+    net::IpAddr,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::mpsc,
+    thread,
+    time::Duration,
+};
 
-use crate::sim::capture::CaptureStore;
-use crate::sim::env::SimEnv;
-use crate::sim::report::StepResultRecord;
-use crate::sim::{CaptureSpec, Parser, Step, StepResults};
+use anyhow::{anyhow, bail, Context, Result};
 use netsim_core::Impair;
 
-use crate::sim::runner::SimState;
+use crate::sim::{
+    capture::CaptureStore, env::SimEnv, report::StepResultRecord, runner::SimState, CaptureSpec,
+    Parser, Step, StepResults,
+};
 
 pub(crate) fn step_action(step: &Step) -> &'static str {
     match step {

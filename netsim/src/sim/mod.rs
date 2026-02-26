@@ -7,14 +7,12 @@ pub mod runner;
 pub mod steps;
 pub mod topology;
 
-pub use runner::prepare_sims;
-pub use runner::run_sims;
-
-use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 
 // Re-export BinarySpec from the library so callers need only import one place.
 pub use netsim_utils::assets::BinarySpec;
+pub use runner::{prepare_sims, run_sims};
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ── Sim TOML types ────────────────────────────────────────────────────────────
 
