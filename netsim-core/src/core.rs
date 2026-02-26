@@ -2,11 +2,12 @@ use std::{
     collections::HashMap,
     io::Write as IoWrite,
     net::{Ipv4Addr, Ipv6Addr},
-    sync::{mpsc, Arc},
+    sync::Arc,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, Instrument as _};
 
 use crate::{netlink::Netlink, netns, qdisc, Impair, IpSupport, NatMode, NatV6Mode};
@@ -209,6 +210,10 @@ pub(crate) struct IfaceBuild {
 pub(crate) struct NetworkCore {
     pub(crate) cfg: CoreConfig,
     pub(crate) netns: Arc<netns::NetnsManager>,
+    /// (from_region, to_region, latency_ms) pairs; applied as tc netem during build.
+    pub(crate) region_latencies: Vec<(String, String, u32)>,
+    /// Cancellation token: cancelled on Drop to stop all spawned async tasks.
+    pub(crate) cancel: CancellationToken,
     next_id: u64,
     next_private_subnet: u16,
     next_public_subnet: u16,
@@ -229,6 +234,7 @@ pub(crate) struct NetworkCore {
 
 impl Drop for NetworkCore {
     fn drop(&mut self) {
+        self.cancel.cancel();
         let netns_list: Vec<String> = std::mem::take(&mut self.own_netns);
         debug!(
             "netsim cleanup: NetworkCore drop: {} namespaces",
@@ -247,6 +253,8 @@ impl NetworkCore {
         let mut core = Self {
             netns: Arc::new(netns::NetnsManager::new_with_span(cfg.span.clone())),
             cfg,
+            region_latencies: Vec::new(),
+            cancel: CancellationToken::new(),
             next_id: 1,
             next_private_subnet: 1,
             next_public_subnet: 1,
@@ -277,6 +285,21 @@ impl NetworkCore {
         let name = format!("br-{}-{}", self.cfg.bridge_tag, self.bridge_counter);
         self.bridge_counter = self.bridge_counter.saturating_add(1);
         name
+    }
+
+    /// Returns a cloned tokio runtime handle for the given namespace.
+    pub fn rt_handle_for(&self, ns: &str) -> Result<tokio::runtime::Handle> {
+        self.netns.rt_handle_for(ns)
+    }
+
+    /// Spawns an async UDP reflector in the given namespace.
+    pub fn spawn_reflector_in(&self, ns: &str, bind: std::net::SocketAddr) -> Result<()> {
+        let cancel = self.cancel.clone();
+        let rt = self.rt_handle_for(ns)?;
+        rt.spawn(async move {
+            let _ = crate::test_utils::run_reflector(bind, cancel).await;
+        });
+        Ok(())
     }
 
     /// Returns the IX gateway address.
@@ -1457,19 +1480,22 @@ pub(crate) fn apply_impair_in(
     }
 }
 
-/// Controls a background task spawned by the lab.
-#[derive(Clone)]
-pub struct TaskHandle {
-    stop: mpsc::Sender<()>,
+/// Applies or removes impairment on `ifname` inside `ns`.
+pub(crate) fn apply_or_remove_impair(
+    netns: &netns::NetnsManager,
+    ns: &str,
+    ifname: &str,
+    impair: Option<Impair>,
+) {
+    match impair {
+        Some(imp) => apply_impair_in(netns, ns, ifname, imp),
+        None => {
+            let ifname = ifname.to_string();
+            let _ = netns.run_closure_in(ns, move || {
+                crate::qdisc::remove_qdisc(&ifname);
+                Ok(())
+            });
+        }
+    }
 }
 
-impl TaskHandle {
-    pub(crate) fn new(stop: mpsc::Sender<()>) -> Self {
-        Self { stop }
-    }
-
-    /// Signals the task to stop.
-    pub fn stop(&self) {
-        let _ = self.stop.send(());
-    }
-}

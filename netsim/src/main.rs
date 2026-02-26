@@ -657,7 +657,7 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     let prefix = lab.prefix().to_string();
     let session = InspectSession {
         prefix: prefix.clone(),
-        root_ns: lab.root_namespace_name().to_string(),
+        root_ns: lab.ix().ns(),
         node_namespaces,
         node_ips_v4,
         node_keeper_pids,

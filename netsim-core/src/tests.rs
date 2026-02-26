@@ -324,7 +324,8 @@ async fn build_nat_case(
 
     // UDP reflector (managed by lab).
     dc.spawn_reflector(r_dc)?;
-    lab.spawn_reflector_on_ix(r_ix)?;
+    let ix = lab.ix();
+    ix.spawn_reflector(r_ix)?;
 
     // TCP reflector on the DC namespace's async worker.
     dc.spawn(move |_| async move { spawn_tcp_reflector(r_dc).await })
@@ -426,7 +427,8 @@ async fn build_single_nat_case(
     let r_dc = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
     let r_ix = SocketAddr::new(IpAddr::V4(lab.ix_gw()), port_base + 1);
     dc.spawn_reflector(r_dc)?;
-    lab.spawn_reflector_on_ix(r_ix)?;
+    let ix = lab.ix();
+    ix.spawn_reflector(r_ix)?;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let dev_ns = dev.ns();
@@ -549,7 +551,8 @@ async fn nat_dest_independent_keeps_port() -> Result<()> {
 
     // Reflector on IX bridge (lab-root ns).
     let r2 = SocketAddr::new(IpAddr::V4(lab.ix_gw()), 3479);
-    lab.spawn_reflector_on_ix(r2)?;
+    let ix = lab.ix();
+    ix.spawn_reflector(r2)?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -589,7 +592,8 @@ async fn nat_dest_dependent_changes_port() -> Result<()> {
     dc.spawn_reflector(r1)?;
 
     let r2 = SocketAddr::new(IpAddr::V4(lab.ix_gw()), 4479);
-    lab.spawn_reflector_on_ix(r2)?;
+    let ix = lab.ix();
+    ix.spawn_reflector(r2)?;
 
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -2161,8 +2165,7 @@ async fn rate_limit_tcp_download() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 2000,
             loss: 0.0,
@@ -2232,8 +2235,7 @@ async fn rate_limit_udp_download() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 2000,
             loss: 0.0,
@@ -2276,8 +2278,7 @@ async fn rate_limit_asymmetric() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 4000,
             loss: 0.0,
@@ -2373,8 +2374,7 @@ async fn rate_limit_two_hops_stack() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 2000,
             loss: 0.0,
@@ -2532,8 +2532,7 @@ async fn loss_udp_both_directions() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 0,
             loss: 30.0,
@@ -2576,8 +2575,7 @@ async fn latency_download_direction() -> Result<()> {
 
     let base = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 0,
             loss: 0.0,
@@ -2612,8 +2610,7 @@ async fn latency_upload_and_download() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_router_downlink(
-        dc.id(),
+    dc.impair_downlink(
         Some(Impair::Manual {
             rate: 0,
             loss: 0.0,

@@ -4,6 +4,7 @@
 
 ## Open
 
+- [no-globals-better-spawn.md](no-globals-better-spawn.md) — priority 5 — remove global registries, RT handle cloning, Ix handle
 - [dns.md](dns.md) — priority 2
 - [testing.md](testing.md) — priority 2
 

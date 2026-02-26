@@ -10,34 +10,27 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-pub use crate::core::TaskHandle;
 use crate::ObservedAddr;
 
-/// Runs a UDP reflector on the current thread (blocking). Loops until `stop_rx`
-/// receives a message.
+/// Runs an async UDP reflector. Loops until `cancel` is triggered.
 ///
-/// Typically called via `device.spawn_thread(|| run_reflector(bind))` or
-/// wrapped in a `TaskHandle` for controlled shutdown.
-pub fn run_reflector(bind: SocketAddr, stop_rx: std::sync::mpsc::Receiver<()>) -> Result<()> {
-    let sock = UdpSocket::bind(bind).context("reflector bind")?;
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(200)));
+/// Spawned via `device.spawn_reflector(bind)` which uses the namespace's
+/// tokio runtime.
+pub async fn run_reflector(bind: SocketAddr, cancel: CancellationToken) -> Result<()> {
+    let sock = tokio::net::UdpSocket::bind(bind).await?;
     let mut buf = [0u8; 512];
     loop {
-        if stop_rx.try_recv().is_ok() {
-            break;
-        }
-        match sock.recv_from(&mut buf) {
-            Ok((_, peer)) => {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            result = sock.recv_from(&mut buf) => {
+                let (_, peer) = result?;
                 let msg = format!("OBSERVED {}", peer);
-                let _ = sock.send_to(msg.as_bytes(), peer);
+                let _ = sock.send_to(msg.as_bytes(), &peer).await;
             }
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                continue;
-            }
-            Err(_) => break,
         }
     }
     Ok(())

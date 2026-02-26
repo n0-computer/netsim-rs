@@ -6,8 +6,7 @@ Higher-level suggestions that were not applied directly.
 
 ## Open
 
-(none)
-
+* In lab.rs use self.ns() and similar helpers instead of manual lock blocks to get ns or such
 
 ---
 
