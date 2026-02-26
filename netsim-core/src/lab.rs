@@ -17,10 +17,9 @@ use std::{
 };
 
 use crate::core::{
-    apply_impair_in, apply_nat, apply_nat_v6, cleanup_netns, run_closure_in_namespace,
-    run_nft_in, setup_device_async, setup_root_ns_async, setup_router_async,
-    spawn_command_in_namespace, CoreConfig, DownstreamPool, IfaceBuild, NetworkCore, NodeId,
-    RouterSetupData, TaskHandle,
+    apply_impair_in, apply_nat, apply_nat_v6, cleanup_netns, run_closure_in_namespace, run_nft_in,
+    setup_device_async, setup_root_ns_async, setup_router_async, spawn_command_in_namespace,
+    CoreConfig, DownstreamPool, IfaceBuild, NetworkCore, NodeId, RouterSetupData, TaskHandle,
 };
 
 use tracing::{debug, debug_span, Instrument as _};
@@ -945,9 +944,12 @@ impl RouterBuilder {
                     } else {
                         None
                     };
-                    inner
-                        .core
-                        .connect_router_uplink(id, parent_downlink, uplink_ip_v4, uplink_ip_v6)?;
+                    inner.core.connect_router_uplink(
+                        id,
+                        parent_downlink,
+                        uplink_ip_v4,
+                        uplink_ip_v6,
+                    )?;
                 }
             }
 
@@ -1030,12 +1032,13 @@ impl RouterBuilder {
                 && router.cfg.nat_v6 == NatV6Mode::None
             {
                 let uplink_sw = router.uplink.unwrap();
-                let parent_id = inner.core.switch(uplink_sw)
-                    .and_then(|sw| sw.owner_router);
+                let parent_id = inner.core.switch(uplink_sw).and_then(|sw| sw.owner_router);
                 // Route in the parent router's ns: sub-router's LAN via sub-router's WAN IP.
-                let parent_rt = if let (Some(cidr6), Some(via6), Some(ref owner_ns)) =
-                    (router.downstream_cidr_v6, router.upstream_ip_v6, &upstream_owner_ns)
-                {
+                let parent_rt = if let (Some(cidr6), Some(via6), Some(ref owner_ns)) = (
+                    router.downstream_cidr_v6,
+                    router.upstream_ip_v6,
+                    &upstream_owner_ns,
+                ) {
                     Some((owner_ns.clone(), cidr6.addr(), cidr6.prefix_len(), via6))
                 } else {
                     None
@@ -1049,7 +1052,8 @@ impl RouterBuilder {
                                 if let Some(parent_ix_v6) = parent_router.upstream_ip_v6 {
                                     if let Some(cidr6) = router.downstream_cidr_v6 {
                                         // Overwrite return_route_v6 for root ns
-                                        return_route_v6 = Some((cidr6.addr(), cidr6.prefix_len(), parent_ix_v6));
+                                        return_route_v6 =
+                                            Some((cidr6.addr(), cidr6.prefix_len(), parent_ix_v6));
                                     }
                                 }
                             }
@@ -1452,9 +1456,10 @@ impl Device {
         };
         let ifname = ifname.to_string();
         netns
-            .spawn_netlink_task_in(&ns, move |nl| async move {
-                nl.set_link_down(&ifname).await
-            })
+            .spawn_netlink_task_in(
+                &ns,
+                move |nl| async move { nl.set_link_down(&ifname).await },
+            )
             .await
             .map_err(|_| anyhow!("netns task cancelled"))?
     }
@@ -1484,9 +1489,7 @@ impl Device {
         netns
             .spawn_netlink_task_in(&ns, {
                 let ifname_owned = ifname_owned.clone();
-                move |nl| async move {
-                    nl.set_link_up(&ifname_owned).await
-                }
+                move |nl| async move { nl.set_link_up(&ifname_owned).await }
             })
             .await
             .map_err(|_| anyhow!("netns task cancelled"))??;
@@ -2083,18 +2086,6 @@ fn normalize_env_name(s: &str) -> String {
     s.to_uppercase().replace('-', "_")
 }
 
-// ─────────────────────────────────────────────
-// Test ctor bootstrap
-// ─────────────────────────────────────────────
-
-#[cfg(test)]
-mod test_init {
-    #[ctor::ctor]
-    fn init() {
-        let _ = crate::init_userns();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use anyhow::{anyhow, bail, Context, Result};
@@ -2112,6 +2103,11 @@ mod tests {
     };
     use crate::netns::spawn_task_in_netns;
     use crate::test_utils::{udp_roundtrip_in_ns, udp_rtt_in_ns};
+
+    #[ctor::ctor]
+    fn init() {
+        let _ = crate::init_userns();
+    }
 
     fn ping_in_ns(ns: &str, addr: &str) -> Result<()> {
         let mut cmd = std::process::Command::new("ping");
@@ -2420,10 +2416,11 @@ mod tests {
         let dev_ns = dev.ns();
         let dev_ip = dev.ip();
         let expected_ip = match (nat_mode, wiring) {
-            (_, UplinkWiring::ViaCgnatIsp) => {
-                lab.router_by_name("isp").context("missing isp")?
-                    .uplink_ip().context("no uplink ip")?
-            }
+            (_, UplinkWiring::ViaCgnatIsp) => lab
+                .router_by_name("isp")
+                .context("missing isp")?
+                .uplink_ip()
+                .context("no uplink ip")?,
             (NatMode::None, _) => dev_ip,
             _ => nat.uplink_ip().context("no uplink ip")?,
         };
@@ -2513,10 +2510,11 @@ mod tests {
 
         let dev_ns = dev.ns();
         let expected_ip = match (nat_mode, wiring) {
-            (_, UplinkWiring::ViaCgnatIsp) => {
-                lab.router_by_name("isp").context("missing isp")?
-                    .uplink_ip().context("no uplink ip")?
-            }
+            (_, UplinkWiring::ViaCgnatIsp) => lab
+                .router_by_name("isp")
+                .context("missing isp")?
+                .uplink_ip()
+                .context("no uplink ip")?,
             (NatMode::None, _) => dev.ip(),
             _ => nat.uplink_ip().context("no uplink ip")?,
         };
@@ -4744,8 +4742,14 @@ gateway = "dc1"
             .build()
             .await?;
 
-        let r_us = SocketAddr::new(IpAddr::V4(dc_us.uplink_ip().context("no uplink ip")?), 18_600);
-        let r_eu = SocketAddr::new(IpAddr::V4(dc_eu.uplink_ip().context("no uplink ip")?), 18_601);
+        let r_us = SocketAddr::new(
+            IpAddr::V4(dc_us.uplink_ip().context("no uplink ip")?),
+            18_600,
+        );
+        let r_eu = SocketAddr::new(
+            IpAddr::V4(dc_eu.uplink_ip().context("no uplink ip")?),
+            18_601,
+        );
         let dev_ns = dev.ns();
         dc_us.spawn_reflector(r_us)?;
         dc_eu.spawn_reflector(r_eu)?;

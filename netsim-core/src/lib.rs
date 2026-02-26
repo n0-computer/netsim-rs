@@ -42,6 +42,8 @@ mod netns;
 mod qdisc;
 /// Probe and reflector helpers for integration tests.
 pub mod test_utils;
+#[cfg(test)]
+mod tests;
 mod userns;
 /// Shared string sanitizers.
 pub mod util;
