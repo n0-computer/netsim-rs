@@ -71,6 +71,10 @@ pub(crate) struct RouterConfig {
     pub nat_v6: NatV6Mode,
     /// Selects which IP address families this router supports.
     pub ip_support: IpSupport,
+    /// Optional MTU for WAN and LAN interfaces.
+    pub mtu: Option<u32>,
+    /// Whether to block ICMP "fragmentation needed" messages (PMTU blackhole).
+    pub block_icmp_frag_needed: bool,
 }
 
 impl RouterConfig {
@@ -111,6 +115,8 @@ pub(crate) struct DeviceData {
     pub interfaces: Vec<DeviceIfaceData>,
     /// `ifname` of the interface that carries the default route.
     pub default_via: String,
+    /// Optional MTU for all interfaces.
+    pub mtu: Option<u32>,
 }
 
 impl DeviceData {
@@ -554,6 +560,8 @@ impl NetworkCore {
                     downstream_pool,
                     nat_v6,
                     ip_support,
+                    mtu: None,
+                    block_icmp_frag_needed: false,
                 },
                 downlink_bridge,
                 uplink: None,
@@ -587,6 +595,7 @@ impl NetworkCore {
                 ns,
                 interfaces: vec![],
                 default_via: String::new(),
+                mtu: None,
             },
         );
         id
@@ -931,6 +940,23 @@ impl NetworkCore {
     /// Returns all router node ids.
     pub(crate) fn all_router_ids(&self) -> Vec<NodeId> {
         self.routers.keys().copied().collect()
+    }
+
+    /// Removes a device from the internal data structures.
+    pub(crate) fn remove_device(&mut self, id: NodeId) {
+        if let Some(dev) = self.devices.remove(&id) {
+            self.nodes_by_name.remove(&dev.name);
+        }
+    }
+
+    /// Removes a router and its downstream switch from the internal data structures.
+    pub(crate) fn remove_router(&mut self, id: NodeId) {
+        if let Some(router) = self.routers.remove(&id) {
+            self.nodes_by_name.remove(&router.name);
+            if let Some(sw_id) = router.downlink {
+                self.switches.remove(&sw_id);
+            }
+        }
     }
 }
 
@@ -1283,7 +1309,47 @@ pub(crate) async fn setup_router_async(
         .ok();
     }
 
+    // Apply MTU on WAN and LAN interfaces if configured.
+    if let Some(mtu) = router.cfg.mtu {
+        let wan_if = if router.uplink == Some(data.ix_sw) {
+            "ix"
+        } else {
+            "wan"
+        };
+        let br = data.downlink_bridge.as_ref().map(|(br, _)| br.clone());
+        nl_run(netns, &router.ns, move |h: Netlink| async move {
+            h.set_mtu(wan_if, mtu).await?;
+            if let Some(br) = br {
+                h.set_mtu(&br, mtu).await?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+
+    // Block ICMP "fragmentation needed" if configured (PMTU blackhole).
+    if router.cfg.block_icmp_frag_needed {
+        apply_icmp_frag_block(netns, &router.ns)?;
+    }
+
     Ok(())
+}
+
+/// Applies nftables rules to drop ICMP "fragmentation needed" messages,
+/// simulating a PMTU blackhole middlebox.
+fn apply_icmp_frag_block(netns: &netns::NetnsManager, ns: &str) -> Result<()> {
+    run_nft_in(
+        netns,
+        ns,
+        r#"
+table ip filter {
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        icmp type destination-unreachable icmp code frag-needed drop
+    }
+}
+"#,
+    )
 }
 
 /// Sets up a single device's namespace and wires all interfaces. No lock held.
@@ -1305,6 +1371,20 @@ pub(crate) async fn setup_device_async(
     for iface in ifaces {
         wire_iface_async(netns, prefix, root_ns, iface).await?;
     }
+
+    // Apply MTU on all device interfaces if configured.
+    if let Some(mtu) = dev.mtu {
+        let dev_ns = dev.ns.clone();
+        let ifnames: Vec<String> = dev.interfaces.iter().map(|i| i.ifname.clone()).collect();
+        nl_run(netns, &dev_ns, move |h: Netlink| async move {
+            for ifname in &ifnames {
+                h.set_mtu(ifname, mtu).await?;
+            }
+            Ok(())
+        })
+        .await?;
+    }
+
     Ok(())
 }
 

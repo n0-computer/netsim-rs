@@ -426,7 +426,10 @@ impl NetnsManager {
         workers.retain(|k, _| !k.starts_with(prefix));
     }
 
-    fn remove_worker(&self, name: &str) {
+    /// Removes a namespace worker by name. The worker's `Drop` impl cancels
+    /// its token and joins threads. The kernel destroys the namespace when the
+    /// last fd reference is dropped.
+    pub fn remove_worker(&self, name: &str) {
         let mut workers = self.workers.lock().expect("netns worker map poisoned");
         workers.remove(name); // Worker::drop cancels token + joins threads
     }

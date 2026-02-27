@@ -890,6 +890,8 @@ impl Lab {
                 nat_v6: NatV6Mode::None,
                 downstream_cidr: None,
                 downlink_condition: None,
+                mtu: None,
+                block_icmp_frag_needed: false,
                 result: Err(anyhow!("router '{}' already exists", name)),
             };
         }
@@ -904,6 +906,8 @@ impl Lab {
             nat_v6: NatV6Mode::None,
             downstream_cidr: None,
             downlink_condition: None,
+            mtu: None,
+            block_icmp_frag_needed: false,
             result: Ok(()),
         }
     }
@@ -920,6 +924,7 @@ impl Lab {
                 inner: Arc::clone(&self.inner),
                 lab_span,
                 id: NodeId(u64::MAX),
+                mtu: None,
                 result: Err(anyhow!("device '{}' already exists", name)),
             };
         }
@@ -928,8 +933,64 @@ impl Lab {
             inner: Arc::clone(&self.inner),
             lab_span,
             id,
+            mtu: None,
             result: Ok(()),
         }
+    }
+
+    // ── removal ──────────────────────────────────────────────────────────
+
+    /// Removes a device from the lab, destroying its namespace and all interfaces.
+    ///
+    /// The kernel automatically destroys veth pairs when the namespace closes.
+    pub fn remove_device(&self, id: NodeId) -> Result<()> {
+        let (ns, netns) = {
+            let mut inner = self.inner.lock().unwrap();
+            let dev = inner
+                .device(id)
+                .ok_or_else(|| anyhow!("unknown device id {:?}", id))?;
+            let ns = dev.ns.clone();
+            let netns = Arc::clone(&inner.netns);
+            inner.remove_device(id);
+            (ns, netns)
+        };
+        netns.remove_worker(&ns);
+        Ok(())
+    }
+
+    /// Removes a router from the lab, destroying its namespace and all interfaces.
+    ///
+    /// Fails if any devices are still connected to this router's downstream switch.
+    /// Remove or replug those devices first.
+    pub fn remove_router(&self, id: NodeId) -> Result<()> {
+        let (ns, netns) = {
+            let mut inner = self.inner.lock().unwrap();
+            let router = inner
+                .router(id)
+                .ok_or_else(|| anyhow!("unknown router id {:?}", id))?;
+            let ns = router.ns.clone();
+
+            // Check that no devices are connected to this router's downstream switch.
+            if let Some(sw_id) = router.downlink {
+                for dev in inner.all_devices() {
+                    for iface in &dev.interfaces {
+                        if iface.uplink == sw_id {
+                            bail!(
+                                "cannot remove router '{}': device '{}' is still connected",
+                                router.name,
+                                dev.name
+                            );
+                        }
+                    }
+                }
+            }
+
+            let netns = Arc::clone(&inner.netns);
+            inner.remove_router(id);
+            (ns, netns)
+        };
+        netns.remove_worker(&ns);
+        Ok(())
     }
 
     // ── build ────────────────────────────────────────────────────────────
@@ -1179,6 +1240,8 @@ pub struct RouterBuilder {
     nat_v6: NatV6Mode,
     downstream_cidr: Option<Ipv4Net>,
     downlink_condition: Option<Impair>,
+    mtu: Option<u32>,
+    block_icmp_frag_needed: bool,
     result: Result<()>,
 }
 
@@ -1248,6 +1311,28 @@ impl RouterBuilder {
         self
     }
 
+    /// Sets the MTU on this router's WAN and LAN bridge interfaces.
+    ///
+    /// Useful for simulating VPN tunnels (e.g. 1420 for WireGuard) or
+    /// constrained paths.
+    pub fn mtu(mut self, mtu: u32) -> Self {
+        if self.result.is_ok() {
+            self.mtu = Some(mtu);
+        }
+        self
+    }
+
+    /// Blocks ICMP "fragmentation needed" (type 3, code 4) in the forward chain.
+    ///
+    /// Simulates a PMTU blackhole middlebox — devices behind this router
+    /// will not receive path MTU discovery feedback.
+    pub fn block_icmp_frag_needed(mut self) -> Self {
+        if self.result.is_ok() {
+            self.block_icmp_frag_needed = true;
+        }
+        self
+    }
+
     /// Sets which IP address families this router supports. Defaults to [`IpSupport::V4Only`].
     pub fn ip_support(mut self, support: IpSupport) -> Self {
         if self.result.is_ok() {
@@ -1296,6 +1381,11 @@ impl RouterBuilder {
                 self.ip_support,
                 self.nat_v6,
             );
+            // Apply builder-level config to the registered RouterData.
+            if let Some(r) = inner.router_mut(id) {
+                r.cfg.mtu = self.mtu;
+                r.cfg.block_icmp_frag_needed = self.block_icmp_frag_needed;
+            }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();
             let sub_switch =
@@ -1516,10 +1606,19 @@ pub struct DeviceBuilder {
     inner: Arc<Mutex<NetworkCore>>,
     lab_span: tracing::Span,
     id: NodeId,
+    mtu: Option<u32>,
     result: Result<()>,
 }
 
 impl DeviceBuilder {
+    /// Sets the MTU on all interfaces of this device.
+    pub fn mtu(mut self, mtu: u32) -> Self {
+        if self.result.is_ok() {
+            self.mtu = Some(mtu);
+        }
+        self
+    }
+
     /// Attach `ifname` inside the device namespace to `router`'s downstream switch.
     pub fn iface(mut self, ifname: &str, router: NodeId, impair: Option<Impair>) -> Self {
         if self.result.is_ok() {
@@ -1572,7 +1671,11 @@ impl DeviceBuilder {
 
         // Phase 1: Lock → extract snapshot + DNS overlay → unlock.
         let (dev, ifaces, prefix, root_ns, netns, need_root_setup, dns_overlay) = {
-            let inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().unwrap();
+            // Apply builder-level config before snapshot.
+            if let Some(d) = inner.device_mut(self.id) {
+                d.mtu = self.mtu;
+            }
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?
@@ -1743,6 +1846,12 @@ impl Device {
     pub fn ip6(&self) -> Option<Ipv6Addr> {
         let inner = self.lab.lock().unwrap();
         inner.device(self.id).and_then(|d| d.default_iface().ip_v6)
+    }
+
+    /// Returns the configured MTU, if set.
+    pub fn mtu(&self) -> Option<u32> {
+        let inner = self.lab.lock().unwrap();
+        inner.device(self.id).and_then(|d| d.mtu)
     }
 
     /// Returns a snapshot of the named interface, if it exists.
@@ -2140,6 +2249,82 @@ impl Device {
         Ok(())
     }
 
+    /// Simulates DHCP renewal: allocates a new IP from the current router's pool,
+    /// replaces the old address on the interface, and returns the new IP.
+    ///
+    /// The default route remains unchanged (same gateway).
+    pub async fn renew_ip(&self, ifname: &str) -> Result<Ipv4Addr> {
+        use crate::core;
+
+        // Phase 1: Lock → allocate new IP, update records → unlock
+        let (ns, netns, old_ip, new_ip, prefix_len) = {
+            let mut inner = self.lab.lock().unwrap();
+            let dev = inner
+                .device(self.id)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            let iface = dev
+                .iface(ifname)
+                .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
+            let old_ip = iface
+                .ip
+                .ok_or_else(|| anyhow!("interface '{}' has no IPv4 address", ifname))?;
+            let sw_id = iface.uplink;
+            let sw = inner
+                .switch(sw_id)
+                .ok_or_else(|| anyhow!("switch for interface '{}' missing", ifname))?;
+            let prefix_len = sw.cidr.map(|c| c.prefix_len()).unwrap_or(24);
+            let ns = dev.ns.clone();
+            let netns = Arc::clone(&inner.netns);
+
+            let new_ip = inner.alloc_from_switch(sw_id)?;
+            // Update internal record.
+            let dev = inner.device_mut(self.id).unwrap();
+            let iface = dev.iface_mut(ifname).unwrap();
+            iface.ip = Some(new_ip);
+
+            (ns, netns, old_ip, new_ip, prefix_len)
+        };
+
+        // Phase 2: Async netlink — remove old addr, add new addr.
+        let ifname = ifname.to_string();
+        core::nl_run(&netns, &ns, move |h: Netlink| async move {
+            h.del_addr4(&ifname, old_ip, prefix_len).await?;
+            h.add_addr4(&ifname, new_ip, prefix_len).await?;
+            Ok(())
+        })
+        .await?;
+
+        Ok(new_ip)
+    }
+
+    /// Adds a secondary IPv4 address to an interface.
+    ///
+    /// The address is added via netlink without removing existing addresses.
+    /// Linux natively supports multiple addresses per interface.
+    pub async fn add_ip(&self, ifname: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<()> {
+        use crate::core;
+
+        let (ns, netns) = {
+            let inner = self.lab.lock().unwrap();
+            let dev = inner
+                .device(self.id)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            let _ = dev
+                .iface(ifname)
+                .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
+            (dev.ns.clone(), Arc::clone(&inner.netns))
+        };
+
+        let ifname = ifname.to_string();
+        core::nl_run(&netns, &ns, move |h: Netlink| async move {
+            h.add_addr4(&ifname, ip, prefix_len).await?;
+            Ok(())
+        })
+        .await?;
+
+        Ok(())
+    }
+
     /// Deprecated alias for [`Device::replug_iface`].
     #[deprecated(note = "renamed to `replug_iface`")]
     pub async fn switch_uplink(&self, ifname: &str, to_router: NodeId) -> Result<()> {
@@ -2204,6 +2389,12 @@ impl Router {
     pub fn nat_mode(&self) -> Nat {
         let inner = self.lab.lock().unwrap();
         inner.router(self.id).map(|r| r.cfg.nat).unwrap_or_default()
+    }
+
+    /// Returns the configured MTU, if set.
+    pub fn mtu(&self) -> Option<u32> {
+        let inner = self.lab.lock().unwrap();
+        inner.router(self.id).and_then(|r| r.cfg.mtu)
     }
 
     /// Returns the uplink (WAN-side) IP, if connected.

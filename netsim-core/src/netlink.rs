@@ -89,6 +89,15 @@ impl Netlink {
         Ok(())
     }
 
+    /// Sets the MTU on an interface.
+    pub(crate) async fn set_mtu(&self, ifname: &str, mtu: u32) -> Result<()> {
+        trace!(ifname = %ifname, mtu, "set mtu");
+        let idx = self.link_index(ifname).await?;
+        let msg = LinkUnspec::new_with_index(idx).mtu(mtu).build();
+        self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
     pub(crate) async fn rename_link(&self, from: &str, to: &str) -> Result<()> {
         trace!(from = %from, to = %to, "rename link");
         let idx = self.link_index(from).await?;
@@ -113,6 +122,26 @@ impl Netlink {
             .setns_by_fd(ns_fd.as_raw_fd())
             .build();
         self.handle.link().change(msg).execute().await?;
+        Ok(())
+    }
+
+    /// Removes an IPv4 address from an interface.
+    pub(crate) async fn del_addr4(&self, ifname: &str, ip: Ipv4Addr, prefix: u8) -> Result<()> {
+        trace!(ifname = %ifname, ip = %ip, prefix, "del addr4");
+        let idx = self.link_index(ifname).await?;
+        let mut addrs = self
+            .handle
+            .address()
+            .get()
+            .set_link_index_filter(idx)
+            .set_address_filter(ip.into())
+            .execute();
+        while let Some(addr) = addrs.try_next().await? {
+            if addr.header.prefix_len == prefix {
+                self.handle.address().del(addr).execute().await?;
+                return Ok(());
+            }
+        }
         Ok(())
     }
 

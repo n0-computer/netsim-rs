@@ -4181,6 +4181,183 @@ async fn test_ix_ip_v6_alloc_no_duplicates() {
     assert_eq!(count, 65519, "expected 65519 unique v6 IPs");
 }
 
+// ── Phase 3: MTU, node removal, IP management ──────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn mtu_set_and_verify() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").mtu(1400).build().await?;
+    let dev = lab
+        .add_device("dev")
+        .uplink(dc.id())
+        .mtu(1400)
+        .build()
+        .await?;
+
+    // Verify router MTU accessor.
+    assert_eq!(dc.mtu(), Some(1400));
+    assert_eq!(dev.mtu(), Some(1400));
+
+    // Verify MTU on device interface via `ip link show`.
+    let output = dev.run_sync(|| {
+        let out = std::process::Command::new("ip")
+            .args(["link", "show", "eth0"])
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    })?;
+    assert!(
+        output.contains("mtu 1400"),
+        "expected mtu 1400 in: {output}"
+    );
+
+    // Verify MTU on router bridge.
+    let output = dc.run_sync(|| {
+        let out = std::process::Command::new("ip")
+            .args(["link", "show"])
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    })?;
+    // The ix interface and bridge should both have mtu 1400.
+    let mtu_count = output.matches("mtu 1400").count();
+    assert!(
+        mtu_count >= 2,
+        "expected at least 2 interfaces with mtu 1400, got {mtu_count} in: {output}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn icmp_frag_blocked_nft_rule() -> Result<()> {
+    let lab = Lab::new();
+    let rtr = lab
+        .add_router("rtr")
+        .block_icmp_frag_needed()
+        .build()
+        .await?;
+    let _dev = lab.add_device("d").uplink(rtr.id()).build().await?;
+
+    // Verify nftables rule exists.
+    let output = rtr.run_sync(|| {
+        let out = std::process::Command::new("nft")
+            .args(["list", "ruleset"])
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    })?;
+    // nft may render the code as "frag-needed", "fragmentation-needed", or "code 4".
+    assert!(
+        output.contains("frag-needed")
+            || output.contains("fragmentation-needed")
+            || output.contains("code 4"),
+        "expected ICMP frag-needed drop rule in: {output}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn remove_device_smoke() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    // Device works before removal.
+    let ns = dev.ns();
+    assert!(!ns.is_empty());
+
+    // Remove it.
+    lab.remove_device(dev.id())?;
+
+    // After removal, the device is gone from the lab.
+    // Trying to get data from the handle returns defaults.
+    assert_eq!(dev.name(), "");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn remove_router_with_devices_fails() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let _dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    // Should fail because device is still connected.
+    let err = lab.remove_router(dc.id());
+    assert!(err.is_err(), "expected error removing router with device");
+    assert!(
+        format!("{:?}", err).contains("still connected"),
+        "error should mention connected device"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn remove_router_smoke() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    // Remove device first, then router.
+    lab.remove_device(dev.id())?;
+    lab.remove_router(dc.id())?;
+
+    // Router is gone.
+    assert_eq!(dc.name(), "");
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn renew_ip_changes_address() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    let old_ip = dev.ip();
+    let new_ip = dev.renew_ip("eth0").await?;
+
+    assert_ne!(old_ip, new_ip, "renewed IP should differ from old");
+    assert_eq!(dev.ip(), new_ip, "handle should reflect new IP");
+
+    // Verify the new IP is reachable from DC side.
+    let relay = lab.add_device("relay").uplink(dc.id()).build().await?;
+    let target = new_ip.to_string();
+    relay.run_sync(move || ping(&target))?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn add_ip_secondary() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    let primary = dev.ip();
+    // Pick a secondary IP in the same subnet.
+    let cidr = dc.downstream_cidr().unwrap();
+    let octets = cidr.addr().octets();
+    let secondary = Ipv4Addr::new(octets[0], octets[1], octets[2], 200);
+    dev.add_ip("eth0", secondary, cidr.prefix_len()).await?;
+
+    // Both addresses should be reachable.
+    let relay = lab.add_device("relay").uplink(dc.id()).build().await?;
+    let p = primary.to_string();
+    relay.run_sync(move || ping(&p))?;
+    let s = secondary.to_string();
+    relay.run_sync(move || ping(&s))?;
+
+    Ok(())
+}
+
 async fn span_log_timeout(
     id: &str,
     timeout: Duration,
