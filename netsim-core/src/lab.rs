@@ -21,12 +21,13 @@ use tracing::{debug, debug_span, Instrument as _};
 use crate::{
     core::{
         self, apply_nat_config, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair,
-        run_nft_in, setup_device_async,
-        setup_root_ns_async, setup_router_async, CoreConfig, DownstreamPool, IfaceBuild,
-        NetworkCore, NodeId, RouterSetupData,
+        run_nft_in, setup_device_async, setup_root_ns_async, setup_router_async, CoreConfig,
+        DownstreamPool, IfaceBuild, NetworkCore, NodeId, RouterSetupData,
     },
     netlink::Netlink,
 };
+
+pub use crate::qdisc::ImpairLimits;
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -107,6 +108,24 @@ pub enum Nat {
     /// Observed on: older FritzBox firmware, some CGNAT with full-cone policy.
     /// Hole-punching always succeeds.
     FullCone,
+
+    /// Custom NAT configuration built from [`NatConfig`].
+    ///
+    /// Use this when the named presets don't match your scenario.
+    /// The router gets private addressing (like [`Nat::Home`]).
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use netsim_core::*;
+    /// let custom = Nat::Custom(NatConfig::builder()
+    ///     .mapping(NatMapping::EndpointIndependent)
+    ///     .filtering(NatFiltering::EndpointIndependent)
+    ///     .udp_stream_timeout(120)
+    ///     .build());
+    /// ```
+    #[serde(skip)]
+    #[strum(disabled)]
+    Custom(NatConfig),
 }
 
 /// Deprecated alias for [`Nat`].
@@ -295,6 +314,11 @@ impl Nat {
                     tcp_established: 3600,
                 },
             }),
+            // CloudNat and Corporate use the same nftables rules (masquerade random)
+            // and the same mapping/filtering (EDM + APDF). The only difference is
+            // timeout tuning: cloud NAT gateways (AWS, Azure, GCP) use longer UDP
+            // stream timeouts (~350s) than corporate firewalls (~120s).
+            // See: https://tailscale.com/blog/nat-traversal-improvements-pt-2-cloud-environments
             Nat::CloudNat => Some(NatConfig {
                 mapping: NatMapping::EndpointDependent,
                 filtering: NatFiltering::AddressAndPortDependent,
@@ -304,6 +328,7 @@ impl Nat {
                     tcp_established: 3600,
                 },
             }),
+            Nat::Custom(config) => Some(config),
         }
     }
 }
@@ -346,21 +371,41 @@ impl IpSupport {
 }
 
 /// Link-layer impairment profile applied via `tc netem`.
+///
+/// Named presets model common last-mile conditions. Use [`Impair::Manual`]
+/// with [`ImpairLimits`] for full control over all `tc netem` parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Impair {
-    /// ~20 ms one-way delay, no rate limit.
+    /// Wired LAN (1G Ethernet). No impairment.
+    ///
+    /// Use for datacenter-local, same-rack communication.
+    Lan,
+    /// Good WiFi — 5 GHz band, close to AP, low contention.
+    ///
+    /// 5 ms one-way delay, 2 ms jitter, 0.1 % loss.
     Wifi,
-    /// ~50 ms one-way delay, 1 % loss, no rate limit.
-    Mobile,
-    /// Custom impairment settings.
-    Manual {
-        /// Rate limit in kbit/s.
-        rate: u32,
-        /// Packet loss percentage (0.0 - 100.0).
-        loss: f32,
-        /// One-way latency in milliseconds.
-        latency: u32,
-    },
+    /// Congested WiFi — 2.4 GHz, far from AP, interference.
+    ///
+    /// 40 ms one-way delay, 15 ms jitter, 2 % loss, 20 Mbit.
+    WifiBad,
+    /// 4G/LTE good signal.
+    ///
+    /// 25 ms one-way delay, 8 ms jitter, 0.5 % loss.
+    Mobile4G,
+    /// 3G or degraded 4G.
+    ///
+    /// 100 ms one-way delay, 30 ms jitter, 2 % loss, 2 Mbit.
+    Mobile3G,
+    /// LEO satellite (Starlink-class).
+    ///
+    /// 40 ms one-way delay, 7 ms jitter, 1 % loss.
+    Satellite,
+    /// GEO satellite (HughesNet/Viasat).
+    ///
+    /// 300 ms one-way delay, 20 ms jitter, 0.5 % loss, 25 Mbit.
+    SatelliteGeo,
+    /// Fully custom impairment parameters.
+    Manual(ImpairLimits),
 }
 
 impl<'de> Deserialize<'de> for Impair {
@@ -372,24 +417,112 @@ impl<'de> Deserialize<'de> for Impair {
         #[serde(untagged)]
         enum Repr {
             Preset(String),
-            Manual { rate: u32, loss: f32, latency: u32 },
+            Manual {
+                #[serde(default)]
+                rate_kbit: u32,
+                #[serde(default, alias = "rate")]
+                rate_kbit_alias: Option<u32>,
+                #[serde(default)]
+                loss_pct: f32,
+                #[serde(default, alias = "loss")]
+                loss_pct_alias: Option<f32>,
+                #[serde(default)]
+                latency_ms: u32,
+                #[serde(default, alias = "latency")]
+                latency_ms_alias: Option<u32>,
+                #[serde(default)]
+                jitter_ms: u32,
+                #[serde(default)]
+                reorder_pct: f32,
+                #[serde(default)]
+                duplicate_pct: f32,
+                #[serde(default)]
+                corrupt_pct: f32,
+            },
         }
 
         match Repr::deserialize(deserializer)? {
             Repr::Preset(s) => match s.as_str() {
+                "lan" => Ok(Impair::Lan),
                 "wifi" => Ok(Impair::Wifi),
-                "mobile" => Ok(Impair::Mobile),
-                _ => Err(serde::de::Error::custom("unknown impair preset")),
+                "wifi_bad" | "wifi-bad" => Ok(Impair::WifiBad),
+                "mobile_4g" | "mobile-4g" | "mobile" => Ok(Impair::Mobile4G),
+                "mobile_3g" | "mobile-3g" => Ok(Impair::Mobile3G),
+                "satellite" => Ok(Impair::Satellite),
+                "satellite_geo" | "satellite-geo" => Ok(Impair::SatelliteGeo),
+                _ => Err(serde::de::Error::custom(format!(
+                    "unknown impair preset '{s}'"
+                ))),
             },
             Repr::Manual {
-                rate,
-                loss,
-                latency,
-            } => Ok(Impair::Manual {
-                rate,
-                loss,
-                latency,
-            }),
+                rate_kbit,
+                rate_kbit_alias,
+                loss_pct,
+                loss_pct_alias,
+                latency_ms,
+                latency_ms_alias,
+                jitter_ms,
+                reorder_pct,
+                duplicate_pct,
+                corrupt_pct,
+            } => Ok(Impair::Manual(ImpairLimits {
+                rate_kbit: rate_kbit_alias.unwrap_or(rate_kbit),
+                loss_pct: loss_pct_alias.unwrap_or(loss_pct),
+                latency_ms: latency_ms_alias.unwrap_or(latency_ms),
+                jitter_ms,
+                reorder_pct,
+                duplicate_pct,
+                corrupt_pct,
+            })),
+        }
+    }
+}
+
+impl Impair {
+    /// Converts this preset (or manual config) into concrete [`ImpairLimits`].
+    pub fn to_limits(self) -> ImpairLimits {
+        match self {
+            Impair::Lan => ImpairLimits::default(),
+            Impair::Wifi => ImpairLimits {
+                latency_ms: 5,
+                jitter_ms: 2,
+                loss_pct: 0.1,
+                ..Default::default()
+            },
+            Impair::WifiBad => ImpairLimits {
+                latency_ms: 40,
+                jitter_ms: 15,
+                loss_pct: 2.0,
+                rate_kbit: 20_000,
+                ..Default::default()
+            },
+            Impair::Mobile4G => ImpairLimits {
+                latency_ms: 25,
+                jitter_ms: 8,
+                loss_pct: 0.5,
+                ..Default::default()
+            },
+            Impair::Mobile3G => ImpairLimits {
+                latency_ms: 100,
+                jitter_ms: 30,
+                loss_pct: 2.0,
+                rate_kbit: 2_000,
+                ..Default::default()
+            },
+            Impair::Satellite => ImpairLimits {
+                latency_ms: 40,
+                jitter_ms: 7,
+                loss_pct: 1.0,
+                ..Default::default()
+            },
+            Impair::SatelliteGeo => ImpairLimits {
+                latency_ms: 300,
+                jitter_ms: 20,
+                loss_pct: 0.5,
+                rate_kbit: 25_000,
+                ..Default::default()
+            },
+            Impair::Manual(limits) => limits,
         }
     }
 }
@@ -753,10 +886,10 @@ impl Lab {
                 region: None,
                 upstream: None,
                 nat: Nat::None,
-                nat_config_override: None,
                 ip_support: IpSupport::V4Only,
                 nat_v6: NatV6Mode::None,
                 downstream_cidr: None,
+                downlink_condition: None,
                 result: Err(anyhow!("router '{}' already exists", name)),
             };
         }
@@ -767,10 +900,10 @@ impl Lab {
             region: None,
             upstream: None,
             nat: Nat::None,
-            nat_config_override: None,
             ip_support: IpSupport::V4Only,
             nat_v6: NatV6Mode::None,
             downstream_cidr: None,
+            downlink_condition: None,
             result: Ok(()),
         }
     }
@@ -1042,10 +1175,10 @@ pub struct RouterBuilder {
     region: Option<String>,
     upstream: Option<NodeId>,
     nat: Nat,
-    nat_config_override: Option<NatConfig>,
     ip_support: IpSupport,
     nat_v6: NatV6Mode,
     downstream_cidr: Option<Ipv4Net>,
+    downlink_condition: Option<Impair>,
     result: Result<()>,
 }
 
@@ -1072,7 +1205,6 @@ impl RouterBuilder {
     pub fn nat(mut self, mode: Nat) -> Self {
         if self.result.is_ok() {
             self.nat = mode;
-            self.nat_config_override = None;
         }
         self
     }
@@ -1100,10 +1232,18 @@ impl RouterBuilder {
     /// ```
     pub fn nat_config(mut self, config: NatConfig) -> Self {
         if self.result.is_ok() {
-            // Set nat to Home so downstream gets private addressing.
-            // The actual rules come from the config override.
-            self.nat = Nat::Home;
-            self.nat_config_override = Some(config);
+            self.nat = Nat::Custom(config);
+        }
+        self
+    }
+
+    /// Sets an impairment condition on this router's downlink bridge, affecting
+    /// download-direction traffic to all downstream devices.
+    ///
+    /// Equivalent to calling [`Router::set_downlink_condition`] after build.
+    pub fn downlink_condition(mut self, condition: Impair) -> Self {
+        if self.result.is_ok() {
+            self.downlink_condition = Some(condition);
         }
         self
     }
@@ -1156,9 +1296,6 @@ impl RouterBuilder {
                 self.ip_support,
                 self.nat_v6,
             );
-            if let Some(cfg) = self.nat_config_override {
-                inner.set_router_nat_config(id, cfg).unwrap();
-            }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();
             let sub_switch =
@@ -1359,8 +1496,14 @@ impl RouterBuilder {
         };
         let _ = lab_handle.apply_region_latencies();
 
-        let lab = Arc::clone(&self.inner);
-        Ok(Router { id, lab })
+        let router = Router {
+            id,
+            lab: Arc::clone(&self.inner),
+        };
+        if let Some(cond) = self.downlink_condition {
+            router.set_downlink_condition(Some(cond))?;
+        }
+        Ok(router)
     }
 }
 
@@ -2147,10 +2290,11 @@ impl Router {
         run_nft_in(&netns, &ns, "flush table ip nat").ok();
         run_nft_in(&netns, &ns, "flush table ip filter").ok();
         apply_nat_config(&netns, &ns, &config, &wan_if, wan_ip)?;
-        self.lab
-            .lock()
-            .unwrap()
-            .set_router_nat_config(self.id, config)
+        {
+            let mut inner = self.lab.lock().unwrap();
+            inner.set_router_nat_mode(self.id, Nat::Custom(config))?;
+        }
+        Ok(())
     }
 
     /// Replaces IPv6 NAT rules on this router at runtime.

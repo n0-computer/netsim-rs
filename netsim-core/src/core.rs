@@ -63,10 +63,8 @@ pub(crate) enum DownstreamPool {
 /// Configures per-router NAT and downstream behavior.
 #[derive(Clone, Debug)]
 pub(crate) struct RouterConfig {
-    /// Selects router NAT behavior (preset name).
+    /// Selects router NAT behavior. Use [`Nat::Custom`] for a custom config.
     pub nat: Nat,
-    /// Custom NAT config override. When set, used instead of `nat.to_config()`.
-    pub nat_config_override: Option<NatConfig>,
     /// Selects which pool to allocate downstream subnets from.
     pub downstream_pool: DownstreamPool,
     /// Selects router IPv6 NAT behavior.
@@ -76,10 +74,10 @@ pub(crate) struct RouterConfig {
 }
 
 impl RouterConfig {
-    /// Returns the effective NAT config: custom override if set, otherwise
-    /// expands the preset. Returns `None` for `Nat::None` and `Nat::Cgnat`.
+    /// Returns the effective NAT config by expanding the preset (or returning
+    /// the custom config). Returns `None` for `Nat::None` and `Nat::Cgnat`.
     pub fn effective_nat_config(&self) -> Option<NatConfig> {
-        self.nat_config_override.or_else(|| self.nat.to_config())
+        self.nat.to_config()
     }
 }
 
@@ -515,22 +513,10 @@ impl NetworkCore {
         ))
     }
 
-    /// Stores an updated NAT mode on the router record (clears any custom override).
+    /// Stores an updated NAT mode on the router record.
     pub(crate) fn set_router_nat_mode(&mut self, id: NodeId, mode: Nat) -> Result<()> {
         let router = self.routers.get_mut(&id).context("unknown router id")?;
         router.cfg.nat = mode;
-        router.cfg.nat_config_override = None;
-        Ok(())
-    }
-
-    /// Stores a custom NatConfig override on the router record.
-    pub(crate) fn set_router_nat_config(
-        &mut self,
-        id: NodeId,
-        config: NatConfig,
-    ) -> Result<()> {
-        let router = self.routers.get_mut(&id).context("unknown router id")?;
-        router.cfg.nat_config_override = Some(config);
         Ok(())
     }
 
@@ -565,7 +551,6 @@ impl NetworkCore {
                 region,
                 cfg: RouterConfig {
                     nat,
-                    nat_config_override: None,
                     downstream_pool,
                     nat_v6,
                     ip_support,
@@ -1110,13 +1095,7 @@ pub(crate) async fn setup_router_async(
 
         if let Some(upstream_ip4) = router.upstream_ip {
             debug!(nat = ?router.cfg.nat, ip = %upstream_ip4, "router: apply NAT");
-            apply_nat_for_router(
-                netns,
-                &router.ns,
-                &router.cfg,
-                &ns_if,
-                upstream_ip4,
-            )?;
+            apply_nat_for_router(netns, &router.ns, &router.cfg, &ns_if, upstream_ip4)?;
         }
 
         // IPv6 NAT (IX-level router).
@@ -1226,13 +1205,7 @@ pub(crate) async fn setup_router_async(
 
         if let Some(upstream_ip4) = router.upstream_ip {
             debug!(nat = ?router.cfg.nat, ip = %upstream_ip4, "router: apply NAT");
-            apply_nat_for_router(
-                netns,
-                &router.ns,
-                &router.cfg,
-                &wan_if,
-                upstream_ip4,
-            )?;
+            apply_nat_for_router(netns, &router.ns, &router.cfg, &wan_if, upstream_ip4)?;
         }
 
         // IPv6 NAT (sub-router).
@@ -1528,17 +1501,10 @@ fn generate_nat_rules(cfg: &NatConfig, wan_if: &str, wan_ip: Ipv4Addr) -> String
             ip = wan_ip,
         )
     } else {
-        format!(
-            r#"        oif "{wan}" masquerade random"#,
-            wan = wan_if
-        )
+        format!(r#"        oif "{wan}" masquerade random"#, wan = wan_if)
     };
 
-    let postrouting_priority = if use_fullcone_map {
-        "srcnat"
-    } else {
-        "100"
-    };
+    let postrouting_priority = if use_fullcone_map { "srcnat" } else { "100" };
 
     // APDF filter: only forward inbound packets matching existing conntrack flows.
     let filter_table = if cfg.filtering == NatFiltering::AddressAndPortDependent {
@@ -1596,10 +1562,7 @@ fn apply_conntrack_timeouts_from_config(
 ) -> Result<()> {
     let (udp, udp_stream, tcp_est) = (t.udp, t.udp_stream, t.tcp_established);
     netns.run_closure_in(ns, move || {
-        set_sysctl_root(
-            "net/netfilter/nf_conntrack_udp_timeout",
-            &udp.to_string(),
-        )?;
+        set_sysctl_root("net/netfilter/nf_conntrack_udp_timeout", &udp.to_string())?;
         set_sysctl_root(
             "net/netfilter/nf_conntrack_udp_timeout_stream",
             &udp_stream.to_string(),
@@ -1615,7 +1578,7 @@ fn apply_conntrack_timeouts_from_config(
 /// Applies router NAT rules for the configured mode.
 /// Applies router NAT rules for the configured mode.
 ///
-/// If `router_cfg` has a `nat_config_override`, uses that.
+/// Uses the effective NAT config from the router's [`Nat`] variant.
 /// Otherwise expands the [`Nat`] preset via [`Nat::to_config`].
 /// CGNAT and None are handled separately.
 pub(crate) fn apply_nat_for_router(
@@ -1706,28 +1669,7 @@ table ip nat {{
 /// Applies an impairment preset or manual limits on `ifname` inside `ns`.
 pub(crate) fn apply_impair_in(netns: &netns::NetnsManager, ns: &str, ifname: &str, impair: Impair) {
     debug!(ns = %ns, ifname = %ifname, impair = ?impair, "tc: apply impairment");
-    let limits = match impair {
-        Impair::Wifi => qdisc::ImpairLimits {
-            rate_kbit: 0,
-            loss_pct: 0.0,
-            latency_ms: 20,
-        },
-        Impair::Mobile => qdisc::ImpairLimits {
-            rate_kbit: 0,
-            loss_pct: 1.0,
-            latency_ms: 50,
-        },
-        Impair::Manual {
-            rate,
-            loss,
-            latency,
-        } => qdisc::ImpairLimits {
-            rate_kbit: rate,
-            loss_pct: loss,
-            latency_ms: latency,
-        },
-    };
-
+    let limits = impair.to_limits();
     let ifname = ifname.to_string();
     if let Err(e) = netns.run_closure_in(ns, move || qdisc::apply_impair(&ifname, limits)) {
         tracing::warn!(ns = %ns, error = %e, "apply_impair_in failed");

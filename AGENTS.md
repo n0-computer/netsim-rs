@@ -1,293 +1,165 @@
 # AGENTS.md
 
-Project: `netsim-rs`
+Project: **netsim-rs** — Linux network-namespace lab for NAT/routing/impairment experiments.
 
-This file captures key context, conventions, and workflows learned while working on this repo. It is intended to help other agents onboard quickly and avoid repeated mistakes.
+This file is the single entry point for agents. Read it fully before working. Follow all rules below — they are mandatory, not suggestions.
 
-## Overview
-- Rust library + binary for building Linux network-namespace labs (routers, switches, devices).
-- Uses `rtnetlink` for link setup and `tc`/`nft` for impairment + NAT.
-- Core types: `LabCore` in `src/core.rs`, high-level API in `src/lib.rs`.
-- Additional module: `src/qdisc.rs` encapsulates all `tc qdisc` usage.
+## Key Resources (read as needed)
 
-## Key Concepts / Architecture
-- **LabCore**: low-level topology and build logic (routers/switches/devices).
-- **Lab**: convenience wrapper with dc/home/isp shorthands; maps to `LabCore`.
-- **Lab root namespace**: IX and transit links are built in a dedicated lab namespace (`<prefix>-root`), not host root.
-- **Netns backend**: `src/netns.rs` is fd-only and provides create/open/cleanup via in-memory namespace FDs.
-- **Namespaces**: all namespace handling uses `unshare(CLONE_NEWNET)` + FD registry; no `/var/run/netns` named backend.
-- **Netlink**: `Netlink` struct in `src/core.rs` wraps `rtnetlink::Handle` and provides helper methods.
-- **Qdisc**: all `tc`/`qdisc` command invocation is in `src/qdisc.rs`.
-- **Resource cleanup**: `ResourceList` tracks bridges + netns and tries to clean on exit/panic.
+| File | Purpose |
+|------|---------|
+| [`AGENTS.md`](AGENTS.md) | **You are here.** Architecture, conventions, mandatory workflow. |
+| [`plans/PLAN.md`](plans/PLAN.md) | Plan index — in-progress, open, partial, completed plans. |
+| [`plans/real-world-conditions.md`](plans/real-world-conditions.md) | Current active plan: NAT, impairment, regions, firewall, API. |
+| [`REVIEW.md`](REVIEW.md) | Open and completed review items. |
+| [`HOLEPUNCH.md`](HOLEPUNCH.md) | NAT implementation findings — fullcone maps, APDF filtering, nftables lessons. |
+| [`HISTORY.md`](HISTORY.md) | Chronological changelog (moved from old AGENTS.md). |
+| [`docs/`](docs/) | Additional documentation (network patterns guide, etc). |
 
-## Permissions / Running Without Root
-Root and file capabilities are not required.
-- netsim bootstraps into an unprivileged user namespace (`CLONE_NEWUSER`) before Tokio/test threads start.
-- Effective UID becomes 0 inside that user namespace, enabling netns/netlink/nft/tc operations scoped to the namespace.
-- Kernel prerequisite: unprivileged user namespaces must be enabled on the host.
+---
 
-## Qdisc / Impairments
-All tc usage is in `src/qdisc.rs`.
-- `apply_impair(ns, ifname, limits)` builds netem + optional tbf.
-- `apply_region_latency` builds HTB root + netem classes + filters.
-- HTB uses `r2q 1000` to suppress quantum warnings.
-- `Impair::Wifi` and `Impair::Mobile` map to `ImpairLimits` before invoking qdisc.
+## Architecture
 
-## Naming / Prefixes
-Lab uses a process-unique prefix like `lab-p####`.
-Bridges use `br-p####-N` (shorter names).
-Namespaces use `lab-p####-N`.
+### Crate: `netsim-core`
 
-## Common Pitfalls
-- **Host root leakage**: never run lab dataplane operations in host root netns; keep all IX/transit operations inside the dedicated lab root namespace.
-- **User namespace policy**: if host policy disables unprivileged user namespaces, rootless bootstrap fails early.
-- **TC warnings**: use `r2q 1000` in HTB root to avoid large quantum warnings.
-- **Makefile target dir**: do not assume `./target`, always use `cargo make target-dir`.
+The library crate. All network simulation logic lives here.
 
-## File Map
+- **`src/core.rs`** — `NetworkCore`: topology state, router/device/switch records, NAT rule generation, nftables helpers.
+- **`src/lab.rs`** — Public API: `Lab`, `Device`, `Router`, `Ix` handles; builders (`RouterBuilder`, `DeviceBuilder`); types (`Nat`, `NatConfig`, `Impair`, `ImpairLimits`, `IpSupport`, etc).
+- **`src/netns.rs`** — `NetnsManager`: two workers per namespace (async tokio + sync thread). All `setns(2)` happens here.
+- **`src/qdisc.rs`** — All `tc` command invocation: netem (latency/jitter/loss/reorder/duplicate/corrupt), TBF (rate), HTB (region latency).
+- **`src/netlink.rs`** — `Netlink` struct wrapping `rtnetlink::Handle` for link/addr/route operations.
+- **`src/test_utils.rs`** — UDP reflector/probe helpers for integration tests.
+- **`src/tests.rs`** — Integration test suite (~90 tests).
+- **`src/config.rs`** — TOML config structures for `Lab::load`.
+- **`src/userns.rs`** — ELF ctor bootstrap into unprivileged user namespace.
+- **`src/lib.rs`** — Re-exports, `check_caps()`.
 
-* note: currently outdated, needs to be updated*
+### Key Design Rules
 
-- `src/lib.rs`: public API, tests, `check_caps`.
-- `src/core.rs`: core topology + build, netlink helpers.
-- `src/netns.rs`: namespace backend selection + lifecycle helpers.
-- `src/qdisc.rs`: tc/qdisc abstraction, netem/tbf/htb.
-- `src/main.rs`: demo CLI; calls `check_caps()`.
-- `src/sim/report.rs`: result parsing, `results.json`/`results.md`, `combined-results.json`.
-- `src/sim/runner.rs`: step executor, binary resolution.
-- `src/sim/transfer.rs`: iroh-transfer spawn/wait lifecycle.
-- `Makefile.toml`: local + VM tasks.
-- `lima.yaml`: VM definition.
-- `ui/`: Vite + React browser UI (see `plans/ui.md`).
+1. **Never block tokio thread with TCP/UDP I/O.** Use `spawn_task_in_netns` + `tokio::net` + `tokio::time::timeout`.
+2. **Sync `run_closure_in` is for fast non-I/O work only** (sysctl, `Command::spawn`).
+3. **NAT rules are generated from `NatConfig`**, not from `Nat` variants directly. `Nat::to_config()` expands presets.
+4. **Tests use `#[tokio::test(flavor = "current_thread")]`** due to `setns` thread-local behavior.
 
-## UI (`ui/`)
-Browser UI for viewing sim results, logs, timeline and qlogs.
-- **Build**: `cd ui && npm install && npm run build` → `ui/dist/index.html` (~175 KB, self-contained).
-- **Dev**: `cd ui && npm run dev` — serves `<repo_root>/.netsim-work` by default; override with `NETSIMS=/path npm run dev`.
-- **Dev endpoint**: `GET /__netsim/runs` returns `{workRoot, runs[]}` (all subdirs, newest-first); the UI uses this to populate the run picker and auto-select the latest run.
-- Output is a single inlined `index.html` (via `vite-plugin-singlefile`); can be dropped into any work root and opened via a local HTTP server.
-- Four tabs: **Perf** (sortable tables, two-run diff), **Logs** (ANSI/iroh NDJSON rendering), **Timeline** (SVG swimlane, Y=time), **Qlog** (event table).
-- Pending Rust work: write `manifest.json` per run dir; embed `dist/index.html` and write to work root after each run (see `plans/ui.md` TODOs).
+### Workspace
 
-## Notes on Tests
-Tests use `#[tokio::test(flavor = "current_thread")]` due to `setns` thread-local behavior.
-Many tests are serial (`serial_test`) because they manipulate global network state.
+```
+netsim-core/    — Library crate (main development target)
+netsim-utils/   — CLI utilities
+netsim/         — Binary crate (sim runner, inspect)
+netsim-vm/      — VM orchestration
+ui/             — Vite + React browser UI
+```
 
-## General instructions
+### Permissions
 
-### Plans
+No root required. The process bootstraps into an unprivileged user namespace via ELF ctor before Tokio starts. Effective UID becomes 0 inside the user namespace.
 
-Plans live in `plans/`. Keep the overview in `plans/PLAN.md` with up to four sections, in this order:
+### Naming / Prefixes
 
-- `# In progress` - plans currently being worked on
-- `# Open` — plans ready to start or with substantive work remaining; list with priority.
-- `# Partial` — plans with most steps done but at least one meaningful step still outstanding; include a one-line note on what remains.
-- `# Completed` — plans whose primary goals are fully achieved; list with priority.
+- Namespaces: `lab<N>-r<id>` (router), `lab<N>-d<id>` (device), `lab<N>-root`
+- Bridges: `br-p<pid><n>-<sw_id>`
+- Veths: `lab-p<pid><n>e<id>` / `lab-p<pid><n>g<id>`
 
-Omit sections that are empty.
+---
 
-All plans have a **priority** (1–5). Default new plans to 2.
+## Mandatory Workflow
 
-Each plan file **must start with a `## TODO` checklist**:
-- First item: `- [x] Write plan` (always checked — the plan exists)
-- Middle items: key implementation sub-steps (check off as completed with `[x]`, leave `[ ]` for pending)
-- Last item: `- [ ] Final review`
+### Before every commit
 
-The final review is done post-implementation; it stays unchecked until explicitly reviewed.
+Run these in order. All must pass with zero warnings/errors:
 
-### Review commands
+ALWAYS add a timeout to test runs, like 90s.
 
-- **`review`** — find all plans in `# Completed` (and `# Partial`) in `PLAN.md` that have an unchecked `Final review` item, then review the implementation against the plan and check it off.
-- **`review general`** — scan the codebase for general quality issues and high-level suggestions; update `REVIEW.md`.
+```bash
+cargo fmt
+cargo clippy -p netsim-core --tests --fix --allow-dirty
+cargo check -p netsim-core --tests
+cargo nextest run -p netsim-core -j 1      # use nextest, not cargo test
+```
 
-### REVIEW.md format
+when that is clean, run cargo check for the full workspace and test the other crates individually
 
-`REVIEW.md` has two sections:
-- `# Open` — issues identified but not yet resolved, with full details.
-- `# Completed` — resolved issues listed briefly (details removed, just a one-liner per item) with ✅.
+If the UI was modified, also run: `cd ui && npm run test:e2e`
 
-When an open issue is resolved, remove its details from `# Open` and add a brief entry to `# Completed`.
+### Commit conventions
+
+- Format: `feat: short description`, `fix: ...`, `refactor: ...`, `test: ...`, `docs: ...`, `chore: ...`
+- Include meaningful body for non-trivial changes.
+- Do not commit without being asked. Stage files, then ask.
 
 ### Code quality
 
-- Always document public items; strictly adhere to official Rust doc conventions and naming conventions.
-- Document important findings and changes in `AGENTS.md`.
-- Before each commit run: `cargo check`, `cargo clippy --tests --examples --fix`, `cargo test`, `cargo fmt`, and `cd ui && npm run test:e2e`; require all to pass cleanly. ALWAYS run cargo test with a timeout to not get stuck when tests hang.
-- When a task is ready, run the checks then ask to commit; stage files already but do not commit without asking.
-- After confirmation commit with `"feat: short description"` etc. with details; elaborate open issues a little, explain decisions taken concisely.
+- **Document all public items.** Follow official Rust doc conventions.
+- **No warnings.** Treat clippy and rustc warnings as errors.
+- **Test coverage.** Add tests for new functionality. All presets, all code paths.
+- **No over-engineering.** Only add what's needed for the current task.
 
-## Recent Changes
-- Added config-driven sim project flow and iroh layout refactor:
-  - `netsim run` now supports config discovery via `netsim.toml` (current dir or parent dirs) and executes all `.toml` sims matching `simulations` glob when no explicit sim paths are passed.
-  - Added `netsim run --repo <url> [--ref <branch|tag|commit>]`: clones/updates repo under `<work-dir>/clones/...`, checks out the requested ref (or remote default head), then runs via discovered `netsim.toml`.
-  - Sim binaries are now pre-assembled once per run before sim execution; conflicting duplicate binary specs across sims now fail fast.
-  - Binary specs now support `mode = "build"` with `example`/`bin`, `features`, and `all-features`, while `mode = "path"` and `mode = "fetch"` remain supported.
-  - `iroh-integration` moved to `iroh-integration/netsim/...` with `iroh-integration/netsim.toml`, `netsim/iroh-defaults.toml`, `netsim/sims/`, and `netsim/topos/`.
-  - `netsim-vm run` now prebuilds sim `mode=build` binaries on the host for musl and injects `--binary name:path:/target/...` overrides into guest `netsim run`.
-- Relay/QAD runtime wiring improved for transfer sims:
-  - Sim runner now auto-provisions per-sim relay runtime assets for relay spawn steps (self-signed cert/key + generated `relay.cfg` with `enable_quic_addr_discovery = true` and manual TLS paths) and auto-appends `--config-path` when spawning the configured `relay` binary (`src/sim/runner.rs`).
-  - Transfer steps now pass `--env dev` unconditionally for provider/fetcher so local self-signed relay certs work in netsim runs without changing sim relay URLs (`src/sim/transfer.rs`).
-- Implemented rootless user-namespace bootstrap flow:
-  - Added libc-only ELF ctor bootstrap (`src/userns.rs`) so `cargo test` enters a mapped user namespace before harness threads start.
-  - Added public `bootstrap_userns()` and switched `netsim` to sync pre-Tokio `main()` calling it before runtime startup (`src/lib.rs`, `src/main.rs`).
-  - Added `nsenter -U -n` for `netsim run-in` so follow-up commands can enter inspect namespaces across process boundaries (`src/main.rs`).
-- Netns backend is now fd-only:
-  - Removed named/auto backend selection and `NETSIM_NETNS_BACKEND` handling; namespace open/create/cleanup now use only in-process FD registry (`src/netns.rs`).
-  - Removed `ip netns del` cleanup invocation from netns backend cleanup paths (`src/netns.rs`).
-- Removed capability setup command path:
-  - Removed `netsim setup-caps` command and deleted `src/caps.rs`.
-  - Removed `setcap.sh` and `cargo make` setcap dependencies; local/test tasks now run without capability setup.
-- Added interactive inspect/debug CLI workflow in `netsim`:
-  - New `netsim inspect <sim-or-topology.toml> [--work-dir ...]` builds only topology (no run steps), writes inspect session metadata to `<work-dir>/inspect/<prefix>.json`, and prints shell exports (`NETSIM_INSPECT`, per-node `NETSIM_NS_*` and `NETSIM_IP_*`).
-  - `netsim inspect` now stays running until Ctrl-C; it spawns per-node namespace keepers and writes their PIDs into the inspect session so follow-up commands can enter namespaces while inspect is active.
-  - New `netsim run-in <node> <cmd...>` uses inspect session metadata (via `--inspect` or `$NETSIM_INSPECT`) and executes commands through `nsenter -t <keeper-pid> -n -- ...`.
-- VM invocation ergonomics tightened in `Makefile.toml`:
-  - `cargo make run-vm -- <sims...>` now prebuilds musl release artifacts for `netsim` and `examples/transfer`, then runs VM with `--netsim-version path:<target>/x86_64-unknown-linux-musl/release/netsim`.
-  - `cargo make test-vm -- ...` now forwards args directly to `netsim-vm test` so flags like `--package` / `--test` are usable without awkward separator handling.
-- `netsim-vm test` cargo passthrough fixed:
-  - `cargo_args` are now appended directly to `cargo test --no-run` (without inserting an extra `--`), so cargo-level flags are applied as intended (`crates/netsim-vm/src/vm.rs`).
-- Cleanup logging verbosity adjusted:
-  - `netsim cleanup` progress logs in `src/main.rs` now use `tracing::debug!` instead of `println!`.
-- Shared URL binary cache added and reused across `netsim` + `netsim-vm`:
-  - New `src/binary_cache.rs` caches URL artifacts under a shared work-root cache (`.binary-cache/<url-hash>/...`) and reuses extracted binaries across sims/runs.
-  - `src/sim/build.rs` now resolves URL binary specs through this shared cache.
-  - `crates/netsim-vm/src/util.rs` now stages fetch overrides from the same shared cache instead of re-downloading per sim.
-- Refactored sim artifact layout + UI flow to be manifest/progress-driven:
-  - Sim logs now write under per-node directories: `<sim>/nodes/<node>/...`; generic node stdout/stderr goes to `out.log`, and transfer runs emit under `transfer-<step>-<role>/` with their own `out.log` + iroh `--logs-path` artifacts (`src/sim/runner.rs`, `src/sim/transfer.rs`).
-  - `sim.json` now includes a `logs[]` index (`node`, `kind`, `path`) so UI can render file browsing without heuristics (`src/sim/runner.rs`).
-  - UI was reworked to: run-level main table (all sims + status), click-through sim workspace with left sim sidebar, and tabs limited to **Perf / Logs / Timeline** (`ui/src/App.tsx`, `ui/src/components/*.tsx`, `ui/src/types.ts`).
-  - Logs tab now handles all manifest-listed files; `kind=transfer` logs get tracing/event parsing, `kind=qlog` gets parsed event table, other files use plain text rendering.
-- VM ownership split completed in CLI surface:
-  - Removed `netsim run-vm` from `src/main.rs` and deleted obsolete `src/vm.rs`; VM execution remains in `crates/netsim-vm`.
-  - Added `serve` subcommands to both `netsim` and `netsim-vm`, backed by shared embedded UI server code in `src/serve.rs` (`include_str!("../ui/dist/index.html")`).
-- Added shared asset/path helpers in `src/assets.rs` and reused from both binaries:
-  - Shared `--binary` override parsing.
-  - Added `target:<kind>/<name>` shortcut resolution (`examples|bin`, release-only) with target-dir precedence:
-    1) `NETSIM_TARGET_DIR`, 2) `cargo metadata target_directory`, else error.
-  - VM runs now pass `NETSIM_IN_VM=1` and `NETSIM_TARGET_DIR=/target` in guest execution; VM mode prefers musl path first when present.
-- Sim runner now writes live progress artifacts:
-  - `progress.json` in run root (`running|done`, counts, current sim, per-sim status).
-  - run `manifest.json` is written at start and updated after each sim completion.
-  - `combined-results.json` is refreshed incrementally after each completed sim.
-- CLI reporting simplified:
-  - Replaced verbose combined terminal tables with concise per-sim run summary columns: `sim`, `status`, `down_mbps`, `up_mbps` (`src/sim/report.rs`).
-- UI live-refresh support added:
-  - `ui/src/App.tsx` now polls `/__netsim/runs` and per-run `progress.json` while running, and refreshes run data during execution.
-- Updated iroh shared binary manifest default:
-  - `iroh-integration/iroh-defaults.toml` now uses `path = "target:examples/transfer"` instead of VM-only absolute `/target/...` path.
-- Sim runner now emits run/sim metadata manifests:
-  - Each invocation run root writes `manifest.json` with environment metadata, start/end timestamps, total runtime, overall success, and per-sim runtime/status entries.
-  - Each per-sim directory writes `sim.json` with start/end timestamps, runtime, setup/topology summary, status (`ok`/`error`), and structured failure details (phase + failing step metadata when available) (`src/sim/runner.rs`).
-- Added browser UI at `ui/` (Vite + React + TypeScript, single-file output via `vite-plugin-singlefile`):
-  - Perf tab: sortable transfer + iperf tables, all-runs overview, two-run compare diff with Δmbps/Δ%.
-  - Logs tab: ANSI-stripped tracing text rendered as formatted log lines (level-coloured); iroh NDJSON events rendered with inline badges (⚡ DIRECT / ↔ RELAY / ✓ DONE). Regex + level filters, "iroh events only" toggle.
-  - Timeline tab: SVG swimlane (Y=time, X=node lanes) from iroh NDJSON + tracing logs; scroll/zoom; tooltips.
-  - Qlog tab: JSON-seq parser, virtualised event table, filter, expand-on-click.
-  - Dev server (`npm run dev`) serves `<repo_root>/.netsim-work` by default; `NETSIMS=/path` overrides. Vite plugin exposes `GET /__netsim/runs` for run-dir listing. Run picker auto-selects newest run.
-  - See `plans/ui.md` for full design and remaining TODOs.
-- Added `build.rs` to build the UI (npm install + npm run build) so the embedded `ui/dist/index.html` stays up to date during builds.
+---
 
-- Added standalone workspace binary crate `crates/netsim-vm` with CLI commands: `up`, `down`, `status`, `cleanup`, `ssh`, `run`, and `test`.
-- `netsim-vm run` now supports `--netsim-version` sources: `latest`, release tags (e.g. `0.10.0`), and git refs via `git:<ref>` (e.g. `git:feat/foo`), staging guest runner binary under `/work/.netsim-bin/netsim`.
-- Implemented artifact strategy A staging in `netsim-vm`: `--binary` overrides (`path|build|fetch`) are resolved on host and rewritten to staged guest paths under `/work/binaries/*`.
-- Added `netsim-vm test` VM test flow: host `cargo test --no-run --target ... --message-format json` artifact discovery, staging to `/work/binaries/tests`, guest execution, and pass/fail summary.
-- Updated `Makefile.toml` VM tasks to invoke `cargo run -p netsim-vm -- ...` (`run-vm`, `test-vm`, `setup-vm`, `vm-status`, `vm-down`) instead of `qemu-vm.sh`.
-- Sim runner output layout was refactored to invocation-scoped roots:
-  - `netsim run ...` now creates `sim-<yymmdd>-<hhmmss>[-N]` under the selected work dir, keeps `latest` as a relative symlink to that run root, writes one subdirectory per sim inside the run root, and writes `combined-results.{json,md}` into that same run root (`src/sim/runner.rs`, `src/sim/report.rs`).
-- `kind = "iroh-transfer"` no longer injects an implicit `--duration=10` or uses `step.duration`; transfer duration is now passed explicitly via `fetch_args` when needed (e.g. `fetch_args = ["--duration=20"]`) (`src/sim/transfer.rs`, `iroh-integration/sims/*.toml`).
-- Removed legacy Chuck-compatible reporting output from sim runs:
-  - Dropped `[sim] chuck_compat` support and associated report writers; only standard `results.json`/`results.md` and combined reports are emitted now (`src/sim/mod.rs`, `src/sim/report.rs`, `src/sim/runner.rs`, `src/sim/topology.rs`).
-- UI run page navigation now includes a dedicated `overview` item in the sidebar:
-  - The main view shows a single per-sim table for the selected run with status and summarized throughput columns (`down` from transfer results, `up` from iperf results), with direct navigation into each sim detail page (`ui/src/App.tsx`, `ui/src/types.ts`).
-- UI run overview/perf refactor:
-  - Overview table now reports per-sim `status`, inferred `nodes`, and `up/down` throughput using transfer-first aggregation with iperf fallback.
-  - Sim perf now includes a per-node transfer throughput table (`up/down`) derived from transfer results, with detailed transfer rows retained below.
-  - Log viewer no longer attempts to fetch/render qlog files; qlog entries remain discoverable in metadata but are ignored by `LogsTab`/timeline fetch paths.
-- VM env forwarding now passes `NETSIM_RUST_LOG` (and `RUST_LOG`) into guest `netsim run` execution (`crates/netsim-vm/src/vm.rs`) so transfer/process logging controls work in VM runs as expected.
-- Embedded UI server now supports log-oriented HTTP features (`src/serve.rs`):
-  - Byte range requests (`Range: bytes=...`) for artifact files with `206 Partial Content` and `Content-Range` responses.
-  - Per-file metadata query via `?__meta=1` returning JSON with `size_bytes` and `line_count`.
-- UI log viewer now uses metadata-first + explicit preview loading (`ui/src/components/LogsTab.tsx`):
-  - Shows size/line-count before reading content and only loads log previews on user action.
-  - Uses range fetches for log/timeline preview reads to avoid full-file loads for large artifacts (`ui/src/components/TimelineTab.tsx`).
-- Ported sim file naming cleanup:
-  - `iroh-integration/sims-ported/ported-*.toml` files were renamed in-place to remove the `ported-` prefix while keeping them in the same folder; manifest docs and in-file `name` values were updated accordingly.
-- Ported legacy iroh/chuck JSON suites from `resources/iroh-sims` into current TOML format under `iroh-integration/sims-ported/` (63 case files) with conversion notes in `iroh-integration/sims-ported/PORTED_FROM_RESOURCES.md`.
-- Added generic iperf parsing and comparison support in sim runner/reporting:
-  - `step.parser = "iperf3-json"` now parses `iperf3 -J` output from step logs into `results.json`/`results.md` and combined reports (`src/sim/runner.rs`, `src/sim/report.rs`).
-  - Added optional `baseline` on steps to compute `delta_mbps`/`delta_pct` against a prior iperf result id in the same run (`src/sim/mod.rs`, `src/sim/runner.rs`).
-  - Added example sims `iperf-1to1-public-baseline.toml` and `iperf-1to1-public-compare.toml` under `iroh-integration/sims/`.
-- Fixed `rtnetlink` route query API usage in `Netlink::replace_default_route_v4`: replaced stale `route().get(IpVersion::V4)` call with `route().get(RouteMessageBuilder::<Ipv4Addr>::new().build())` to match current crate API (`src/core.rs`).
-- Fixed NAT for IX-attached home routers: `LabCore::build` now applies `apply_home_nat` to routers with `NatMode::{DestinationIndependent,DestinationDependent}` even when attached directly to IX (`src/core.rs`).
-- Simplified home NAT nft rules to `postrouting` SNAT/masquerade only; removed interface-bound `prerouting` rule that could fail when bridges were created later in build order (`src/core.rs`).
-- Cleanup registry now ignores generic/non-owned link names (like `ix`) and only tracks `lab-*`/`br-*` links, eliminating noisy host-side `ip link del ix` failures (`src/core.rs`).
-- Added NAT test harness + matrix coverage in `src/lib.rs` tests:
-  - `nat_matrix_public_connectivity_and_reflexive_ip`
-  - `nat_mapping_port_behavior_by_mode_and_wiring`
-  - `nat_private_reachability_isolated_public_reachable`
-  - shared helpers for uplink wiring and ping-failure assertions.
-- Added namespace bootstrap nft reset in `LabCore::build`: each created lab namespace now gets a best-effort `nft flush ruleset` to avoid inherited host firewall policies (e.g., default-drop forwarding) breaking lab connectivity.
-- Added regression test `smoke_nat_homes_can_ping_public_relay_device` (`src/lib.rs`) to assert NAT-home devices can ping a public relay device in the `1to1-nat` style topology.
-- Cleanup path rollback/simplification:
-  - Panic hook + `atexit` now call `resources().cleanup_all()` (registry-only), avoiding runtime-dependent prefix sweeps during unwind/exit.
-  - `cleanup_all()` now drains tracked links/netns (idempotent across repeated calls) and performs namespace cleanup first.
-  - Prefix sweeps now use `ip -o link` parsing with `@peer` stripping and benign-error suppression for already-gone links/netns.
-- Prefix cleanup now deletes links via netlink (`rtnetlink`) instead of parsing `ip -o link` text, avoiding `@peer` name parsing artifacts and improving deletion reliability.
-- Ctrl-C cleanup scope is now process-local by default (registered prefixes only); broad global prefix sweeps remain available via explicit `netsim cleanup --prefix ...`.
-- Ctrl-C handler now exits via `_exit(130)` after best-effort cleanup to avoid duplicate atexit cleanup passes and repeated logs.
-- Cleanup diagnostics improved:
-  - `netsim cleanup` now checks required capabilities up front and prints actionable permission errors.
-  - Cleanup operations now log each attempted `ip link del` / `ip netns del` and print stderr on failure.
-  - Cleanup command logs start/end, selected prefixes, and VM-stop phase.
-- Replaced cooperative Tokio interrupt handling with `ctrlc` OS signal handler in `src/main.rs`; Ctrl-C now triggers immediate cleanup + process exit even when run paths are in blocking sections.
-- Cleanup hardening:
-  - `src/main.rs` now traps `SIGINT`/`SIGTERM` during `run`/`run-vm`, performs best-effort prefix cleanup (`lab-p`, `br-p`), and exits interrupted.
-  - Added `netsim cleanup` CLI command to clean leaked resources by prefix (repeatable `--prefix`) and stop the local QEMU VM if running.
-  - `src/core.rs` panic/atexit hooks now use prefix-based `cleanup_everything()` rather than only explicit link/netns registries.
-  - `src/vm.rs` exposes `stop_vm_if_running()` for unified cleanup flow.
-- `src/vm.rs` now stores downloaded QEMU base images in a shared user data cache (`dirs::data_dir()/netsim-rs/qemu-images`) with URL-hashed filenames, while keeping per-VM runtime state under `./.qemu-vm`.
-- Simplified `src/vm.rs` path model with constant-based internal names; VM runtime state remains script-compatible under `./.qemu-vm/<vm-name>`.
-- Updated `Makefile.toml` binary-first tasks: `run-local` now executes `cargo run -- run ...`, and `run-vm` now executes `cargo run -- run-vm ...` instead of shell-wrapper orchestration.
-- Clarified capability role split in `setcap.sh`: script explicitly targets repo test/dev binaries/tools and points standalone users to `netsim setup-caps`.
-- Updated `README.md` examples to `netsim run-vm ...` workflow and standalone `netsim setup-caps`.
-- Implemented self-contained CLI commands in `src/main.rs`: `netsim run`, `netsim run-vm`, and `netsim setup-caps`.
-- Added literal command-driven QEMU orchestration port to single `src/vm.rs`, mirroring `qemu-vm.sh` flow (`up`/mount checks/cloud-init/SSH guest prep) for `run-vm`.
-- Added `src/caps.rs` built-in capability setup that applies required caps to the current `netsim` binary and required system tools (`ip`, `tc`, `nft`, `ping`, `ping6`) via `sudo setcap`.
-- Added terminal combined-results table rendering after sim execution (`src/sim/report.rs` + `comfy-table`), invoked from `run_sims`.
-- Added `plans/selfcontained.md` outlining migration to a self-contained `netsim` binary (`run`, `run-vm`, `setup-caps`) and linked step tracking in `plans/PLAN.md`.
-- Revised `plans/selfcontained.md` VM migration approach to a single `src/vm.rs` (no submodules), with a near-literal command-exec port of `qemu-vm.sh` using short helper functions.
-- Completed public API doc coverage audit: all public library items now have rustdoc comments (verified with `RUSTFLAGS='-W missing-docs' cargo check`).
-- Updated stale runtime docs: `Lab::build`/`Lab::load` no longer claim a `current_thread` Tokio requirement, matching the worker-thread `NetnsManager` `setns` model.
-- Namespace entry is centralized: `setns(2)` is now only invoked in `src/netns.rs` worker threads (`NetnsManager`), while `src/core.rs` uses backend helpers and does not call `setns` directly.
-- Public naming cleanup in namespace/process helpers:
-  - `src/core.rs` now exposes canonical `*_in_namespace` helper names with compatibility wrappers for existing `*_in_netns`/`with_netns_thread` call sites.
-  - `src/lib.rs` now uses canonical `Lab::run_on`, `Lab::run_in_namespace`, `Lab::run_in_namespace_thread`, and `Lab::spawn_unmanaged_on`, with backward-compatible aliases retained.
-- `setcap.sh` now resolves system tool paths with elevated lookup (`sudo env PATH=... which <tool>`) when running unprivileged, so the same resolver context is used for lookup and subsequent `setcap`.
-- Fixed local capability lookup regression: `setcap.sh` now resolves system tools with `which` under an augmented search path (`/usr/sbin:/sbin:/usr/bin:/bin`) so `ip`/`tc`/`nft` are found even when user PATH omits `sbin`.
-- Local capability setup now also applies caps to `ping`/`ping6` (plus `/bin/*` aliases for `ip`/`tc`/`nft`) and no longer ignores setcap failures for these tools; this fixes non-sudo local ping/route permission failures in tests.
-- Relaxed `dynamic_set_impair_changes_rtt` assertion from `+80ms` to `+40ms` RTT delta to align with observed single-path netem behavior in VM/local runs.
-- Simplified FD netns backend internals: removed keeper-thread state from `FdRegistry`; namespace lifetime is now tied directly to stored namespace FDs.
-- Fixed VM test runner stale-binary issue: `build-test-vm` now deletes old executable `deps/${crate}-*` test binaries before `cargo test --no-run`, so `test-vm` no longer executes outdated artifacts.
-- `Lab::new` now appends a process-local atomic counter suffix to prefixes/bridge tags (`lab-p<pid><n>`, `br-p<pid><n>-*`) so concurrent labs in one process do not collide on netns/link names.
-- Updated the iroh netsim plan to use `--logs-path`, generate `results.json` and `results.md`, and add named binaries with `endpoint_id_only` / `endpoint_id_with_direct_addrs` strategies; `IROH_DATA_DIR` stays unset.
-- Drafted iroh integration workflow + example sims and topos under `iroh-integration/` with transfer duration set to 20s and topology files colocated in `iroh-integration/topos`.
-- Refactored namespace execution to a dedicated `NetnsManager` (`src/netns.rs`) that keeps one long-lived worker thread + single-thread Tokio runtime per namespace and executes async closures there, with panic forwarding through task join errors.
-- Updated `set_sysctl_in` / `spawn_in_netns_thread` (`src/core.rs`) to avoid restoring the original netns on helper-thread exit; helper threads now stay in target netns for their lifetime and then terminate.
-- Added `smoke_debug_netns_exit_trace` test (`src/lib.rs`) to emit deep namespace diagnostics (inode, links, IPv4 addrs, routes) pre-build, on build error, and post-build.
-- FD netns backend now keeps a per-namespace keeper thread alive (`src/netns.rs`) so unnamed namespaces stay anchored and distinct; cleanup sends stop and joins keeper threads.
-- Fixed FD netns capture to open thread-local namespace FDs (`/proc/thread-self/ns/net` with `/proc/self/task/<tid>/ns/net` fallback) instead of `/proc/self/ns/net`, which can resolve to thread-group leader ns in worker threads.
-- Sim runner now supports topology loading via `src/sim/topology.rs`, non-blocking `iroh-transfer` lifecycle (`spawn` starts, `wait-for` finalizes), `fetchers=[...]` multi-fetcher results, and `count` expansion for `[device.<name>]` templates in `Lab::from_config`.
-- CLI now accepts repeatable generic `--binary` overrides and `run-vm` sets `RUST_TARGET=${MUSL_TARGET}` while writing sim artifacts under `/work/latest` (host `.netsim-work/latest`).
-- Sim runner now supports shared binary manifests via `[sim] binaries = "...toml"` and repeatable generic CLI overrides: `--binary <name>:build:<path>`, `--binary <name>:fetch:<url>`, `--binary <name>:path:<file>` (path overrides are copied into `<work_dir>/bins`).
-- QEMU VM mounts changed: `/app` and `/target` are exported/mounted read-only; new writable `/work` mount maps to host `.netsim-work` (default via `QEMU_VM_WORK_DIR` / `--work-dir`).
-- Step/process logging tightened: `run` and generic `spawn` always write stdout+stderr log files under `<work_dir>/logs`; iroh transfer provider/fetcher stdout+stderr logs are emitted alongside NDJSON `--logs-path` files.
-- Multi-sim execution is now first-class: `netsim` accepts multiple sim paths/directories in one invocation, writes per-run dirs (`<sim>-YYMMDD-HHMMSS[-N]`) under one work root, updates `latest` as a relative symlink, and emits invocation-scoped `combined-results.json` / `combined-results.md`.
-- `iroh-integration/netsim.yaml` now runs all requested sims in one `netsim` command against `iroh-integration/work` and publishes `combined-results.md` into the GitHub step summary for drop-in aggregated reporting.
-- VM execution now stages a Linux guest `netsim` binary in `/work/.netsim-bin/netsim` before running sims:
-  - Linux host: copies current executable.
-  - macOS host: downloads latest `netsim-x86_64-unknown-linux-musl.tar.gz` release asset and extracts `netsim`.
-- Added release workflow at `.github/workflows/release.yml` to build/package `netsim` for `x86_64-unknown-linux-musl` and `aarch64-apple-darwin`, then publish assets on tag pushes.
-- Maintainability refactor batch:
-  - Added `src/netlink.rs` for rtnetlink helpers and `src/sim/steps.rs` + `src/sim/progress.rs` to split runner logic.
-  - Converted sim steps to tagged enum with `StepShared` flatten and moved UTC timestamp formatting to chrono.
-  - Added `src/util.rs` sanitizers used by runner/transfer/main; unified cleanup naming and NAT handling.
+## Plans
+
+Plans live in `plans/`. The index is [`plans/PLAN.md`](plans/PLAN.md) with sections:
+
+1. `# In progress` — currently being worked on
+2. `# Open` — ready to start; listed with priority (1–5, default 2)
+3. `# Partial` — mostly done, one-line note on what remains
+4. `# Completed` — done; listed with priority
+
+Omit empty sections.
+
+Each plan file **must start with a `## TODO` checklist**:
+- First item: `- [x] Write plan` (always checked)
+- Middle items: implementation steps (`[x]` done, `[ ]` pending)
+- Last item: `- [ ] Final review`
+
+### Review commands
+
+- **`review`** — find completed plans with unchecked `Final review`, review implementation, check it off.
+- **`review general`** — scan codebase for quality issues, update `REVIEW.md`.
+
+### REVIEW.md format
+
+- `# Open` — unresolved issues with full details.
+- `# Completed` — resolved issues, one-liner per item with ✅.
+
+---
+
+## NAT Implementation (Summary)
+
+Full details in [`HOLEPUNCH.md`](HOLEPUNCH.md).
+
+| Preset | Mapping | Filtering | nftables approach |
+|--------|---------|-----------|-------------------|
+| `Nat::Home` | EIM | APDF | fullcone map + `snat to <ip>` + forward filter |
+| `Nat::FullCone` | EIM | EIF | fullcone map + `snat to <ip>` |
+| `Nat::Corporate` | EDM | APDF | `masquerade random` |
+| `Nat::CloudNat` | EDM | APDF | `masquerade random` (longer timeouts) |
+| `Nat::Cgnat` | — | — | plain `masquerade` on IX iface |
+
+Key finding: `snat to <ip>` does NOT preserve ports reliably. The fullcone dynamic map is required for EIM.
+
+---
+
+## Impairment Presets (Summary)
+
+| Preset | Latency | Jitter | Loss | Rate |
+|--------|---------|--------|------|------|
+| `Lan` | 0 | 0 | 0% | — |
+| `Wifi` | 5ms | 2ms | 0.1% | — |
+| `WifiBad` | 40ms | 15ms | 2% | 20 Mbit |
+| `Mobile4G` | 25ms | 8ms | 0.5% | — |
+| `Mobile3G` | 100ms | 30ms | 2% | 2 Mbit |
+| `Satellite` | 40ms | 7ms | 1% | — |
+| `SatelliteGeo` | 300ms | 20ms | 0.5% | 25 Mbit |
+
+---
+
+## Common Pitfalls
+
+- **Host root leakage**: never run lab operations in host root netns.
+- **TC warnings**: use `r2q 1000` in HTB root to avoid quantum warnings.
+- **TC stderr suppressed**: all `tc` commands suppress stderr (known tech debt, see REVIEW.md).
+- **Port base in tests**: each test combo needs unique ports to avoid conntrack collisions.
+- **Holepunch timing**: after receiving a probe, send extra "ack" packets before returning (APDF timing asymmetry).

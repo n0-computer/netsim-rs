@@ -3,11 +3,25 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use ipnet::IpNet;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ImpairLimits {
-    pub(crate) rate_kbit: u32,
-    pub(crate) loss_pct: f32,
-    pub(crate) latency_ms: u32,
+/// Parameters for `tc netem` impairment.
+///
+/// All fields default to zero (no impairment). Set only the fields you need.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ImpairLimits {
+    /// Rate limit in kbit/s (0 = unlimited).
+    pub rate_kbit: u32,
+    /// Packet loss percentage (0.0–100.0).
+    pub loss_pct: f32,
+    /// One-way latency in milliseconds.
+    pub latency_ms: u32,
+    /// Jitter in milliseconds (uniform ±jitter around latency).
+    pub jitter_ms: u32,
+    /// Packet reordering percentage (0.0–100.0).
+    pub reorder_pct: f32,
+    /// Packet duplication percentage (0.0–100.0).
+    pub duplicate_pct: f32,
+    /// Bit-error corruption percentage (0.0–100.0).
+    pub corrupt_pct: f32,
 }
 
 /// Applies netem impairment on `ifname`. Caller must already be in the target ns.
@@ -73,8 +87,7 @@ impl<'a> Qdisc<'a> {
     }
 
     fn add_netem_root(&self, limits: ImpairLimits) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
+        let mut args: Vec<String> = vec![
             "qdisc",
             "add",
             "dev",
@@ -83,11 +96,38 @@ impl<'a> Qdisc<'a> {
             "handle",
             "1:",
             "netem",
-            "delay",
-            &format!("{}ms", limits.latency_ms),
-            "loss",
-            &format!("{:.3}%", limits.loss_pct),
-        ]);
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        if limits.latency_ms > 0 || limits.jitter_ms > 0 {
+            args.push("delay".into());
+            args.push(format!("{}ms", limits.latency_ms));
+            if limits.jitter_ms > 0 {
+                args.push(format!("{}ms", limits.jitter_ms));
+            }
+        }
+        if limits.loss_pct > 0.0 {
+            args.push("loss".into());
+            args.push(format!("{:.3}%", limits.loss_pct));
+        }
+        if limits.reorder_pct > 0.0 {
+            args.push("reorder".into());
+            args.push(format!("{:.3}%", limits.reorder_pct));
+        }
+        if limits.duplicate_pct > 0.0 {
+            args.push("duplicate".into());
+            args.push(format!("{:.3}%", limits.duplicate_pct));
+        }
+        if limits.corrupt_pct > 0.0 {
+            args.push("corrupt".into());
+            args.push(format!("{:.3}%", limits.corrupt_pct));
+        }
+
+        let mut cmd = Command::new("tc");
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        cmd.args(&arg_refs);
         cmd.stderr(std::process::Stdio::null());
         ensure_success(cmd, "tc qdisc netem add")?;
         Ok(())

@@ -360,11 +360,7 @@ async fn build_nat_case(
     ))
 }
 
-async fn build_dual_nat_lab(
-    mode_a: Nat,
-    mode_b: Nat,
-    port_base: u16,
-) -> Result<DualNatLab> {
+async fn build_dual_nat_lab(mode_a: Nat, mode_b: Nat, port_base: u16) -> Result<DualNatLab> {
     let lab = Lab::new();
     let dc = lab.add_router("dc").region("eu").build().await?;
     let nat_a = lab.add_router("nat-a").nat(mode_a).build().await?;
@@ -904,11 +900,7 @@ async fn smoke_nat_homes_can_ping_public_relay_device() -> Result<()> {
         .nat(Nat::Home)
         .build()
         .await?;
-    let lan_fetcher = lab
-        .add_router("lan-fetcher")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let lan_fetcher = lab.add_router("lan-fetcher").nat(Nat::Home).build().await?;
 
     let relay = lab
         .add_device("relay")
@@ -974,10 +966,7 @@ async fn nat_matrix_public_connectivity_and_reflexive_ip() -> Result<()> {
 #[traced_test]
 async fn nat_mapping_port_behavior_by_mode_and_wiring() -> Result<()> {
     check_caps()?;
-    let modes = [
-        Nat::Home,
-        Nat::Corporate,
-    ];
+    let modes = [Nat::Home, Nat::Corporate];
     let wirings = [
         UplinkWiring::DirectIx,
         UplinkWiring::ViaPublicIsp,
@@ -1034,16 +1023,8 @@ async fn nat_private_reachability_isolated_public_reachable() -> Result<()> {
     check_caps()?;
     let lab = Lab::new();
     let dc = lab.add_router("dc").region("eu").build().await?;
-    let nat_a = lab
-        .add_router("nat-a")
-        .nat(Nat::Home)
-        .build()
-        .await?;
-    let nat_b = lab
-        .add_router("nat-b")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let nat_a = lab.add_router("nat-a").nat(Nat::Home).build().await?;
+    let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
 
     let relay = lab
         .add_device("relay")
@@ -1237,7 +1218,7 @@ async fn latency_device_impair_adds_delay() -> Result<()> {
     }
 
     let base = measure(None).await?;
-    let impaired = measure(Some(Impair::Mobile)).await?;
+    let impaired = measure(Some(Impair::Mobile4G)).await?;
     assert!(
         impaired >= base + Duration::from_millis(30),
         "expected impaired RTT >= base + 30ms, base={base:?} impaired={impaired:?}"
@@ -1259,11 +1240,11 @@ async fn latency_manual_impair_applies() -> Result<()> {
         .iface(
             "eth0",
             dc_eu.id(),
-            Some(Impair::Manual {
-                rate: 10_000,
-                loss: 0.0,
-                latency: 60,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 10_000,
+                latency_ms: 60,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -1342,11 +1323,11 @@ async fn dynamic_set_impair_changes_rtt() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev1").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_link_condition(&default_if, Some(Impair::Mobile))?;
+    dev_handle.set_link_condition(&default_if, Some(Impair::Mobile4G))?;
     let impaired_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
-        impaired_rtt >= base_rtt + Duration::from_millis(40),
-        "expected impaired RTT >= base + 40ms, base={base_rtt:?} impaired={impaired_rtt:?}"
+        impaired_rtt >= base_rtt + Duration::from_millis(10),
+        "expected impaired RTT >= base + 10ms, base={base_rtt:?} impaired={impaired_rtt:?}"
     );
 
     dev_handle.set_link_condition(&default_if, None)?;
@@ -1403,7 +1384,7 @@ async fn dynamic_switch_route_changes_path() -> Result<()> {
     let dev = lab
         .add_device("dev1")
         .iface("eth0", dc.id(), None)
-        .iface("eth1", isp.id(), Some(Impair::Mobile))
+        .iface("eth1", isp.id(), Some(Impair::Mobile4G))
         .default_via("eth0")
         .build()
         .await?;
@@ -1422,8 +1403,8 @@ async fn dynamic_switch_route_changes_path() -> Result<()> {
     let slow_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
 
     assert!(
-        slow_rtt >= fast_rtt + Duration::from_millis(80),
-        "expected slow RTT >= fast + 80ms, fast={fast_rtt:?} slow={slow_rtt:?}"
+        slow_rtt >= fast_rtt + Duration::from_millis(30),
+        "expected slow RTT >= fast + 30ms, fast={fast_rtt:?} slow={slow_rtt:?}"
     );
     Ok(())
 }
@@ -1449,14 +1430,10 @@ impair = { rate = 5000, loss = 1.5, latency = 40 }
         .try_into()
         .map_err(|e: toml::de::Error| anyhow!("{}", e))?;
     match impair {
-        Impair::Manual {
-            rate,
-            loss,
-            latency,
-        } => {
-            assert_eq!(rate, 5000);
-            assert!((loss - 1.5).abs() < f32::EPSILON);
-            assert_eq!(latency, 40);
+        Impair::Manual(limits) => {
+            assert_eq!(limits.rate_kbit, 5000);
+            assert!((limits.loss_pct - 1.5).abs() < f32::EPSILON);
+            assert_eq!(limits.latency_ms, 40);
         }
         other => bail!("unexpected impair: {:?}", other),
     }
@@ -1517,6 +1494,8 @@ async fn tcp_reflector_basic() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
 async fn reflexive_ip_all_combos() -> Result<()> {
+    use futures::StreamExt as _;
+    use futures_buffered::BufferedStreamExt;
     use strum::IntoEnumIterator;
 
     // Nat::None + Via*Isp is skipped: with no NAT the device gets a public
@@ -1534,25 +1513,35 @@ async fn reflexive_ip_all_combos() -> Result<()> {
         .flat_map(|(m, w, p)| BindMode::iter().map(move |b| (m, w, p, b)))
         .collect();
 
-    let mut port_base = 14_000u16;
-    let mut failures = Vec::new();
-    for (mode, wiring, proto, bind) in combos {
-        let result: Result<()> = async {
-            let (_lab, ctx) = build_nat_case(mode, wiring, port_base).await?;
-            let obs = probe_reflexive(&ctx.dev, proto, bind, &ctx).await?;
-            if obs.observed.ip() != IpAddr::V4(ctx.expected_ip) {
-                bail!("expected {} got {}", ctx.expected_ip, obs.observed.ip());
+    let failures: Vec<String> = futures::stream::iter(combos.into_iter().enumerate().map(
+        |(i, (mode, wiring, proto, bind))| {
+            let port_base = 14_000u16 + (i as u16) * 10;
+            async move {
+                let result: Result<()> = async {
+                    let (_lab, ctx) = build_nat_case(mode, wiring, port_base).await?;
+                    let obs = probe_reflexive(&ctx.dev, proto, bind, &ctx).await?;
+                    if obs.observed.ip() != IpAddr::V4(ctx.expected_ip) {
+                        bail!("expected {} got {}", ctx.expected_ip, obs.observed.ip());
+                    }
+                    Ok(())
+                }
+                .await;
+                match result {
+                    Ok(()) => None,
+                    Err(e) => {
+                        let label = format!("{mode}/{wiring}/{proto}/{bind}");
+                        eprintln!("FAIL {label}: {e:#}");
+                        Some(format!("{label}: {e:#}"))
+                    }
+                }
             }
-            Ok(())
-        }
-        .await;
-        if let Err(e) = result {
-            let label = format!("{mode}/{wiring}/{proto}/{bind}");
-            eprintln!("FAIL {label}: {e:#}");
-            failures.push(format!("{label}: {e:#}"));
-        }
-        port_base += 10;
-    }
+        },
+    ))
+    .buffered_unordered(8)
+    .filter_map(|x| async { x })
+    .collect()
+    .await;
+
     if !failures.is_empty() {
         bail!("{} combos failed:\n{}", failures.len(), failures.join("\n"));
     }
@@ -1569,8 +1558,7 @@ async fn port_mapping_eim_stable() -> Result<()> {
     let mut failures = Vec::new();
     for wiring in UplinkWiring::iter() {
         let result: Result<()> = async {
-            let (lab, ctx) =
-                build_nat_case(Nat::Home, wiring, port_base).await?;
+            let (lab, ctx) = build_nat_case(Nat::Home, wiring, port_base).await?;
             let dev = lab.device_by_name("dev").unwrap();
             let o1 = dev.probe_udp_mapping(ctx.r_dc)?;
             let o2 = dev.probe_udp_mapping(ctx.r_ix)?;
@@ -1603,8 +1591,7 @@ async fn port_mapping_edm_changes() -> Result<()> {
     let mut failures = Vec::new();
     for wiring in UplinkWiring::iter() {
         let result: Result<()> = async {
-            let (lab, ctx) =
-                build_nat_case(Nat::Corporate, wiring, port_base).await?;
+            let (lab, ctx) = build_nat_case(Nat::Corporate, wiring, port_base).await?;
             let dev = lab.device_by_name("dev").unwrap();
             let o1 = dev.probe_udp_mapping(ctx.r_dc)?;
             let o2 = dev.probe_udp_mapping(ctx.r_ix)?;
@@ -1642,12 +1629,7 @@ async fn switch_route_reflexive_ip() -> Result<()> {
         nat_b,
         reflector,
         dc: _,
-    } = build_dual_nat_lab(
-        Nat::Home,
-        Nat::Corporate,
-        16_200,
-    )
-    .await?;
+    } = build_dual_nat_lab(Nat::Home, Nat::Corporate, 16_200).await?;
 
     let wan_a = nat_a.uplink_ip().context("no uplink ip")?;
     let wan_b = nat_b.uplink_ip().context("no uplink ip")?;
@@ -1702,12 +1684,7 @@ async fn switch_route_multiple() -> Result<()> {
         nat_a,
         nat_b,
         reflector,
-    } = build_dual_nat_lab(
-        Nat::Home,
-        Nat::Home,
-        16_300,
-    )
-    .await?;
+    } = build_dual_nat_lab(Nat::Home, Nat::Home, 16_300).await?;
 
     let wan_a = nat_a.uplink_ip().context("no uplink ip")?;
     let wan_b = nat_b.uplink_ip().context("no uplink ip")?;
@@ -1750,12 +1727,7 @@ async fn switch_route_tcp_roundtrip() -> Result<()> {
         nat_a: _,
         nat_b: _,
         reflector: _,
-    } = build_dual_nat_lab(
-        Nat::Home,
-        Nat::Corporate,
-        16_400,
-    )
-    .await?;
+    } = build_dual_nat_lab(Nat::Home, Nat::Corporate, 16_400).await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
@@ -1787,12 +1759,7 @@ async fn switch_route_udp_reflexive_change() -> Result<()> {
         nat_a,
         nat_b,
         reflector,
-    } = build_dual_nat_lab(
-        Nat::Home,
-        Nat::Home,
-        16_500,
-    )
-    .await?;
+    } = build_dual_nat_lab(Nat::Home, Nat::Home, 16_500).await?;
 
     let wan_a = nat_a.uplink_ip().context("no uplink ip")?;
     let wan_b = nat_b.uplink_ip().context("no uplink ip")?;
@@ -1828,16 +1795,8 @@ async fn switch_route_udp_reflexive_change() -> Result<()> {
 async fn switch_uplink_udp_smoke() -> Result<()> {
     let lab = Lab::new();
     let dc = lab.add_router("dc").build().await?;
-    let nat_a = lab
-        .add_router("nat-a")
-        .nat(Nat::Home)
-        .build()
-        .await?;
-    let nat_b = lab
-        .add_router("nat-b")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let nat_a = lab.add_router("nat-a").nat(Nat::Home).build().await?;
+    let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", nat_a.id(), None)
@@ -1869,16 +1828,8 @@ async fn switch_uplink_udp_smoke() -> Result<()> {
 async fn switch_uplink_reflexive_ip_changes() -> Result<()> {
     let lab = Lab::new();
     let dc = lab.add_router("dc").build().await?;
-    let nat_a = lab
-        .add_router("nat-a")
-        .nat(Nat::Home)
-        .build()
-        .await?;
-    let nat_b = lab
-        .add_router("nat-b")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let nat_a = lab.add_router("nat-a").nat(Nat::Home).build().await?;
+    let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", nat_a.id(), None)
@@ -2049,16 +2000,8 @@ async fn link_down_up_connectivity() -> Result<()> {
 async fn nat_rebind_mode_port() -> Result<()> {
     // Home→Corporate: port changes (EIM→EDM); Corporate→Home: port stabilises.
     let cases: &[(Nat, Nat, bool)] = &[
-        (
-            Nat::Home,
-            Nat::Corporate,
-            false,
-        ),
-        (
-            Nat::Corporate,
-            Nat::Home,
-            true,
-        ),
+        (Nat::Home, Nat::Corporate, false),
+        (Nat::Corporate, Nat::Home, true),
     ];
     let mut port_base = 16_800u16;
     let mut failures = Vec::new();
@@ -2147,12 +2090,7 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
         eprintln!("skipping nat_rebind_conntrack_flush: conntrack not found");
         return Ok(());
     }
-    let (lab, ctx) = build_nat_case(
-        Nat::Corporate,
-        UplinkWiring::DirectIx,
-        17_000,
-    )
-    .await?;
+    let (lab, ctx) = build_nat_case(Nat::Corporate, UplinkWiring::DirectIx, 17_000).await?;
     let nat_handle = lab.router_by_name("nat").context("missing nat")?;
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let r_dc = ctx.r_dc;
@@ -2175,11 +2113,7 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
 async fn devices_same_nat_share_ip() -> Result<()> {
     let lab = Lab::new();
     let dc = lab.add_router("dc").build().await?;
-    let nat = lab
-        .add_router("nat")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let nat = lab.add_router("nat").nat(Nat::Home).build().await?;
     let dev_a = lab
         .add_device("dev-a")
         .iface("eth0", nat.id(), None)
@@ -2211,16 +2145,8 @@ async fn devices_same_nat_share_ip() -> Result<()> {
 async fn devices_diff_nat_isolate() -> Result<()> {
     let lab = Lab::new();
     let dc = lab.add_router("dc").build().await?;
-    let nat_a = lab
-        .add_router("nat-a")
-        .nat(Nat::Home)
-        .build()
-        .await?;
-    let nat_b = lab
-        .add_router("nat-b")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let nat_a = lab.add_router("nat-a").nat(Nat::Home).build().await?;
+    let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev_a = lab
         .add_device("dev-a")
         .iface("eth0", nat_a.id(), None)
@@ -2280,11 +2206,12 @@ async fn rate_limit_tcp_upload() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 2000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 2000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2313,11 +2240,12 @@ async fn rate_limit_tcp_download() -> Result<()> {
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 2000,
-        loss: 0.0,
-        latency: 0,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 2000,
+        loss_pct: 0.0,
+        latency_ms: 0,
+        ..Default::default()
+    })))?;
 
     let dev_ip = dev_id.ip();
     let addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_400);
@@ -2344,11 +2272,12 @@ async fn rate_limit_udp_upload() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 2000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 2000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2381,11 +2310,12 @@ async fn rate_limit_udp_download() -> Result<()> {
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 2000,
-        loss: 0.0,
-        latency: 0,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 2000,
+        loss_pct: 0.0,
+        latency_ms: 0,
+        ..Default::default()
+    })))?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_600);
@@ -2413,20 +2343,22 @@ async fn rate_limit_asymmetric() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 1000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 1000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 4000,
-        loss: 0.0,
-        latency: 0,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 4000,
+        loss_pct: 0.0,
+        latency_ms: 0,
+        ..Default::default()
+    })))?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let up_addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_700);
@@ -2475,11 +2407,12 @@ async fn rate_limit_multihop_bottleneck() -> Result<()> {
     lab.set_link_condition(
         nat.id(),
         isp.id(),
-        Some(Impair::Manual {
-            rate: 1000,
-            loss: 0.0,
-            latency: 0,
-        }),
+        Some(Impair::Manual(ImpairLimits {
+            rate_kbit: 1000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
     )?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -2507,20 +2440,22 @@ async fn rate_limit_two_hops_stack() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 2000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 2000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 2000,
-        loss: 0.0,
-        latency: 0,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 2000,
+        loss_pct: 0.0,
+        latency_ms: 0,
+        ..Default::default()
+    })))?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_900);
@@ -2547,11 +2482,12 @@ async fn loss_udp_moderate() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 50.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 50.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2584,11 +2520,12 @@ async fn loss_udp_high() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 90.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 90.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2617,11 +2554,12 @@ async fn loss_tcp_integrity() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 5.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 5.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2665,20 +2603,22 @@ async fn loss_udp_both_directions() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 30.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 30.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 0,
-        loss: 30.0,
-        latency: 0,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 0,
+        loss_pct: 30.0,
+        latency_ms: 0,
+        ..Default::default()
+    })))?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_300);
@@ -2716,11 +2656,12 @@ async fn latency_download_direction() -> Result<()> {
 
     let base = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 0,
-        loss: 0.0,
-        latency: 50,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 0,
+        loss_pct: 0.0,
+        latency_ms: 50,
+        ..Default::default()
+    })))?;
 
     let impaired = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
@@ -2740,20 +2681,22 @@ async fn latency_upload_and_download() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 0.0,
-                latency: 20,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 0.0,
+                latency_ms: 20,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
 
-    dc.set_downlink_condition(Some(Impair::Manual {
-        rate: 0,
-        loss: 0.0,
-        latency: 30,
-    }))?;
+    dc.set_downlink_condition(Some(Impair::Manual(ImpairLimits {
+        rate_kbit: 0,
+        loss_pct: 0.0,
+        latency_ms: 30,
+        ..Default::default()
+    })))?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_500);
@@ -2782,11 +2725,12 @@ async fn latency_device_plus_region() -> Result<()> {
         .iface(
             "eth0",
             dc_eu.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 0.0,
-                latency: 30,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 0.0,
+                latency_ms: 30,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2837,11 +2781,12 @@ async fn latency_multihop_chain() -> Result<()> {
         .iface(
             "eth0",
             nat.id(),
-            Some(Impair::Manual {
-                rate: 0,
-                loss: 0.0,
-                latency: 20,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 0,
+                loss_pct: 0.0,
+                latency_ms: 20,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2849,11 +2794,12 @@ async fn latency_multihop_chain() -> Result<()> {
     lab.set_link_condition(
         nat.id(),
         isp.id(),
-        Some(Impair::Manual {
-            rate: 0,
-            loss: 0.0,
-            latency: 30,
-        }),
+        Some(Impair::Manual(ImpairLimits {
+            rate_kbit: 0,
+            loss_pct: 0.0,
+            latency_ms: 30,
+            ..Default::default()
+        })),
     )?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -2882,11 +2828,12 @@ async fn rate_dynamic_decrease() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 5000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 5000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -2904,11 +2851,12 @@ async fn rate_dynamic_decrease() -> Result<()> {
     let default_if = dev_handle.default_iface().name().to_string();
     dev_handle.set_link_condition(
         &default_if,
-        Some(Impair::Manual {
-            rate: 500,
-            loss: 0.0,
-            latency: 0,
-        }),
+        Some(Impair::Manual(ImpairLimits {
+            rate_kbit: 500,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
     )?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_801)))?;
@@ -2943,11 +2891,12 @@ async fn rate_dynamic_remove() -> Result<()> {
         .iface(
             "eth0",
             dc.id(),
-            Some(Impair::Manual {
-                rate: 1000,
-                loss: 0.0,
-                latency: 0,
-            }),
+            Some(Impair::Manual(ImpairLimits {
+                rate_kbit: 1000,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
         )
         .build()
         .await?;
@@ -3001,11 +2950,12 @@ async fn latency_dynamic_add_remove() -> Result<()> {
     let default_if = dev_handle.default_iface().name().to_string();
     dev_handle.set_link_condition(
         &default_if,
-        Some(Impair::Manual {
-            rate: 0,
-            loss: 0.0,
-            latency: 100,
-        }),
+        Some(Impair::Manual(ImpairLimits {
+            rate_kbit: 0,
+            loss_pct: 0.0,
+            latency_ms: 100,
+            ..Default::default()
+        })),
     )?;
     let high = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
@@ -3025,9 +2975,14 @@ async fn latency_dynamic_add_remove() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
 async fn rate_presets() -> Result<()> {
-    let cases = [
-        (Impair::Wifi, 20u64, 0.0f32),
-        (Impair::Mobile, 50u64, 1.0f32),
+    let cases: Vec<(Impair, u64, f32)> = vec![
+        (Impair::Lan, 0, 0.0),
+        (Impair::Wifi, 5, 0.0),
+        (Impair::WifiBad, 40, 2.0),
+        (Impair::Mobile4G, 25, 0.0),
+        (Impair::Mobile3G, 100, 2.0),
+        (Impair::Satellite, 40, 1.0),
+        (Impair::SatelliteGeo, 300, 0.0),
     ];
     let mut port_base = 19_100u16;
     let mut failures = Vec::new();
@@ -3071,6 +3026,82 @@ async fn rate_presets() -> Result<()> {
     if !failures.is_empty() {
         bail!("{} failures:\n{}", failures.len(), failures.join("\n"));
     }
+    Ok(())
+}
+
+#[test]
+fn impair_presets_to_limits() {
+    let presets = [
+        Impair::Lan,
+        Impair::Wifi,
+        Impair::WifiBad,
+        Impair::Mobile4G,
+        Impair::Mobile3G,
+        Impair::Satellite,
+        Impair::SatelliteGeo,
+    ];
+    for preset in presets {
+        let limits = preset.to_limits();
+        // All presets must produce valid limits (no panics, no NaN).
+        assert!(!limits.loss_pct.is_nan(), "{preset:?}: loss_pct is NaN");
+        assert!(
+            !limits.reorder_pct.is_nan(),
+            "{preset:?}: reorder_pct is NaN"
+        );
+        assert!(
+            !limits.duplicate_pct.is_nan(),
+            "{preset:?}: duplicate_pct is NaN"
+        );
+        assert!(
+            !limits.corrupt_pct.is_nan(),
+            "{preset:?}: corrupt_pct is NaN"
+        );
+    }
+    // Lan must be zero impairment.
+    assert_eq!(Impair::Lan.to_limits(), ImpairLimits::default());
+    // Manual round-trips.
+    let custom = ImpairLimits {
+        rate_kbit: 1000,
+        loss_pct: 5.0,
+        latency_ms: 100,
+        jitter_ms: 10,
+        reorder_pct: 1.0,
+        duplicate_pct: 0.5,
+        corrupt_pct: 0.1,
+    };
+    assert_eq!(Impair::Manual(custom).to_limits(), custom);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn downlink_condition_builder() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new();
+    let dc = lab
+        .add_router("dc")
+        .downlink_condition(Impair::Manual(ImpairLimits {
+            latency_ms: 50,
+            ..Default::default()
+        }))
+        .build()
+        .await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id(), None)
+        .build()
+        .await?;
+
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+    let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_200);
+    dc.spawn_reflector(r)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
+    // 50ms one-way on downlink → download direction adds ~50ms to RTT.
+    assert!(
+        rtt >= Duration::from_millis(30),
+        "expected RTT >= 30ms from builder downlink impairment, got {rtt:?}"
+    );
     Ok(())
 }
 
@@ -4049,7 +4080,7 @@ async fn holepunch_send_recv(socket: &UdpSocket, dst: SocketAddr) -> Result<()> 
     loop {
         let msg = format!("punch {i}");
         socket.send_to(msg.as_bytes(), dst).await?;
-        if i % 5 == 0 {
+        if i.is_multiple_of(5) {
             info!("sent probe {i} to {dst}");
         }
         i += 1;

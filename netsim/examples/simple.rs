@@ -18,11 +18,7 @@ async fn async_main() -> Result<()> {
     let dc = lab.add_router("dc").region("eu").build().await?;
 
     // A "home" router with a NAT: downstream devices get private IPs.
-    let home = lab
-        .add_router("home")
-        .nat(Nat::Home)
-        .build()
-        .await?;
+    let home = lab.add_router("home").nat(Nat::Home).build().await?;
 
     // A device behind the home router, with a lossy WiFi link.
     let dev = lab
