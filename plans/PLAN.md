@@ -4,7 +4,6 @@
 
 ## Open
 
-- [no-globals-better-spawn.md](no-globals-better-spawn.md) — priority 5 — remove global registries, RT handle cloning, Ix handle
 - [dns.md](dns.md) — priority 2
 - [testing.md](testing.md) — priority 2
 
@@ -16,6 +15,7 @@
 
 ## Completed
 
+- [no-globals-better-spawn.md](no-globals-better-spawn.md) — priority 5 — globals removed, RT handle cloning, Ix handle, namespace-free helpers
 - [ipv6.md](ipv6.md) — priority 5 — dual-stack + v6-only support, DAD consolidation, all 69 tests pass
 - [new-api.md](new-api.md) — priority 5 — Arc\<Mutex\<LabInner\>\>, Device/Router handles, instant construction
 
