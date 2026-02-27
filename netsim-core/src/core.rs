@@ -1641,7 +1641,6 @@ fn apply_conntrack_timeouts_from_config(
 }
 
 /// Applies router NAT rules for the configured mode.
-/// Applies router NAT rules for the configured mode.
 ///
 /// Uses the effective NAT config from the router's [`Nat`] variant.
 /// Otherwise expands the [`Nat`] preset via [`Nat::to_config`].

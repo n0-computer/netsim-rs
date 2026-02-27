@@ -250,30 +250,6 @@ impl Netlink {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub(crate) async fn replace_default_route_v6(&self, ifname: &str, via: Ipv6Addr) -> Result<()> {
-        trace!(ifname = %ifname, via = %via, "replace default route v6");
-        let ifindex = self.link_index(ifname).await?;
-
-        let mut routes = self
-            .handle
-            .route()
-            .get(RouteMessageBuilder::<Ipv6Addr>::new().build())
-            .execute();
-        while let Some(route) = routes.try_next().await? {
-            if route.header.destination_prefix_length == 0 {
-                let _ = self.handle.route().del(route).execute().await;
-            }
-        }
-
-        let msg = RouteMessageBuilder::<Ipv6Addr>::new()
-            .output_interface(ifindex)
-            .gateway(via)
-            .build();
-        self.handle.route().add(msg).execute().await?;
-        Ok(())
-    }
-
     pub(crate) async fn add_route_v6(
         &self,
         dst: Ipv6Addr,

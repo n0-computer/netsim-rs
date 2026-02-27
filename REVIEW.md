@@ -53,9 +53,21 @@ drop(inner);
 ```
 Extract a small helper on each handle to reduce repetition.
 
+#### nftables via netlink (won't fix)
+
+Rust crates for nftables via netlink (`nftnl`, `rustables`, `mnl`) exist but are
+immature with rough APIs. Not worth replacing `Command::new("nft")` for now.
+
 ---
 
 ## Completed
+
+35. **Duplicate docstring in `apply_nat_for_router`** — removed duplicate line ✅
+36. **Dead `replace_default_route_v6`** — removed unused method from `netlink.rs` ✅
+37. **Redundant `nft flush ruleset` on fresh namespaces** — removed 3 pointless `nft` process spawns per lab (fresh `unshare(CLONE_NEWNET)` namespaces have no rules) ✅
+38. **Duplicate `unshare(CLONE_NEWNS)` + overlay setup** — extracted `apply_mount_overlay()` shared by async worker, sync worker, user threads, and tokio blocking pool ✅
+39. **Merge ns creation + async worker thread** — `create_unshared_netns_fd()` + lazy `Worker::rt_handle()` merged into single `Worker::spawn()` that creates namespace via `unshare(CLONE_NEWNET)` and stays alive as async worker; saves 1 thread per namespace ✅
+40. **DNS overlay set-after-create** — `set_dns_overlay()` removed; `create_netns(name, dns_overlay)` passes overlay at creation time so async worker applies it at startup ✅
 
 1. **`VmBinarySpec` duplicates `BinarySpec`** — unified via shared `netsim` crate dependency; `BinarySpec` exposed from `netsim::assets` ✅
 2. **Multi-pass router resolution is a manual topological sort** — identified O(n²) loop in `from_config`; cycle guard correct but subtle; left as-is (acceptable for current topology sizes) ✅
