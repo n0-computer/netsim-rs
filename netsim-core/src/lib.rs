@@ -62,8 +62,9 @@ mod userns;
 pub mod util;
 
 pub use lab::{
-    Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Ix, Lab, Nat, NatFiltering, NatMapping,
-    NatV6Mode, ObservedAddr, Router, RouterBuilder,
+    ConntrackTimeouts, Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Ix, Lab, Nat,
+    NatConfig, NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, ObservedAddr, Router,
+    RouterBuilder,
 };
 
 #[allow(deprecated)]

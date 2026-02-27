@@ -20,7 +20,8 @@ use tracing::{debug, debug_span, Instrument as _};
 
 use crate::{
     core::{
-        self, apply_nat, apply_nat_v6, apply_or_remove_impair, run_nft_in, setup_device_async,
+        self, apply_nat_config, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair,
+        run_nft_in, setup_device_async,
         setup_root_ns_async, setup_router_async, CoreConfig, DownstreamPool, IfaceBuild,
         NetworkCore, NodeId, RouterSetupData,
     },
@@ -141,6 +142,170 @@ pub enum NatFiltering {
     ///
     /// nftables: conntrack-only (no prerouting DNAT).
     AddressAndPortDependent,
+}
+
+/// Conntrack timeout configuration for a NAT profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConntrackTimeouts {
+    /// Timeout for a single unreplied UDP packet (seconds).
+    pub udp: u32,
+    /// Timeout for a UDP "stream" (bidirectional traffic seen, seconds).
+    pub udp_stream: u32,
+    /// Timeout for an established TCP connection (seconds).
+    pub tcp_established: u32,
+}
+
+impl Default for ConntrackTimeouts {
+    fn default() -> Self {
+        Self {
+            udp: 30,
+            udp_stream: 300,
+            tcp_established: 7200,
+        }
+    }
+}
+
+/// Expanded NAT configuration produced from a [`Nat`] preset or the builder API.
+///
+/// This carries all parameters needed to generate nftables rules and
+/// conntrack settings for a router's NAT. The presets ([`Nat::Home`],
+/// [`Nat::Corporate`], etc.) each expand to a specific `NatConfig` via
+/// [`Nat::to_config`]. Custom configurations can be built directly.
+///
+/// # Example
+/// ```
+/// # use netsim_core::{NatConfig, NatMapping, NatFiltering};
+/// // A home router with shorter UDP timeouts:
+/// let cfg = NatConfig::builder()
+///     .mapping(NatMapping::EndpointIndependent)
+///     .filtering(NatFiltering::AddressAndPortDependent)
+///     .udp_stream_timeout(120)
+///     .build();
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NatConfig {
+    /// How outbound port mapping works.
+    pub mapping: NatMapping,
+    /// Which inbound packets are forwarded.
+    pub filtering: NatFiltering,
+    /// Conntrack timeout settings.
+    pub timeouts: ConntrackTimeouts,
+}
+
+impl NatConfig {
+    /// Returns a builder for constructing a custom NAT configuration.
+    pub fn builder() -> NatConfigBuilder {
+        NatConfigBuilder::default()
+    }
+}
+
+/// Builder for [`NatConfig`].
+///
+/// Defaults to EIM + APDF with standard home-router timeouts.
+#[derive(Clone, Debug)]
+pub struct NatConfigBuilder {
+    mapping: NatMapping,
+    filtering: NatFiltering,
+    timeouts: ConntrackTimeouts,
+}
+
+impl Default for NatConfigBuilder {
+    fn default() -> Self {
+        Self {
+            mapping: NatMapping::EndpointIndependent,
+            filtering: NatFiltering::AddressAndPortDependent,
+            timeouts: ConntrackTimeouts::default(),
+        }
+    }
+}
+
+impl NatConfigBuilder {
+    /// Sets the mapping behavior.
+    pub fn mapping(mut self, mapping: NatMapping) -> Self {
+        self.mapping = mapping;
+        self
+    }
+
+    /// Sets the filtering behavior.
+    pub fn filtering(mut self, filtering: NatFiltering) -> Self {
+        self.filtering = filtering;
+        self
+    }
+
+    /// Sets the UDP single-packet timeout (seconds). Default: 30.
+    pub fn udp_timeout(mut self, secs: u32) -> Self {
+        self.timeouts.udp = secs;
+        self
+    }
+
+    /// Sets the UDP stream timeout (seconds). Default: 300.
+    pub fn udp_stream_timeout(mut self, secs: u32) -> Self {
+        self.timeouts.udp_stream = secs;
+        self
+    }
+
+    /// Sets the TCP established timeout (seconds). Default: 7200.
+    pub fn tcp_established_timeout(mut self, secs: u32) -> Self {
+        self.timeouts.tcp_established = secs;
+        self
+    }
+
+    /// Builds the [`NatConfig`].
+    pub fn build(self) -> NatConfig {
+        NatConfig {
+            mapping: self.mapping,
+            filtering: self.filtering,
+            timeouts: self.timeouts,
+        }
+    }
+}
+
+impl Nat {
+    /// Expands a preset into its full [`NatConfig`].
+    ///
+    /// Returns `None` for [`Nat::None`] and [`Nat::Cgnat`] (which use
+    /// different code paths — no NAT and ISP-level masquerade respectively).
+    pub fn to_config(self) -> Option<NatConfig> {
+        match self {
+            Nat::None | Nat::Cgnat => None,
+            Nat::Home => Some(NatConfig {
+                mapping: NatMapping::EndpointIndependent,
+                filtering: NatFiltering::AddressAndPortDependent,
+                timeouts: ConntrackTimeouts {
+                    udp: 30,
+                    udp_stream: 300,
+                    tcp_established: 7200,
+                },
+            }),
+            Nat::FullCone => Some(NatConfig {
+                mapping: NatMapping::EndpointIndependent,
+                filtering: NatFiltering::EndpointIndependent,
+                timeouts: ConntrackTimeouts {
+                    udp: 30,
+                    udp_stream: 300,
+                    tcp_established: 7200,
+                },
+            }),
+            Nat::Corporate => Some(NatConfig {
+                mapping: NatMapping::EndpointDependent,
+                filtering: NatFiltering::AddressAndPortDependent,
+                timeouts: ConntrackTimeouts {
+                    udp: 30,
+                    udp_stream: 120,
+                    tcp_established: 3600,
+                },
+            }),
+            Nat::CloudNat => Some(NatConfig {
+                mapping: NatMapping::EndpointDependent,
+                filtering: NatFiltering::AddressAndPortDependent,
+                timeouts: ConntrackTimeouts {
+                    udp: 30,
+                    udp_stream: 350,
+                    tcp_established: 3600,
+                },
+            }),
+        }
+    }
 }
 
 /// IPv6 NAT mode for a router.
@@ -588,6 +753,7 @@ impl Lab {
                 region: None,
                 upstream: None,
                 nat: Nat::None,
+                nat_config_override: None,
                 ip_support: IpSupport::V4Only,
                 nat_v6: NatV6Mode::None,
                 downstream_cidr: None,
@@ -601,6 +767,7 @@ impl Lab {
             region: None,
             upstream: None,
             nat: Nat::None,
+            nat_config_override: None,
             ip_support: IpSupport::V4Only,
             nat_v6: NatV6Mode::None,
             downstream_cidr: None,
@@ -875,6 +1042,7 @@ pub struct RouterBuilder {
     region: Option<String>,
     upstream: Option<NodeId>,
     nat: Nat,
+    nat_config_override: Option<NatConfig>,
     ip_support: IpSupport,
     nat_v6: NatV6Mode,
     downstream_cidr: Option<Ipv4Net>,
@@ -904,6 +1072,38 @@ impl RouterBuilder {
     pub fn nat(mut self, mode: Nat) -> Self {
         if self.result.is_ok() {
             self.nat = mode;
+            self.nat_config_override = None;
+        }
+        self
+    }
+
+    /// Sets a custom NAT configuration, overriding any preset.
+    ///
+    /// When set, this config is used instead of expanding the [`Nat`] preset.
+    /// The router will still use private addressing (like `Nat::Home`).
+    ///
+    /// # Example
+    /// ```no_run
+    /// # use netsim_core::*;
+    /// # #[tokio::main] async fn main() -> anyhow::Result<()> {
+    /// let lab = Lab::new();
+    /// let cfg = NatConfig::builder()
+    ///     .mapping(NatMapping::EndpointIndependent)
+    ///     .filtering(NatFiltering::EndpointIndependent)
+    ///     .udp_stream_timeout(120)
+    ///     .build();
+    /// let router = lab.add_router("custom")
+    ///     .nat_config(cfg)
+    ///     .build()
+    ///     .await?;
+    /// # Ok(()) }
+    /// ```
+    pub fn nat_config(mut self, config: NatConfig) -> Self {
+        if self.result.is_ok() {
+            // Set nat to Home so downstream gets private addressing.
+            // The actual rules come from the config override.
+            self.nat = Nat::Home;
+            self.nat_config_override = Some(config);
         }
         self
     }
@@ -956,6 +1156,9 @@ impl RouterBuilder {
                 self.ip_support,
                 self.nat_v6,
             );
+            if let Some(cfg) = self.nat_config_override {
+                inner.set_router_nat_config(id, cfg).unwrap();
+            }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();
             let sub_switch =
@@ -1920,14 +2123,34 @@ impl Router {
     ///
     /// Flushes the `ip nat` table then re-applies the new rules.
     pub fn set_nat_mode(&self, mode: Nat) -> Result<()> {
-        let (ns, lan_if, wan_if, wan_ip, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let (ns, lan_if, wan_if, wan_ip) = inner.router_nat_params(self.id)?;
-            (ns, lan_if, wan_if, wan_ip, Arc::clone(&inner.netns))
+        let (ns, wan_if, wan_ip, netns, cfg) = {
+            let mut inner = self.lab.lock().unwrap();
+            inner.set_router_nat_mode(self.id, mode)?;
+            let cfg = inner.router_effective_cfg(self.id)?;
+            let (ns, _lan_if, wan_if, wan_ip) = inner.router_nat_params(self.id)?;
+            (ns, wan_if, wan_ip, Arc::clone(&inner.netns), cfg)
         };
         run_nft_in(&netns, &ns, "flush table ip nat").ok();
-        apply_nat(&netns, &ns, mode, &lan_if, &wan_if, wan_ip)?;
-        self.lab.lock().unwrap().set_router_nat_mode(self.id, mode)
+        run_nft_in(&netns, &ns, "flush table ip filter").ok();
+        apply_nat_for_router(&netns, &ns, &cfg, &wan_if, wan_ip)
+    }
+
+    /// Replaces NAT rules with a custom [`NatConfig`] at runtime.
+    ///
+    /// This bypasses the preset and uses the provided config directly.
+    pub fn set_nat_config(&self, config: NatConfig) -> Result<()> {
+        let (ns, wan_if, wan_ip, netns) = {
+            let inner = self.lab.lock().unwrap();
+            let (ns, _lan_if, wan_if, wan_ip) = inner.router_nat_params(self.id)?;
+            (ns, wan_if, wan_ip, Arc::clone(&inner.netns))
+        };
+        run_nft_in(&netns, &ns, "flush table ip nat").ok();
+        run_nft_in(&netns, &ns, "flush table ip filter").ok();
+        apply_nat_config(&netns, &ns, &config, &wan_if, wan_ip)?;
+        self.lab
+            .lock()
+            .unwrap()
+            .set_router_nat_config(self.id, config)
     }
 
     /// Replaces IPv6 NAT rules on this router at runtime.

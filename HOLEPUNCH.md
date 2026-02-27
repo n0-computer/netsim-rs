@@ -1,72 +1,71 @@
-# NAT Hole Punching in netsim
+# NAT Implementation & Hole-Punching in netsim
 
-## Background: NAT type taxonomy (RFC 4787)
+Lessons learned implementing the `Nat` presets and getting UDP hole-punching
+to work across different NAT types in Linux network namespaces with nftables.
+
+## RFC 4787: mapping × filtering
 
 Two independent axes define NAT behavior for UDP:
 
-**Mapping** — how the NAT assigns external ip:port for outbound flows:
+| Axis | Endpoint-Independent (EI) | Endpoint-Dependent (ED) |
+|---|---|---|
+| **Mapping** — how external ports are assigned | Same ext port for all destinations | Different ext port per destination |
+| **Filtering** — which inbound packets are forwarded | Any external host can send to mapped port | Only the contacted host:port can reply |
 
-| Mapping type          | Behaviour                                        |
-|-----------------------|--------------------------------------------------|
-| Endpoint-Independent  | Same external port for all destinations           |
-| Endpoint-Dependent    | Different external port per destination (symmetric) |
+Combined, these give the real-world profiles we simulate:
 
-**Filtering** — which inbound packets the NAT accepts on a mapped port:
+| Preset | Mapping | Filtering | Hole-punch? | Real-world examples |
+|---|---|---|---|---|
+| `Nat::Home` | EIM | APDF | Yes, simultaneous open | FritzBox, Unifi, TP-Link, ASUS RT, OpenWRT |
+| `Nat::FullCone` | EIM | EIF | Always | Old FritzBox firmware, some CGNAT |
+| `Nat::Corporate` | EDM | APDF | Never (need relay) | Cisco ASA, Palo Alto, Fortinet, Juniper SRX |
+| `Nat::CloudNat` | EDM | APDF | Never (need relay) | AWS/Azure/GCP NAT Gateway |
+| `Nat::Cgnat` | — | — | Varies | ISP-level, stacks with home NAT |
 
-| Filtering type        | Accepts inbound from                             |
-|-----------------------|--------------------------------------------------|
-| Endpoint-Independent  | Any host (full cone)                             |
-| Address-Dependent     | Any port on hosts the client has sent to          |
-| Addr+Port-Dependent   | Only the exact host:port the client sent to       |
+## Key findings: what works and what doesn't in nftables
 
-Combined, these give the classic four NAT types:
+### `snat to <ip>` does NOT preserve ports reliably
 
-| NAT type             | Mapping | Filtering       | Hole-punch friendly |
-|----------------------|---------|-----------------|---------------------|
-| Full Cone            | EIM     | EIF             | Yes — trivial       |
-| Restricted Cone      | EIM     | Addr-Dependent  | Yes — send first    |
-| Port-Restricted Cone | EIM     | Addr+Port-Dep   | Yes — simultaneous  |
-| Symmetric            | EDM     | Addr+Port-Dep   | No (port prediction needed) |
+The single biggest surprise. Conventional wisdom says `snat to <ip>` without
+a port range is "port-preserving". In practice, **Linux conntrack assigns
+different external ports for different conntrack entries from the same source
+socket**, even when there is no port conflict.
 
----
+Example: a device binds port 40000, sends to STUN (port preserved to 40000),
+then sends to a peer — conntrack assigns port 27028 instead of 40000.
 
-## Implemented NAT modes
-
-### `NatMode::None`
-
-No NAT.  Downstream addresses are publicly routable (DC / server
-behavior).  No nftables rules.
-
-- **Mapping**: N/A
-- **Filtering**: N/A
-- **Hole punching**: Not needed — direct connectivity.
-
-### `NatMode::Cgnat`
-
-ISP-level carrier-grade NAT.  Applied on the IX-facing interface of ISP
-routers.
+Tested and confirmed that none of these fix it:
 
 ```nft
-table ip nat {
-    chain postrouting {
-        type nat hook postrouting priority 100;
-        oif "ix" masquerade
-    }
-}
+oif "ix" snat to 203.0.113.11              # port NOT preserved across entries
+oif "ix" snat to 203.0.113.11 persistent   # still remaps
+oif "ix" masquerade persistent              # still remaps
+oif "ix" snat to 203.0.113.11:1024-65535 persistent  # syntax error without proto match
 ```
 
-- **Mapping**: Endpoint-Dependent (`masquerade` = SNAT with port randomization
-  per flow, and the external IP follows the outgoing interface).
-- **Filtering**: Addr+Port-Dependent (Linux conntrack default).
-- **Hole punching**: Difficult.  Different port per destination means the
-  peer cannot predict the mapped port from a STUN probe.  Simultaneous
-  open can work if both sides guess the same port, but this is unreliable.
-  Real ISP CGNATs vary widely; some are more permissive.
+The `persistent` flag is documented to "give a client the same
+source-ip,source-port" but the kernel's NAT tuple uniqueness check still
+triggers port reallocation across independent conntrack entries.
 
-### `NatMode::DestinationIndependent`
+### A prerouting nat chain is required even if empty
 
-Home router NAT with full-cone behavior.  This is the mode that matters
-most for P2P / hole punching.
+Without a `type nat hook prerouting` chain registered in the nat table, the
+kernel does not perform conntrack reverse-NAT lookup on inbound packets. This
+means packets destined for the router's WAN IP that should be reverse-DNATed
+are delivered to the router's INPUT chain instead of being forwarded to the
+internal device.
+
+### Conntrack reverse-NAT depends on port consistency
+
+Even with a prerouting chain, conntrack reverse-NAT only works when the
+inbound packet's 5-tuple matches the reply tuple of an existing conntrack
+entry. If SNAT changed the port (which it does — see above), the peer sends
+to the wrong port and conntrack doesn't match.
+
+## The solution: fullcone dynamic map
+
+The only reliable way to get endpoint-independent mapping in nftables is
+to explicitly track port mappings in a dynamic `@fullcone` map:
 
 ```nft
 table ip nat {
@@ -82,46 +81,67 @@ table ip nat {
     }
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
-        oif "ix" meta l4proto udp update @fullcone {
-            udp sport timeout 300s : ip saddr . udp sport
-        }
+        oif "ix" meta l4proto udp update @fullcone { udp sport timeout 300s : ip saddr . udp sport }
         oif "ix" snat to <wan_ip>
     }
 }
 ```
 
-- **Mapping**: Endpoint-Independent (`snat to <ip>` with no port range;
-  Linux preserves the original source port when free).
-- **Filtering**: Endpoint-Independent (via `@fullcone` dynamic map — any
-  external host can send to a mapped port).
-- **Hole punching**: Works reliably.  One side probes a STUN server to learn
-  its mapped address; the other side can send to that address immediately,
-  even without sending first.  Timing does not matter.
+How it works:
 
-#### How the fullcone map works
+1. **Postrouting** records the pre-SNAT source port in `@fullcone` before the
+   `snat` rule executes. The map key is the UDP source port, the value is
+   `internal_ip . internal_port`. Even if `snat` later remaps the port, the
+   map holds the correct mapping keyed by the *original* port.
 
-1. **Outbound UDP** hits postrouting.  Before `snat` rewrites the source,
-   `update @fullcone` records `src_port → src_ip . src_port`.  Since
-   `snat to <ip>` (no port range) preserves the source port when it is
-   free, `src_port == mapped_port` in virtually all cases.
+2. **Prerouting** looks up inbound UDP by destination port in `@fullcone` and
+   DNATs to the internal host. This bypasses conntrack reverse-NAT entirely.
 
-2. **Inbound UDP** hits prerouting.  The destination port is looked up in
-   `@fullcone`.  If found, the packet is DNATted to the recorded internal
-   endpoint.  The kernel then routes it to the LAN.
+3. **Timeout** is 300s. Outbound traffic refreshes the entry.
 
-3. **Timeout** is 300 seconds.  Outbound traffic refreshes the entry.
+**Why `update` must come before `snat`**: nftables NAT statements record the
+transformation but the conntrack entry's reply tuple is not yet available
+during the same chain evaluation. By recording `udp sport` / `ip saddr`
+*before* SNAT, we capture the original tuple.
 
-#### Why `update` must come before `snat`
+## Implementing filtering on top of the fullcone map
 
-nftables NAT statements record the transformation but the conntrack entry's
-reply tuple is not readable within the same chain evaluation.  After `snat`,
-`ct reply proto-dst` (the mapped port) is not yet available.  By recording
-the mapping *before* SNAT using `udp sport` / `ip saddr`, we capture the
-original tuple.
+### EIF (Endpoint-Independent Filtering) — `Nat::FullCone`
 
-### `NatMode::DestinationDependent`
+No filter chain needed. Prerouting DNAT fires for any inbound packet whose
+destination port is in the map, regardless of source address. Any external
+host can reach the internal endpoint once it has sent one outbound packet.
 
-Symmetric-ish NAT.  Different external port per destination.
+### APDF (Address-and-Port-Dependent Filtering) — `Nat::Home`
+
+Same fullcone map for EIM, plus a forward filter:
+
+```nft
+table ip filter {
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        iif "ix" ct state established,related accept
+        iif "ix" drop
+    }
+}
+```
+
+Why this works for hole-punching:
+
+1. Device sends to peer → postrouting SNAT creates conntrack entry +
+   fullcone map records port.
+2. Peer sends to device → prerouting DNAT via fullcone map changes dst from
+   router WAN IP to device internal IP.
+3. After DNAT, the packet's 5-tuple (`peer:port → device_internal:port`)
+   matches the **reply direction** of the outbound conntrack entry from step 1.
+4. Conntrack marks the packet `ct state established`.
+5. Forward filter allows it.
+
+An unsolicited packet from an unknown host also gets DNATed (step 2), but
+no outbound conntrack entry exists for that source, so it's `ct state new`
+→ dropped by the filter.
+
+### EDM (Endpoint-Dependent Mapping) — `Nat::Corporate` / `Nat::CloudNat`
 
 ```nft
 table ip nat {
@@ -132,100 +152,72 @@ table ip nat {
 }
 ```
 
-- **Mapping**: Endpoint-Dependent (`masquerade random` assigns a different
-  random source port per destination).
-- **Filtering**: Addr+Port-Dependent (Linux conntrack default).
-- **Hole punching**: Very difficult.  The mapped port seen via STUN is
-  different from the port that would be assigned for traffic to the peer.
-  Port prediction or relay (TURN) is required.
+`masquerade random` randomizes the source port per conntrack entry. No
+fullcone map, no prerouting chain. Hole-punching is impossible because the
+peer can't predict the mapped port from a STUN probe.
 
----
+## Test helper subtlety: `holepunch_send_recv`
 
-## Limitations of current implementation
+Both sides call `holepunch_send_recv(socket, peer_public_addr)` which sends
+UDP probes every 200ms and checks for a response.
 
-- **UDP only fullcone**.  The `@fullcone` map only handles UDP.  TCP
-  hole punching (simultaneous SYN) relies on plain conntrack, which
-  requires both sides to send at roughly the same time.  This matches
-  real-world behavior — TCP hole punching is unreliable everywhere.
+**Critical detail**: when one side receives a probe first, it must send a few
+more packets before returning. Otherwise:
 
-- **Port preservation assumption**.  If `snat to <ip>` remaps the source
-  port (due to a port conflict with another flow), the fullcone map key
-  won't match the actual mapped port.  This is extremely unlikely in our
-  simulations (few concurrent flows, 64k port space) but theoretically
-  possible.
+1. Side A receives side B's probe → returns success, stops sending.
+2. Side B's probes to side A may have arrived *before* side A created its
+   outbound conntrack entry at side B's NAT.
+3. Those early probes were dropped by APDF filtering at side B's NAT.
+4. Side A stopped sending, so side B never gets a packet through.
 
-- **No hairpin NAT**.  Internal-to-internal traffic via the public IP is
-  not supported.  Packets from a LAN host to its own public addr are
-  dropped.
+Fix: after receiving, send 3 "ack" packets to ensure the peer's NAT has an
+established conntrack entry.
 
----
+## NatConfig architecture
 
-## Future work
-
-### Missing models commonly deployed in the wild
-
-**Address-Restricted Cone** (EIM + Address-Dependent Filtering).
-Common on many consumer routers (Netgear, TP-Link default firmware).
-The NAT accepts inbound from any port on a remote host, but only if the
-internal endpoint has previously sent *something* to that host's IP.
-Implementation: extend the fullcone map to also track a set of
-contacted remote IPs per mapping, and gate the prerouting DNAT on
-`ip saddr` being in that set.
-
-**Port-Restricted Cone** (EIM + Addr+Port-Dependent Filtering).
-This is what Linux conntrack does by default — `snat to <ip>` without the
-fullcone map.  Already achievable by using `DestinationDependent` mode
-without the `random` flag, but not exposed as a distinct `NatMode` variant
-yet.  Easy to add: just `snat to <ip>` with no fullcone map.
-
-**Symmetric NAT with port prediction window**.  Some carrier NATs assign
-ports sequentially within a small window.  Real-world hole-punch libraries
-(libnice, PJNATH) exploit this with "port prediction" — probing N+1 after
-seeing port N from STUN.  Could be simulated with `snat to <ip>:<range>`
-plus a small sequential allocation pool.
-
-### Configurable filtering mode
-
-Decouple mapping and filtering into separate knobs:
+The `Nat` enum provides named presets. Each expands via `Nat::to_config()`
+to a `NatConfig` struct:
 
 ```rust
-enum NatMapping {
-    EndpointIndependent,   // snat to <ip>
-    EndpointDependent,     // masquerade random
-}
-
-enum NatFiltering {
-    EndpointIndependent,   // fullcone map (current DestinationIndependent)
-    AddressDependent,      // fullcone map + contacted-hosts set
-    AddressPortDependent,  // pure conntrack (no fullcone map)
+pub struct NatConfig {
+    pub mapping: NatMapping,           // EIM or EDM
+    pub filtering: NatFiltering,       // EIF or APDF
+    pub timeouts: ConntrackTimeouts,   // udp, udp_stream, tcp_established
 }
 ```
 
-This would allow any combination (e.g. EIM mapping + address-dependent
-filtering = restricted cone).
+`generate_nat_rules()` in `core.rs` builds nftables rules from `NatConfig`
+alone — no match on `Nat` variants, just the mapping/filtering enums. Users
+can either use presets (`router.nat(Nat::Home)`) or build custom configs
+(`router.nat_config(NatConfig::builder()...build())`).
 
-### Hairpin NAT
+### CGNAT is special
 
-Add a prerouting rule for packets from the LAN with `ip daddr == wan_ip`:
-DNAT back to the internal endpoint via the fullcone map.  Requires careful
-ordering to avoid loops.
+`Nat::Cgnat` is applied at the ISP router level via `apply_isp_cgnat()`,
+not through `NatConfig`. It uses plain `masquerade` (not `random`) on the
+IX-facing interface and stacks with the home router's NAT.
 
-### TCP fullcone
+## Limitations
 
-Extend the `@fullcone` map to TCP.  Less useful in practice since TCP hole
-punching always requires simultaneous SYN, but it would complete the model.
+- **UDP only in fullcone map**. TCP hole-punching (simultaneous SYN) relies
+  on plain conntrack. Matches real-world behavior — TCP hole-punching is
+  unreliable everywhere.
 
-### Port-conflict-safe fullcone
+- **Port preservation assumption in map**. If `snat to <ip>` remaps the
+  source port, the fullcone map key (original port) differs from the actual
+  mapped port. The map-based DNAT still works correctly because both sides
+  record the same key. But the SNAT'd packet goes out on a different port
+  than the peer expects from STUN. In practice this doesn't happen in our
+  simulations (few concurrent flows, 64k port space).
 
-Handle the rare case where `snat to <ip>` remaps the source port:
-use a two-table approach where a second postrouting chain at a later
-priority reads `ct reply proto-dst` after conntrack has finalized the
-mapping.  Or restrict the SNAT port range to avoid conflicts entirely.
+- **No hairpin NAT** yet. Internal-to-internal traffic via the public IP
+  is not handled.
 
-### nf_nat_fullcone kernel module
+## Future work
 
-The [nft-fullcone](https://github.com/fullcone-nat-nftables/nft-fullcone)
-out-of-tree kernel module provides true kernel-level fullcone NAT with
-zero map-maintenance overhead.  As of kernel 6.18 it remains out-of-tree
-(primarily used in OpenWrt).  If mainlined, it would replace the dynamic
-map approach.
+- **Address-Restricted Cone** (EIM + address-dependent filtering): extend
+  the fullcone map to track contacted remote IPs.
+- **Hairpin NAT**: prerouting rule for LAN packets to own WAN IP.
+- **TCP fullcone**: extend `@fullcone` to TCP for complete model.
+- **Port-conflict-safe fullcone**: two-stage postrouting to read
+  `ct reply proto-dst` after conntrack finalizes.
