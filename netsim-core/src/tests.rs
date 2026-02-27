@@ -3173,10 +3173,7 @@ async fn dns_entry_device_specific() -> Result<()> {
     cmd.stderr(std::process::Stdio::piped());
     let child = dev1.spawn_command(cmd)?;
     let output = child.wait_with_output()?;
-    assert!(
-        output.status.success(),
-        "dev1 should resolve secret.test"
-    );
+    assert!(output.status.success(), "dev1 should resolve secret.test");
     assert!(String::from_utf8_lossy(&output.stdout).contains("10.99.0.1"));
 
     // dev2 should NOT see it (no dns_entry for dev2, so no hosts overlay).
@@ -3248,7 +3245,10 @@ async fn dns_entry_after_build() -> Result<()> {
     cmd.stderr(std::process::Stdio::piped());
     let child = dev.spawn_command(cmd)?;
     let output = child.wait_with_output()?;
-    assert!(!output.status.success(), "should not resolve before dns_entry");
+    assert!(
+        !output.status.success(),
+        "should not resolve before dns_entry"
+    );
 
     // Add entry after build.
     lab.dns_entry("late.test", IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))?;
@@ -3295,10 +3295,22 @@ async fn dns_hosts_file_content() -> Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     info!(%stdout, "hosts file content");
 
-    assert!(stdout.contains("127.0.0.1\tlocalhost"), "should have localhost");
-    assert!(stdout.contains("::1\tlocalhost"), "should have ipv6 localhost");
-    assert!(stdout.contains("10.0.0.1\talpha.test"), "should have global entry");
-    assert!(stdout.contains("10.0.0.2\tbeta.test"), "should have device entry");
+    assert!(
+        stdout.contains("127.0.0.1\tlocalhost"),
+        "should have localhost"
+    );
+    assert!(
+        stdout.contains("::1\tlocalhost"),
+        "should have ipv6 localhost"
+    );
+    assert!(
+        stdout.contains("10.0.0.1\talpha.test"),
+        "should have global entry"
+    );
+    assert!(
+        stdout.contains("10.0.0.2\tbeta.test"),
+        "should have device entry"
+    );
     Ok(())
 }
 
@@ -3411,7 +3423,7 @@ async fn dns_hickory_system_resolver() -> Result<()> {
     let jh = dev.spawn(move |_dev| async move {
         let resolver = TokioResolver::builder_tokio().ok()?.build();
         let lookup = resolver.lookup_ip("hickorytest.netsim").await.ok()?;
-        lookup.iter().next().map(|ip| ip)
+        lookup.iter().next()
     });
     let resolved = jh.await.unwrap();
     info!(?resolved, "hickory resolver via spawn");
@@ -3980,6 +3992,42 @@ async fn send_recv(socket: &UdpSocket, dst: SocketAddr, wait_before_send: Durati
     };
     tokio::try_join!(send_fut, recv_fut)?;
     Ok(())
+}
+
+/// Verifies alloc_ix_ip_low returns unique IPs and errors on exhaustion.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn test_ix_ip_alloc_no_duplicates() {
+    let lab = Lab::new();
+    let mut ips = std::collections::HashSet::new();
+    let mut inner = lab.inner.lock().unwrap();
+    // next_ix_low starts at 10, so we can allocate 245 IPs (10..=254).
+    let mut count = 0;
+    while let Ok(ip) = inner.alloc_ix_ip_low() {
+        assert!(ips.insert(ip), "duplicate IX IP {ip} at iteration {count}");
+        count += 1;
+    }
+    assert_eq!(count, 245, "expected 245 unique IPs (hosts 10..=254)");
+}
+
+/// Verifies alloc_ix_ip_v6_low returns unique IPs and errors on exhaustion.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn test_ix_ip_v6_alloc_no_duplicates() {
+    let lab = Lab::new();
+    let mut ips = std::collections::HashSet::new();
+    let mut inner = lab.inner.lock().unwrap();
+    // next_ix_low_v6 starts at 0x10 = 16.
+    let mut count = 0u32;
+    while let Ok(ip) = inner.alloc_ix_ip_v6_low() {
+        assert!(
+            ips.insert(ip),
+            "duplicate IX v6 IP {ip} at iteration {count}"
+        );
+        count += 1;
+    }
+    // 16..=65534 = 65519 unique IPs
+    assert_eq!(count, 65519, "expected 65519 unique v6 IPs");
 }
 
 async fn span_log_timeout(

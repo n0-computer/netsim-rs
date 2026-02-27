@@ -6,7 +6,59 @@ Higher-level suggestions that were not applied directly.
 
 ## Open
 
-* In lab.rs use self.ns() and similar helpers instead of manual lock blocks to get ns or such
+### API Naming & Networking Terminology
+
+Planned in [real-world-conditions.md](plans/real-world-conditions.md) Phase 1:
+- `NatMode` variant rename to `Nat` enum with RFC 4787 presets
+- `Impair` rename to `LinkCondition`
+- `switch_route` / `switch_uplink` / `rebind_nats` renames
+
+#### `ObservedAddr` wrapper (low)
+
+`ObservedAddr` wraps a single `pub observed: SocketAddr` field. This could be a
+simple type alias (`type ObservedAddr = SocketAddr`) or the field could be used
+directly. The wrapper adds indirection without additional invariants.
+
+#### `DeviceIface::ip()` returns `Ipv4Addr`, not `Option` (low)
+
+For `V6Only` devices, `ip()` returns `Ipv4Addr::UNSPECIFIED` instead of `None`.
+This violates the "make impossible states unrepresentable" idiom. Consider
+returning `Option<Ipv4Addr>` or providing separate `ipv4()` / `ipv6()` getters.
+
+### Code Smells
+
+#### `ensure_root_ns` race condition (medium)
+
+Two concurrent `build()` calls can both read `root_ns_initialized == false`
+(extracted under the lock), then both call `ensure_root_ns()` outside the lock.
+`setup_root_ns_async` deletes and recreates the IX bridge, so a concurrent
+call would tear down work done by the first.
+
+In practice this doesn't fire (tests are single-threaded), but it's latent.
+Fix: use `tokio::sync::OnceCell` or `AtomicBool` with compare-and-swap.
+
+#### Suppressed stderr on all `tc` commands (low)
+
+Every `Qdisc` method sets `stderr(Stdio::null())`. When `tc` fails, the exit
+code is checked but the diagnostic message is lost. Consider capturing stderr
+and including it in the error.
+
+#### `add_host` hardcodes /24 assumption (low)
+
+`add_host(cidr, host)` replaces only the last octet, which only works for /24
+subnets. If the allocator ever moves to /16 or /25 this will silently produce
+wrong addresses.
+
+#### Duplicate lock-extract-drop boilerplate (low)
+
+Nearly every handle method (Device, Router, Ix) follows the same pattern:
+```rust
+let inner = self.lab.lock().unwrap();
+let ns = inner.device(self.id).unwrap().ns.clone();
+let netns = Arc::clone(&inner.netns);
+drop(inner);
+```
+Extract a small helper on each handle to reduce repetition.
 
 ---
 
@@ -42,3 +94,7 @@ Higher-level suggestions that were not applied directly.
 28. **`resources()` → `ResourceList::global()`** — `resources()` free function removed; `ResourceList::global()` added as associated function; all callers in lab.rs and netsim/main.rs migrated ✅
 29. **Drop `NETSIM_NS_*` from env_vars** — `NETSIM_NS_<DEV>` entries removed from `Lab::env_vars()`; callers use `Device::ns()` / `Router::ns()` instead ✅
 30. **Remove unnecessary cleanup, simplify Netlink** — namespaces are fd-only (no bind-mounts/pinning); removed `ResourceList`, `own_links` tracker, `cleanup_links_with_prefix_ip` (`ip link del` shelling), atexit/panic hooks; kernel reclaims everything when fds close. `Netlink` made `Clone` (just wraps `Handle: Clone`), all methods `&self`, removed `Arc<Mutex<Netlink>>` wrapper. Per-task spans added to `async_worker_main` (`TASK_SEQ` counter + `debug_span!("task"/"nl", id)`) for debugging dropped futures ✅
+31. **`saturating_add` on address allocators** — all 7 allocators (`alloc_ix_ip_low`, `alloc_ix_ip_v6_low`, `alloc_private_cidr`, `alloc_public_cidr`, `alloc_private_cidr_v6`, `alloc_from_switch`, `alloc_from_switch_v6`) now use `checked_add` + `bail!("pool exhausted")`; tests `test_ix_ip_alloc_no_duplicates` and `test_ix_ip_v6_alloc_no_duplicates` added ✅
+32. **`eprintln!` in `apply_impair_in`** — replaced with `tracing::warn!` ✅
+33. **`Impair::Wifi/Mobile` doc inaccuracy** — doc comments corrected to match actual `impair_to_limits` values (no jitter) ✅
+34. **`DnsEntries::new()` panics via `.expect()`** — `NetworkCore::new()` now returns `Result<Self>`; error propagated to `Lab::new()` ✅

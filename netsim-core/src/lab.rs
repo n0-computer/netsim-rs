@@ -90,9 +90,9 @@ impl IpSupport {
 /// Link-layer impairment profile applied via `tc netem`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Impair {
-    /// ~20 ms delay, 5 ms jitter.
+    /// ~20 ms one-way delay, no rate limit.
     Wifi,
-    /// ~50 ms delay, 20 ms jitter, 1 % loss.
+    /// ~50 ms one-way delay, 1 % loss, no rate limit.
     Mobile,
     /// Custom impairment settings.
     Manual {
@@ -188,7 +188,8 @@ impl Lab {
             ix_cidr_v6: "2001:db8::/32".parse().expect("valid ix cidr v6"),
             private_cidr_v6: "fd10::/48".parse().expect("valid private cidr v6"),
             span: lab_span,
-        });
+        })
+        .expect("Lab::new: failed to create DNS entries directory");
         Self {
             inner: Arc::new(Mutex::new(core)),
         }
@@ -864,12 +865,12 @@ impl RouterBuilder {
             match self.upstream {
                 None => {
                     let ix_ip = if has_v4 {
-                        Some(inner.alloc_ix_ip_low())
+                        Some(inner.alloc_ix_ip_low()?)
                     } else {
                         None
                     };
                     let ix_ip_v6 = if has_v6 {
-                        Some(inner.alloc_ix_ip_v6_low())
+                        Some(inner.alloc_ix_ip_v6_low()?)
                     } else {
                         None
                     };
