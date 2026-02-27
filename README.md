@@ -1,195 +1,270 @@
-# netsim-rs
+# netsim
 
-A Linux network namespace simulator for writing repeatable network condition
-tests. Define a topology and a sequence of steps in TOML, run a binary, get
-structured results.
+netsim lets you build realistic network topologies out of Linux network
+namespaces and run real code against them. You define routers, devices, NAT
+policies, and link impairments through a Rust builder API, and the library
+wires everything up with veth pairs, nftables rules, and tc qdisc
+scheduling. Each node gets its own namespace with a private network stack,
+so processes running inside see what they would see on a separate machine.
+The whole thing runs unprivileged and cleans up when the `Lab` is dropped.
 
-## Usage (Linux)
+Each router and device runs in its own Linux network namespace with private
+interfaces, routes, and firewall rules. The library handles veth wiring,
+address allocation, NAT configuration, and cleanup automatically.
 
-### Requirements
+## Quick example
 
-- Linux (bare metal or VM)
-- `ip`, `tc`, `nft` in PATH
-- Unprivileged user namespaces enabled. This is the default on most modern
-  distros. If you are not sure:
+See the [`simple.rs`](netsim-core/examples/simple.rs) example for the runnable version.
+
+```rust
+// Create a lab with a global "internet switch" to which routers are connected.
+let lab = Lab::new();
+
+// A "datacenter" router: downstream devices get "public" IPs.
+let dc = lab.add_router("dc").region("eu").build().await?;
+
+// A "home" router with a NAT: downstream devices get private IPs.
+let home = lab
+    .add_router("home")
+    .nat(NatMode::DestinationIndependent)
+    .build()
+    .await?;
+
+// A device behind the home router, with a lossy WiFi link.
+let dev = lab
+    .add_device("laptop")
+    .iface("eth0", home.id(), Some(Impair::Wifi))
+    .build()
+    .await?;
+
+// A server in the datacenter.
+let server = lab
+    .add_device("server")
+    .iface("eth0", dc.id(), None)
+    .build()
+    .await?;
+
+// Run a command inside a device's network namespace.
+let mut child = dev.spawn_command({
+    let mut cmd = std::process::Command::new("ping");
+    cmd.args(["-c1", &server.ip().to_string()]);
+    cmd
+})?;
+
+// Run async tasks inside a device's network namespace.
+// Runs on a tokio runtime, so you can use all tokio networking primitives
+// and everything that builds on top of it.
+let client_task = dev.spawn(async move |_| {
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    println!("local addr: {}", stream.local_addr()?);
+    stream.write_all(b"hello server").await?;
+    anyhow::Ok(())
+});
+```
+
+
+## Requirements
+
+- Linux (bare-metal, VM, or CI container)
+- `tc` and `nft` in PATH (for link impairment and NAT rules)
+- Unprivileged user namespaces enabled (default on most distros):
 
   ```bash
-  # Check:
-  sysctl kernel.unprivileged_userns_clone
-
-  # Enable (temporary):
-  sudo sysctl -w kernel.unprivileged_userns_clone=1
-
-  # Enable (permanent):
-  echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/99-userns.conf
-  sudo sysctl --system
+  sysctl kernel.unprivileged_userns_clone   # check
+  sudo sysctl -w kernel.unprivileged_userns_clone=1  # enable
   ```
 
-  On systems using AppArmor (Ubuntu 24.04+), you may also need:
+  On Ubuntu 24.04+ with AppArmor:
 
   ```bash
   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
   ```
 
-### Installation
-
-```bash
-cargo install --git https://github.com/n0-computer/netsim-rs
-```
-
-### Usage
-
-Run one sim file:
-
-```bash
-netsim run ./iroh-integration/netsim/sims/iperf-1to1-public.toml
-```
-
-Run all sims discovered from `netsim.toml` in the current directory (or parent):
-
-```bash
-netsim run
-```
-
-Prepare assets once, then run without rebuilding:
-
-```bash
-netsim prepare
-netsim run --no-build
-```
-
-Serve the UI from a work directory:
-
-```bash
-netsim serve --work-dir .netsim-work
-```
-
-## Usage (MacOS)
-
-Run sims inside the bundled QEMU Linux VM.
-
-### Requirements
-
-- macOS
-- `qemu` installed via Homebrew:
-
-```bash
-brew install qemu
-```
-
-### Installation
-
-```bash
-cargo install --git https://github.com/n0-computer/netsim-rs netsim-vm
-```
-
-### Usage
-
-Run one sim file:
-
-```bash
-netsim-vm run ./iroh-integration/netsim/sims/iperf-1to1-public.toml
-```
-
-Run all sims in a directory:
-
-```bash
-netsim-vm run ./iroh-integration/netsim/sims/
-```
-
-Stop the VM:
-
-```bash
-netsim-vm down
-```
-
-### Output files
-
-Sim results land under `.netsim-work/` in the current directory:
-
-```
-.netsim-work/
-  latest/                        # symlink to the most recent run
-  <sim-name>-YYMMDD-HHMMSS/
-    results.json
-    results.md
-    nodes/<device>/stdout.log
-    nodes/<device>/stderr.log
-  combined-results.json          # aggregated across all runs in this work root
-  combined-results.md
-```
+No `sudo` is needed at runtime. The library bootstraps into an unprivileged
+user namespace where it has full networking capabilities.
 
 ## Architecture
 
-netsim builds isolated network environments using Linux network namespaces. Each
-simulated node (device or router) runs in its own namespace, which gives it a
-private network stack, its own interfaces, routing table, and firewall rules.
-Processes launched on a node inherit that namespace, so they behave as if they
-were running on a separate machine.
+```
+                        IX bridge (203.0.113.0/24)
+                     ┌──────────┼──────────┐
+                   dc(r2)    home(r4)    isp(r6)
+                     │         │
+                   br-lan    br-lan
+                     │         │
+                  server    laptop
+```
 
-**Topology construction.** When a sim starts, netsim reads the topology table
-and calls `rtnetlink` (no external `ip` binary needed) to create virtual
-ethernet pairs between namespaces, assign addresses, add routes, and configure
-NAT rules with `nft`. This runs as the current user, without `sudo`, because
-namespace operations run inside a user namespace.
+**Namespaces.** Each node (router or device) gets a dedicated network
+namespace. A lab-scoped root namespace hosts the IX bridge that interconnects
+all top-level routers. Veth pairs connect namespaces across the topology.
 
-**Link impairment.** After topology build, steps can apply `tc netem` and
-`tc tbf` rules to introduce packet loss, delay, and rate limits on interfaces.
-These run via the `tc` and `ip` binaries inside the target namespace.
+**Worker threads.** Each namespace has a lazy async worker (single-threaded
+tokio runtime) and a lazy sync worker. `device.spawn(...)` runs async tasks
+on the namespace's tokio runtime; `device.run_sync(...)` dispatches closures
+to the sync worker. This means callers never need to worry about `setns` —
+the workers handle namespace entry.
 
-**Step runner.** Steps execute sequentially. `spawn` steps launch processes in
-the background while the runner continues. Pump threads tee stdout/stderr to
-log files and can feed captures into a shared `CaptureStore`. Later steps can
-reference captured values like `${id.capture_name}` with timeout handling.
+**NAT.** Routers support four IPv4 NAT modes (`None`, `Cgnat`,
+`DestinationIndependent`, `DestinationDependent`) and three IPv6 modes
+(`None`, `Nptv6`, `Masquerade`), configured via nftables rules.
 
-**No root required.** The kernel allows namespace operations without elevated
-privileges when `unprivileged_userns_clone` is enabled.
+**Link impairment.** `tc netem` and `tc tbf` provide packet loss, latency,
+and rate limiting. Apply presets (`Impair::Wifi`, `Impair::Mobile`) or
+custom values at build time or dynamically.
 
-## Writing simulations
+**Cleanup.** Namespace file descriptors are held in-process. When the `Lab`
+is dropped, workers are shut down and namespaces disappear automatically.
 
-A simulation file defines three things: a topology, a set of binaries, and a
-sequence of steps. Steps can spawn processes, run commands, wait for captures,
-apply impairments, bring interfaces up or down, and assert on outputs.
+## API overview
 
-The full syntax is documented in [docs/reference.md](docs/reference.md).
+### Building a topology
 
-Quick example:
+```rust
+let lab = Lab::new();
+
+// Routers
+let dc = lab.add_router("dc")
+    .region("eu")
+    .build().await?;
+
+let home = lab.add_router("home")
+    .upstream(dc.id())           // chain behind dc
+    .nat(NatMode::DestinationIndependent)
+    .ip_support(IpSupport::DualStack)
+    .nat_v6(NatV6Mode::Nptv6)
+    .build().await?;
+
+// Devices
+let dev = lab.add_device("phone")
+    .iface("wlan0", home.id(), Some(Impair::Wifi))
+    .iface("eth0", dc.id(), None)
+    .default_via("wlan0")
+    .build().await?;
+
+// Inter-region latency
+lab.set_region_latency("eu", "us", 80);
+```
+
+### Running code in namespaces
+
+```rust
+// Async task on the device's tokio runtime (closure receives a Device handle)
+dev.spawn(|_dev| async {
+    let stream = tokio::net::TcpStream::connect("203.0.113.10:80").await?;
+    Ok::<_, anyhow::Error>(())
+});
+
+// Blocking closure on the sync worker
+let sock = dev.run_sync(|| {
+    Ok(std::net::UdpSocket::bind("0.0.0.0:0")?)
+})?;
+
+// Spawn an OS command
+let child = dev.spawn_command({
+    let mut cmd = std::process::Command::new("curl");
+    cmd.arg("http://203.0.113.10");
+    cmd
+})?;
+
+// Dedicated OS thread
+let handle = dev.spawn_thread(|| {
+    // long-running work in the namespace
+    Ok(())
+})?;
+```
+
+### Dynamic operations
+
+```rust
+// Switch a device's uplink to a different router at runtime
+dev.switch_uplink("wlan0", other_router.id()).await?;
+
+// Switch default route between interfaces
+dev.switch_route("eth0").await?;
+
+// Link down / up
+dev.link_down("wlan0").await?;
+dev.link_up("wlan0").await?;
+
+// Change impairment dynamically
+dev.set_impair("wlan0", Some(Impair::Manual {
+    rate: 1000,      // kbit/s
+    loss: 5.0,       // percent
+    latency: 100,    // ms one-way
+}))?;
+
+// Change NAT mode at runtime
+router.set_nat_mode(NatMode::DestinationDependent)?;
+router.rebind_nats()?;  // flush conntrack
+```
+
+### Handles
+
+`Device`, `Router`, and `Ix` are lightweight cloneable handles. All three
+provide `spawn`, `run_sync`, `spawn_thread`, `spawn_command`, and
+`spawn_reflector` for running code in their namespace.
+
+## TOML configuration
+
+Labs can also be loaded from TOML files via `Lab::load("lab.toml")`:
 
 ```toml
-[sim]
-name = "iperf-baseline-inline"
+[[router]]
+name = "dc"
+region = "eu"
 
 [[router]]
-name = "relay"
+name = "home"
+nat = "destination-independent"
 
-[device.provider.eth0]
-gateway = "relay"
+[device.laptop.eth0]
+gateway = "home"
 
-[device.fetcher.eth0]
-gateway = "relay"
-
-[[step]]
-action      = "spawn"
-id          = "server"
-device      = "provider"
-cmd         = ["iperf3", "-s", "-1"]
-ready_after = "1s"
-
-[[step]]
-action = "run"
-id     = "client"
-device = "fetcher"
-parser = "json"
-cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
-[step.captures.bytes]
-pick = ".end.sum_received.bytes"
-[step.captures.duration_s]
-pick = ".end.sum_received.seconds"
-[step.results]
-duration   = "client.duration_s"
-down_bytes = "client.bytes"
-
-[[step]]
-action = "wait-for"
-id     = "server"
+[region.eu]
+latencies = { us = 80 }
 ```
+
+## Workspace crates
+
+| Crate | Description |
+|-------|-------------|
+| `netsim-core` | Core library: topology builder, namespace management, NAT, impairment |
+| `netsim` | CLI runner for TOML-defined simulations with step sequencing |
+| `netsim-vm` | QEMU VM wrapper for running simulations on macOS |
+| `netsim-utils` | Shared utilities |
+
+## TOML simulation runner
+
+The `netsim` binary runs simulations defined in TOML files with a step-based
+execution model: spawn processes, apply impairments, wait for captures, and
+assert on outputs.
+
+```bash
+cargo install --git https://github.com/n0-computer/netsim-rs
+
+# Run a simulation
+netsim run ./sims/iperf-baseline.toml
+
+# Run all sims discovered from netsim.toml
+netsim run
+```
+
+See [docs/reference.md](docs/reference.md) for the full simulation file
+syntax.
+
+## VM mode (macOS)
+
+The `netsim-vm` crate wraps simulations in a QEMU Linux VM, allowing
+development on macOS:
+
+```bash
+cargo install --git https://github.com/n0-computer/netsim-rs netsim-vm
+netsim-vm run ./sims/my-sim.toml
+netsim-vm down
+```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
