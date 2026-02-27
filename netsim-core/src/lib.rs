@@ -71,6 +71,8 @@ pub use crate::{
     userns::{init_userns, init_userns_for_ctor},
 };
 
+pub use ipnet::Ipv4Net;
+
 /// Verifies the process has enough privileges to manage namespaces, routes, and raw sockets.
 pub fn check_caps() -> Result<()> {
     if nix::unistd::Uid::effective().is_root() {

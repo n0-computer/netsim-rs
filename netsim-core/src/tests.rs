@@ -1917,6 +1917,52 @@ async fn switch_uplink_reflexive_ip_changes() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn custom_downstream_cidr() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let custom = lab
+        .add_router("custom")
+        .nat(NatMode::DestinationIndependent)
+        .downstream_cidr("172.30.99.0/24".parse()?)
+        .build()
+        .await?;
+
+    // Router's downstream gateway should be .1 of the custom CIDR.
+    assert_eq!(
+        custom.downstream_gw(),
+        Some(Ipv4Addr::new(172, 30, 99, 1)),
+        "router gateway should be 172.30.99.1"
+    );
+    assert_eq!(
+        custom.downstream_cidr().unwrap().to_string(),
+        "172.30.99.0/24",
+    );
+
+    // Device gets .2 from the custom subnet.
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", custom.id(), None)
+        .build()
+        .await?;
+    assert_eq!(
+        dev.ip(),
+        Ipv4Addr::new(172, 30, 99, 2),
+        "first device should get 172.30.99.2"
+    );
+
+    // Verify connectivity through the custom subnet.
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
+    dc.spawn_reflector(reflector)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))
+        .context("udp roundtrip through custom cidr")?;
+
+    Ok(())
+}
+
 // ── 5e: Link down/up ─────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]

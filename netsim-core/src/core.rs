@@ -575,10 +575,14 @@ impl NetworkCore {
     }
 
     /// Connects `router` to downstream switch `sw` and returns `(cidr, gw)`.
+    ///
+    /// If `override_cidr` is `Some`, that subnet is used instead of
+    /// auto-allocating from the router's downstream pool.
     pub(crate) fn connect_router_downlink(
         &mut self,
         router: NodeId,
         sw: NodeId,
+        override_cidr: Option<Ipv4Net>,
     ) -> Result<(Option<Ipv4Net>, Option<Ipv4Addr>)> {
         let router_data = self
             .routers
@@ -599,6 +603,9 @@ impl NetworkCore {
                 let gw = sw_entry
                     .gw
                     .ok_or_else(|| anyhow!("switch '{}' missing gw", sw_entry.name))?;
+                (Some(cidr), Some(gw))
+            } else if let Some(cidr) = override_cidr {
+                let gw = add_host(cidr, 1)?;
                 (Some(cidr), Some(gw))
             } else {
                 let cidr = match pool {

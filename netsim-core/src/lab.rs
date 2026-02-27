@@ -496,6 +496,7 @@ impl Lab {
                 nat: NatMode::None,
                 ip_support: IpSupport::V4Only,
                 nat_v6: NatV6Mode::None,
+                downstream_cidr: None,
                 result: Err(anyhow!("router '{}' already exists", name)),
             };
         }
@@ -508,6 +509,7 @@ impl Lab {
             nat: NatMode::None,
             ip_support: IpSupport::V4Only,
             nat_v6: NatV6Mode::None,
+            downstream_cidr: None,
             result: Ok(()),
         }
     }
@@ -744,6 +746,7 @@ pub struct RouterBuilder {
     nat: NatMode,
     ip_support: IpSupport,
     nat_v6: NatV6Mode,
+    downstream_cidr: Option<Ipv4Net>,
     result: Result<()>,
 }
 
@@ -790,6 +793,17 @@ impl RouterBuilder {
         self
     }
 
+    /// Overrides the downstream subnet instead of auto-allocating from the pool.
+    ///
+    /// The gateway address is the `.1` host of the given CIDR. Device addresses
+    /// are allocated sequentially starting at `.2`.
+    pub fn downstream_cidr(mut self, cidr: Ipv4Net) -> Self {
+        if self.result.is_ok() {
+            self.downstream_cidr = Some(cidr);
+        }
+        self
+    }
+
     /// Finalises the router, creates its namespace and links, and returns a [`Router`] handle.
     pub async fn build(self) -> Result<Router> {
         self.result?;
@@ -815,7 +829,7 @@ impl RouterBuilder {
             let has_v6 = self.ip_support.has_v6();
             let sub_switch =
                 inner.add_switch(&format!("{}-sub", self.name), None, None, None, None);
-            inner.connect_router_downlink(id, sub_switch)?;
+            inner.connect_router_downlink(id, sub_switch, self.downstream_cidr)?;
             match self.upstream {
                 None => {
                     let ix_ip = if has_v4 {
