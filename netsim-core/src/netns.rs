@@ -1,79 +1,114 @@
 //! Network namespace lifecycle helpers.
 //!
-//! Each namespace gets a lazy async worker thread (with a `current_thread`
-//! tokio runtime) and a lazy sync worker thread. Namespace FDs are stored
-//! per-worker, not in a global registry.
+//! Each namespace gets an unconditional async worker thread (with a
+//! `current_thread` tokio runtime) and a lazy sync worker thread.
+//! The async worker thread is the same OS thread that creates the namespace
+//! via `unshare(CLONE_NEWNET)`, saving one thread spawn per namespace.
 
 use std::{
     collections::HashMap,
     fs::File,
     os::unix::fs::MetadataExt,
-    sync::{mpsc, Arc, Mutex, OnceLock},
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 
 use anyhow::{anyhow, Context, Result};
-use nix::{
-    sched::{setns, unshare, CloneFlags},
-    unistd::gettid,
-};
+use nix::sched::{setns, unshare, CloneFlags};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, debug_span, error};
+use tracing::{debug, debug_span};
 
 use crate::netlink::Netlink;
 
-/// Builds a thread name from a prefix and namespace name, truncated to 15 chars
-/// (Linux `pthread_setname_np` limit).
-fn truncate_thread_name(prefix: &str, ns: &str) -> String {
-    let max = 15;
-    let budget = max - prefix.len();
-    if ns.len() <= budget {
-        format!("{prefix}{ns}")
-    } else {
-        format!("{prefix}{}", &ns[ns.len() - budget..])
+// ─────────────────────────────────────────────
+// Thread-local namespace setup (shared by all worker types)
+// ─────────────────────────────────────────────
+
+/// DNS overlay paths for bind-mounting `/etc/hosts` and `/etc/resolv.conf`.
+#[derive(Clone, Debug)]
+pub struct DnsOverlay {
+    /// Path to the generated hosts file for this namespace.
+    pub hosts_path: std::path::PathBuf,
+    /// Path to the generated resolv.conf for this lab.
+    pub resolv_path: std::path::PathBuf,
+}
+
+impl DnsOverlay {
+    /// Bind-mounts hosts and resolv.conf in the current thread's mount namespace.
+    /// Requires a prior `unshare(CLONE_NEWNS)`.
+    fn apply(&self) {
+        if let Err(e) = bind_mount(&self.hosts_path, c"/etc/hosts") {
+            debug!(error = %e, "dns overlay: hosts bind mount failed");
+        }
+        if let Err(e) = bind_mount(&self.resolv_path, c"/etc/resolv.conf") {
+            debug!(error = %e, "dns overlay: resolv.conf bind mount failed");
+        }
     }
 }
 
-// ─────────────────────────────────────────────
-// Namespace creation helpers (process-global)
-// ─────────────────────────────────────────────
+/// Private mount namespace + optional DNS overlay bind-mounts.
+/// Called on every thread that enters a namespace (sync, async, user, blocking pool).
+fn apply_mount_overlay(overlay: Option<&DnsOverlay>) {
+    let _ = unshare(CloneFlags::CLONE_NEWNS);
+    if let Some(o) = overlay {
+        o.apply();
+    }
+}
+
+/// Enters an existing namespace via `setns` and applies mount overlay.
+fn enter_namespace(fd: &File, overlay: Option<&DnsOverlay>) -> Result<()> {
+    setns(fd, CloneFlags::CLONE_NEWNET).context("setns CLONE_NEWNET")?;
+    apply_mount_overlay(overlay);
+    Ok(())
+}
+
+fn bind_mount(src: &std::path::Path, dst: &std::ffi::CStr) -> Result<()> {
+    use std::ffi::CString;
+    let src_c = CString::new(src.as_os_str().as_encoded_bytes()).context("invalid path")?;
+    unsafe { libc::umount2(dst.as_ptr(), libc::MNT_DETACH) };
+    let ret = unsafe {
+        libc::mount(
+            src_c.as_ptr(),
+            dst.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if ret != 0 {
+        anyhow::bail!(
+            "bind mount {} -> {:?}: {}",
+            src.display(),
+            dst,
+            std::io::Error::last_os_error()
+        );
+    }
+    Ok(())
+}
+
+/// Builds a thread name like `{ns}:{suffix}`, truncated to 15 chars
+/// (Linux `pthread_setname_np` limit). When ns is too long, its leading
+/// characters are trimmed.
+fn thread_name(ns: &str, suffix: &str) -> String {
+    let max = 15;
+    let budget = max - suffix.len() - 1; // -1 for ':'
+    if ns.len() <= budget {
+        format!("{ns}:{suffix}")
+    } else {
+        format!("{}:{suffix}", &ns[ns.len() - budget..])
+    }
+}
 
 fn open_current_thread_netns_fd() -> Result<File> {
     if let Ok(fd) = File::open("/proc/thread-self/ns/net") {
         return Ok(fd);
     }
-    let tid = gettid();
-    let task_path = format!("/proc/self/task/{}/ns/net", tid.as_raw());
-    if let Ok(fd) = File::open(&task_path) {
+    let tid = nix::unistd::gettid();
+    let path = format!("/proc/self/task/{}/ns/net", tid.as_raw());
+    if let Ok(fd) = File::open(&path) {
         return Ok(fd);
     }
-    File::open("/proc/self/ns/net")
-        .with_context(|| format!("open current thread netns fd (fallback path {})", task_path))
-}
-
-fn create_unshared_netns_fd() -> Result<File> {
-    let (res_tx, res_rx) = mpsc::channel();
-    let _ = thread::Builder::new()
-        .name("ns-create".into())
-        .spawn(move || {
-            let res: Result<()> = (|| {
-                unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
-                let fd = open_current_thread_netns_fd()
-                    .context("open current thread netns fd in new ns")?;
-                let fd_for_parent = fd
-                    .try_clone()
-                    .context("clone namespace fd for parent registry")?;
-                let _ = res_tx.send(Ok(fd_for_parent));
-                Ok(())
-            })();
-            if let Err(err) = res {
-                let _ = res_tx.send(Err(err));
-            }
-        })
-        .context("spawn ns-create thread")?;
-    res_rx
-        .recv()
-        .context("receive netns fd from helper thread")?
+    File::open("/proc/self/ns/net").with_context(|| format!("open netns fd (tried {path})"))
 }
 
 // ─────────────────────────────────────────────
@@ -92,20 +127,28 @@ struct SyncWorker {
 
 impl SyncWorker {
     fn spawn(
-        fd: &File,
-        parent_span: &tracing::Span,
         ns: &str,
-        dns_overlay: Option<DnsOverlay>,
+        fd: &File,
+        span: tracing::Span,
+        overlay: Option<DnsOverlay>,
     ) -> Result<Self> {
-        let target = fd
-            .try_clone()
-            .with_context(|| format!("clone fd for sync worker '{ns}'"))?;
+        let target = fd.try_clone().context("clone fd for sync worker")?;
         let (tx, rx) = mpsc::sync_channel(64);
-        let span = debug_span!(parent: parent_span, "sync", ns = %ns);
-        let thread_name = truncate_thread_name("syn:", ns);
         let join = thread::Builder::new()
-            .name(thread_name)
-            .spawn(move || sync_worker_main(target, rx, span, dns_overlay))
+            .name(thread_name(ns, "sw"))
+            .spawn(move || {
+                let _guard = span.entered();
+                if let Err(e) = enter_namespace(&target, overlay.as_ref()) {
+                    debug!(error = %e, "sync worker: enter_namespace failed");
+                    return;
+                }
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        SyncMsg::Task(f) => f(),
+                        SyncMsg::Shutdown => break,
+                    }
+                }
+            })
             .context("spawn sync worker thread")?;
         Ok(Self {
             tx,
@@ -118,234 +161,149 @@ impl Drop for SyncWorker {
     fn drop(&mut self) {
         let _ = self.tx.send(SyncMsg::Shutdown);
         if let Some(j) = self.join.take() {
-            if j.thread().id() == thread::current().id() {
-                // Being dropped on the sync worker thread — skip join to avoid
-                // EDEADLK.
-            } else {
+            if j.thread().id() != thread::current().id() {
                 let _ = j.join();
             }
         }
     }
 }
 
-/// DNS overlay paths for bind-mounting `/etc/hosts` and `/etc/resolv.conf`.
-#[derive(Clone, Debug)]
-pub struct DnsOverlay {
-    /// Path to the generated hosts file for this namespace.
-    pub hosts_path: std::path::PathBuf,
-    /// Path to the generated resolv.conf for this lab.
-    pub resolv_path: std::path::PathBuf,
-}
-
-/// Bind-mounts `src` over `dst` in the current thread's mount namespace.
-/// The thread must have previously called `unshare(CLONE_NEWNS)`.
-fn bind_mount(src: &std::path::Path, dst: &std::ffi::CStr) -> Result<()> {
-    use std::ffi::CString;
-    let src_c = CString::new(src.as_os_str().as_encoded_bytes()).context("invalid path")?;
-    // Unmount any previous overlay (ignore errors if nothing mounted).
-    unsafe { libc::umount2(dst.as_ptr(), libc::MNT_DETACH) };
-    let ret = unsafe {
-        libc::mount(
-            src_c.as_ptr(),
-            dst.as_ptr(),
-            std::ptr::null(),
-            libc::MS_BIND,
-            std::ptr::null(),
-        )
-    };
-    if ret != 0 {
-        anyhow::bail!(
-            "bind mount {} -> {:?} failed: {}",
-            src.display(),
-            dst,
-            std::io::Error::last_os_error()
-        );
-    }
-    Ok(())
-}
-
-/// Applies DNS overlay mounts (hosts + resolv.conf) in the current thread.
-fn apply_dns_overlay(overlay: &DnsOverlay) {
-    if let Err(e) = bind_mount(&overlay.hosts_path, c"/etc/hosts") {
-        debug!(error = %e, "dns overlay: hosts bind mount failed");
-    }
-    if let Err(e) = bind_mount(&overlay.resolv_path, c"/etc/resolv.conf") {
-        debug!(error = %e, "dns overlay: resolv.conf bind mount failed");
-    }
-}
-
-fn sync_worker_main(
-    target: File,
-    rx: mpsc::Receiver<SyncMsg>,
-    span: tracing::Span,
-    dns_overlay: Option<DnsOverlay>,
-) {
-    let _guard = span.entered();
-    if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-        debug!(error = %err, "sync netns worker: setns failed");
-        return;
-    }
-    // Private mount namespace so bind-mounted overlays only affect this thread.
-    if let Err(err) = unshare(CloneFlags::CLONE_NEWNS) {
-        debug!(error = %err, "sync netns worker: unshare(CLONE_NEWNS) failed");
-    }
-    if let Some(ref overlay) = dns_overlay {
-        apply_dns_overlay(overlay);
-    }
-    while let Ok(msg) = rx.recv() {
-        match msg {
-            SyncMsg::Task(f) => f(),
-            SyncMsg::Shutdown => break,
-        }
-    }
-}
-
 // ─────────────────────────────────────────────
-// Worker — holds lazy async RT handle + sync worker + ns fd
+// Worker — per-namespace async RT + lazy sync worker + ns fd
 // ─────────────────────────────────────────────
 
 struct Worker {
     ns: String,
     parent_span: tracing::Span,
-    /// The namespace file descriptor.
     ns_fd: Arc<File>,
-    /// Cloned tokio `Handle` from the per-ns `current_thread` runtime.
-    rt_handle: OnceLock<tokio::runtime::Handle>,
-    /// Persistent rtnetlink connection for this namespace.
-    netlink: OnceLock<Netlink>,
-    /// Signals the async worker thread to exit.
-    cancel_token: CancellationToken,
-    /// Join handle for the async worker OS thread.
+    rt_handle: tokio::runtime::Handle,
+    netlink: Mutex<Option<Netlink>>,
+    cancel: CancellationToken,
     async_join: Mutex<Option<thread::JoinHandle<()>>>,
-    /// Lazy sync worker.
     sync_worker: Mutex<Option<SyncWorker>>,
-    /// DNS overlay paths for /etc/hosts and /etc/resolv.conf.
     dns_overlay: Option<DnsOverlay>,
 }
 
+/// Sent back from the async worker thread after namespace creation.
+struct WorkerInit {
+    ns_fd: File,
+    rt_handle: tokio::runtime::Handle,
+}
+
 impl Worker {
-    fn new(ns: &str, ns_fd: Arc<File>, parent_span: tracing::Span) -> Self {
-        Self {
-            ns: ns.to_string(),
-            parent_span,
-            ns_fd,
-            rt_handle: OnceLock::new(),
-            netlink: OnceLock::new(),
-            cancel_token: CancellationToken::new(),
-            async_join: Mutex::new(None),
-            sync_worker: Mutex::new(None),
-            dns_overlay: None,
-        }
-    }
+    /// Spawns the async worker thread which *creates* the namespace via
+    /// `unshare(CLONE_NEWNET)`, builds a tokio RT, and stays alive.
+    fn spawn(
+        ns: &str,
+        parent_span: tracing::Span,
+        dns_overlay: Option<DnsOverlay>,
+    ) -> Result<Self> {
+        let cancel = CancellationToken::new();
+        let cancel2 = cancel.clone();
+        let span = debug_span!(parent: &parent_span, "async", ns = %ns);
+        let overlay = dns_overlay.clone();
+        let (init_tx, init_rx) = mpsc::channel::<Result<WorkerInit>>();
 
-    /// Returns the tokio runtime Handle for this namespace's async worker.
-    /// Lazily spawns the worker thread on first call.
-    fn rt_handle(&self) -> Result<tokio::runtime::Handle> {
-        if let Some(h) = self.rt_handle.get() {
-            return Ok(h.clone());
-        }
-        // Spawn the async worker thread.
-        let target = self
-            .ns_fd
-            .try_clone()
-            .with_context(|| format!("clone fd for async worker '{}'", self.ns))?;
-        let span = debug_span!(parent: &self.parent_span, "async", ns = %self.ns);
-        let cancel = self.cancel_token.clone();
-        let (handle_tx, handle_rx) = std::sync::mpsc::channel();
-
-        let dns_overlay = self.dns_overlay.clone();
-        let thread_name = truncate_thread_name("tok:", &self.ns);
         let join = thread::Builder::new()
-            .name(thread_name)
+            .name(thread_name(ns, "aw"))
             .spawn(move || {
                 let _guard = span.entered();
-                if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-                    error!(error = %err, "async netns worker: setns failed");
-                    let _ = handle_tx.send(Err(anyhow!("setns failed: {err}")));
-                    return;
-                }
-                // Private mount namespace so bind-mounted overlays only affect this thread.
-                if let Err(err) = unshare(CloneFlags::CLONE_NEWNS) {
-                    debug!(error = %err, "async netns worker: unshare(CLONE_NEWNS) failed");
-                }
-                if let Some(ref overlay) = dns_overlay {
-                    apply_dns_overlay(overlay);
-                }
-
-                let mut builder = tokio::runtime::Builder::new_current_thread();
-                builder.enable_all();
-                // on_thread_start covers blocking pool threads spawned by spawn_blocking.
-                // Each gets its own mount namespace with the DNS overlay.
-                if let Some(overlay) = dns_overlay {
-                    builder.on_thread_start(move || {
-                        let _ = unshare(CloneFlags::CLONE_NEWNS);
-                        apply_dns_overlay(&overlay);
-                    });
-                }
-                let rt = match builder.build() {
-                    Ok(rt) => rt,
-                    Err(err) => {
-                        error!(error = %err, "async netns worker: runtime build failed");
-                        let _ = handle_tx.send(Err(anyhow!("runtime build failed: {err}")));
-                        return;
+                let init = (|| -> Result<(File, tokio::runtime::Runtime)> {
+                    unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
+                    apply_mount_overlay(overlay.as_ref());
+                    let ns_fd = open_current_thread_netns_fd()?;
+                    let mut builder = tokio::runtime::Builder::new_current_thread();
+                    builder.enable_all();
+                    if let Some(overlay) = overlay {
+                        builder.on_thread_start(move || apply_mount_overlay(Some(&overlay)));
                     }
-                };
+                    let rt = builder.build().context("build tokio runtime")?;
+                    Ok((ns_fd, rt))
+                })();
 
-                let _ = handle_tx.send(Ok(rt.handle().clone()));
-
-                // Keep the runtime alive until cancellation.
-                rt.block_on(cancel.cancelled());
-                debug!("async worker shutting down");
+                match init {
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
+                    }
+                    Ok((ns_fd, rt)) => {
+                        let fd = match ns_fd.try_clone() {
+                            Ok(fd) => fd,
+                            Err(e) => {
+                                let _ = init_tx.send(Err(e.into()));
+                                return;
+                            }
+                        };
+                        let _ = init_tx.send(Ok(WorkerInit {
+                            ns_fd: fd,
+                            rt_handle: rt.handle().clone(),
+                        }));
+                        rt.block_on(cancel2.cancelled());
+                        debug!("async worker shutting down");
+                    }
+                }
             })
             .context("spawn async worker thread")?;
 
-        let handle = handle_rx
+        let init = init_rx
             .recv()
-            .context("receive rt handle from async worker thread")??;
+            .context("async worker init channel closed")??;
 
-        // Store; if another thread raced us, that's fine — OnceLock handles it.
-        let _ = self.rt_handle.set(handle.clone());
-        *self.async_join.lock().expect("async_join poisoned") = Some(join);
-
-        Ok(handle)
-    }
-
-    /// Returns a clone of the namespace's persistent Netlink handle.
-    /// Lazily creates the rtnetlink connection on first call.
-    fn netlink(&self) -> Result<Netlink> {
-        if let Some(nl) = self.netlink.get() {
-            return Ok(nl.clone());
+        // Sanity: verify the new namespace is actually isolated.
+        let created_ino = init.ns_fd.metadata().context("stat created ns fd")?.ino();
+        let current_ino = open_current_thread_netns_fd()
+            .context("open caller netns for sanity check")?
+            .metadata()
+            .context("stat caller ns fd")?
+            .ino();
+        if created_ino == current_ino {
+            anyhow::bail!(
+                "namespace creation returned caller's namespace (inode {created_ino}); not isolated"
+            );
         }
 
-        let rt = self.rt_handle()?;
-        // Spawn the rtnetlink connection on the worker's runtime via channel
-        // (cannot use block_on since caller may already be inside a runtime).
-        let (tx, rx) = std::sync::mpsc::channel();
-        rt.spawn(async move {
+        Ok(Worker {
+            ns: ns.to_string(),
+            parent_span,
+            ns_fd: Arc::new(init.ns_fd),
+            rt_handle: init.rt_handle,
+            netlink: Mutex::new(None),
+            cancel,
+            async_join: Mutex::new(Some(join)),
+            sync_worker: Mutex::new(None),
+            dns_overlay,
+        })
+    }
+
+    /// Returns a clone of the namespace's persistent Netlink handle (lazy init).
+    fn netlink(&self) -> Result<Netlink> {
+        let mut guard = self.netlink.lock().expect("netlink mutex poisoned");
+        if let Some(ref nl) = *guard {
+            return Ok(nl.clone());
+        }
+        let (tx, rx) = mpsc::channel();
+        self.rt_handle.spawn(async move {
             let result = async {
-                let (conn, handle, _) = rtnetlink::new_connection()
-                    .context("rtnetlink connection for namespace worker")?;
+                let (conn, handle, _) =
+                    rtnetlink::new_connection().context("rtnetlink new_connection")?;
                 tokio::spawn(conn);
                 Ok::<Netlink, anyhow::Error>(Netlink::new(handle))
             }
             .await;
             let _ = tx.send(result);
         });
-        let nl = rx
-            .recv()
-            .context("receive netlink handle from async worker")??;
-
-        let _ = self.netlink.set(nl.clone());
+        let nl = rx.recv().context("netlink init channel closed")??;
+        *guard = Some(nl.clone());
         Ok(nl)
     }
 
     fn sync_tx(&self) -> Result<mpsc::SyncSender<SyncMsg>> {
         let mut guard = self.sync_worker.lock().expect("sync worker mutex poisoned");
         if guard.is_none() {
+            let span = debug_span!(parent: &self.parent_span, "sync", ns = %self.ns);
             *guard = Some(SyncWorker::spawn(
-                &self.ns_fd,
-                &self.parent_span,
                 &self.ns,
+                &self.ns_fd,
+                span,
                 self.dns_overlay.clone(),
             )?);
         }
@@ -355,20 +313,13 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Signal async worker to exit.
-        self.cancel_token.cancel();
+        self.cancel.cancel();
         if let Some(j) = self.async_join.lock().expect("async_join poisoned").take() {
-            // If we're being dropped on the async worker thread itself (e.g. the
-            // last Arc<NetworkCore> is released inside a spawned task after
-            // cancellation), joining would deadlock (EDEADLK).  Detect this and
-            // just let the thread exit naturally.
-            if j.thread().id() == thread::current().id() {
-                // Already on this thread — nothing to join.
-            } else {
+            if j.thread().id() != thread::current().id() {
                 let _ = j.join();
             }
         }
-        // SyncWorker drops via its own Drop impl (sends Shutdown, joins).
+        // SyncWorker drops via its own Drop impl.
     }
 }
 
@@ -378,9 +329,9 @@ impl Drop for Worker {
 
 /// Manages per-namespace worker threads and file descriptors.
 ///
-/// Each namespace gets a lazy async worker (with a `current_thread` tokio RT
-/// whose `Handle` is cloned out for spawning) and a lazy sync worker for
-/// short-lived blocking operations. Workers are started on first use.
+/// Each namespace gets an unconditional async worker (tokio `current_thread`
+/// RT) and a lazy sync worker. The async worker thread is the same OS thread
+/// that creates the namespace via `unshare(CLONE_NEWNET)`.
 pub struct NetnsManager {
     parent_span: tracing::Span,
     workers: Mutex<HashMap<String, Worker>>,
@@ -410,36 +361,18 @@ impl NetnsManager {
     // ── Namespace lifecycle ──────────────────────────────────────────
 
     /// Create a new isolated network namespace and register it.
-    pub fn create_netns(&self, name: &str) -> Result<()> {
-        debug!(ns = %name, "netns: create namespace");
-
-        // Remove any previous worker/fd for this name.
+    ///
+    /// Spawns a thread that calls `unshare(CLONE_NEWNET)` to create the
+    /// namespace, applies the optional DNS overlay, builds a tokio runtime,
+    /// and stays alive as the namespace's async worker.
+    pub fn create_netns(&self, name: &str, dns_overlay: Option<DnsOverlay>) -> Result<()> {
+        debug!(ns = %name, "create namespace");
         self.remove_worker(name);
-
-        let fd = create_unshared_netns_fd().context("create unshared netns fd")?;
-        let created_ino = fd
-            .metadata()
-            .context("metadata for created netns fd")?
-            .ino();
-        let current_ino = open_current_thread_netns_fd()
-            .context("open current thread netns for sanity check")?
-            .metadata()
-            .context("metadata for current thread netns")?
-            .ino();
-        if created_ino == current_ino {
-            anyhow::bail!(
-                "fd backend namespace creation returned current namespace inode {}; not isolated",
-                created_ino
-            );
-        }
-
-        let fd = Arc::new(fd);
-        let worker = Worker::new(name, fd, self.parent_span.clone());
+        let worker = Worker::spawn(name, self.parent_span.clone(), dns_overlay)?;
         self.workers
             .lock()
             .expect("netns worker map poisoned")
             .insert(name.to_string(), worker);
-
         Ok(())
     }
 
@@ -449,52 +382,37 @@ impl NetnsManager {
         workers.retain(|k, _| !k.starts_with(prefix));
     }
 
-    /// Removes a namespace worker by name. The worker's `Drop` impl cancels
-    /// its token and joins threads. The kernel destroys the namespace when the
-    /// last fd reference is dropped.
+    /// Removes a namespace worker. `Drop` cancels its token and joins threads.
     pub fn remove_worker(&self, name: &str) {
         let mut workers = self.workers.lock().expect("netns worker map poisoned");
-        workers.remove(name); // Worker::drop cancels token + joins threads
+        workers.remove(name);
     }
 
-    /// Sets the DNS overlay paths for a namespace. Must be called before workers
-    /// are lazily started — the overlay is applied at worker thread startup.
-    pub fn set_dns_overlay(&self, ns: &str, overlay: DnsOverlay) -> Result<()> {
-        let mut workers = self.workers.lock().expect("netns worker map poisoned");
-        let worker = workers
-            .get_mut(ns)
-            .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-        worker.dns_overlay = Some(overlay);
-        Ok(())
-    }
-
-    // ── Async spawn ─────────────────────────────────────────────────
+    // ── Async ────────────────────────────────────────────────────────
 
     /// Returns a cloned tokio `Handle` for the namespace's async worker.
-    /// Lazily creates the worker thread on first call.
     pub fn rt_handle_for(&self, ns: &str) -> Result<tokio::runtime::Handle> {
         let workers = self.workers.lock().expect("netns worker map poisoned");
-        let worker = workers
+        let w = workers
             .get(ns)
             .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-        worker.rt_handle()
+        Ok(w.rt_handle.clone())
     }
 
     /// Returns a clone of the namespace's persistent Netlink handle.
     pub(crate) fn netlink_for(&self, ns: &str) -> Result<Netlink> {
         let workers = self.workers.lock().expect("netns worker map poisoned");
-        let worker = workers
+        let w = workers
             .get(ns)
             .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-        worker.netlink()
+        w.netlink()
     }
 
-    // ── Sync execution ──────────────────────────────────────────────
+    // ── Sync ─────────────────────────────────────────────────────────
 
     /// Run a short-lived sync closure inside `ns`. Blocks the caller.
     ///
-    /// Only for fast, non-blocking work (sysctl writes, `Command::spawn`).
-    /// Never pass TCP/UDP I/O here — use `rt_handle_for` + `handle.spawn` instead.
+    /// Only for fast non-I/O work (sysctl, `Command::spawn`).
     pub fn run_closure_in<F, R>(&self, ns: &str, f: F) -> Result<R>
     where
         F: FnOnce() -> Result<R> + Send + 'static,
@@ -502,62 +420,50 @@ impl NetnsManager {
     {
         let tx = {
             let workers = self.workers.lock().expect("netns worker map poisoned");
-            let worker = workers
+            let w = workers
                 .get(ns)
                 .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-            worker.sync_tx()?
+            w.sync_tx()?
         };
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         tx.send(SyncMsg::Task(Box::new(move || {
             let _ = result_tx.send(f());
         })))
-        .map_err(|_| anyhow!("send task to sync netns worker for '{ns}' failed"))?;
+        .map_err(|_| anyhow!("sync worker for '{ns}' disconnected"))?;
         result_rx
             .recv()
-            .context("receive closure result from sync netns worker")?
+            .context("sync worker result channel closed")?
     }
 
-    /// Spawn a dedicated OS thread inside `ns` that runs `f`. Non-blocking.
-    ///
-    /// The thread enters the namespace via `setns` and then runs the closure.
-    /// Returns a `JoinHandle` to collect the result.
+    /// Spawn a dedicated OS thread inside `ns`. Non-blocking.
     pub fn spawn_thread_in<F, R>(&self, ns: &str, f: F) -> Result<thread::JoinHandle<Result<R>>>
     where
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let fd = {
+        let (fd, overlay) = {
             let workers = self.workers.lock().expect("netns worker map poisoned");
-            let worker = workers
+            let w = workers
                 .get(ns)
                 .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-            worker.ns_fd.clone()
+            (w.ns_fd.clone(), w.dns_overlay.clone())
         };
-        let thread_name = truncate_thread_name("usr:", ns);
-        let ns_name = ns.to_string();
         thread::Builder::new()
-            .name(thread_name)
+            .name(thread_name(ns, "u"))
             .spawn(move || {
-                let target = fd
-                    .try_clone()
-                    .with_context(|| format!("clone fd for spawned thread in '{ns_name}'"))?;
-                setns(&target, CloneFlags::CLONE_NEWNET)
-                    .with_context(|| format!("setns for spawned thread in '{ns_name}'"))?;
+                enter_namespace(&fd, overlay.as_ref())?;
                 f()
             })
             .context("spawn user thread")
     }
 
-    /// Clone the namespace fd (for external use like moving veth endpoints).
+    /// Clone the namespace fd (for moving veth endpoints etc).
     pub fn ns_fd(&self, ns: &str) -> Result<File> {
         let workers = self.workers.lock().expect("netns worker map poisoned");
-        let worker = workers
+        let w = workers
             .get(ns)
             .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
-        worker
-            .ns_fd
-            .try_clone()
-            .with_context(|| format!("clone ns fd for '{ns}'"))
+        w.ns_fd.try_clone().context("clone ns fd")
     }
 }
 
@@ -568,10 +474,9 @@ mod tests {
     #[test]
     fn create_and_cleanup() {
         let mgr = NetnsManager::new();
-        mgr.create_netns("test-ns-1").unwrap();
-        mgr.create_netns("test-ns-2").unwrap();
+        mgr.create_netns("test-ns-1", None).unwrap();
+        mgr.create_netns("test-ns-2", None).unwrap();
         mgr.remove_worker("test-ns-1");
-        // test-ns-2 still exists
         assert!(mgr.rt_handle_for("test-ns-2").is_ok());
         assert!(mgr.rt_handle_for("test-ns-1").is_err());
     }
@@ -579,9 +484,9 @@ mod tests {
     #[test]
     fn prefix_cleanup() {
         let mgr = NetnsManager::new();
-        mgr.create_netns("lab-a").unwrap();
-        mgr.create_netns("lab-b").unwrap();
-        mgr.create_netns("other").unwrap();
+        mgr.create_netns("lab-a", None).unwrap();
+        mgr.create_netns("lab-b", None).unwrap();
+        mgr.create_netns("other", None).unwrap();
         mgr.cleanup_prefix("lab-");
         assert!(mgr.rt_handle_for("lab-a").is_err());
         assert!(mgr.rt_handle_for("lab-b").is_err());

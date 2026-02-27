@@ -987,10 +987,6 @@ pub(crate) async fn setup_root_ns_async(
     let root_ns = cfg.root_ns.clone();
     create_named_netns(netns, &root_ns, None)?;
 
-    if let Err(err) = run_nft_in(netns, &root_ns, "flush ruleset") {
-        debug!(error = %err, "setup_root_ns: nft flush failed; continuing");
-    }
-
     netns.run_closure_in(&root_ns, || {
         set_sysctl_root("net/ipv4/ip_forward", "1")?;
         set_sysctl_root("net/ipv6/conf/all/forwarding", "1")?;
@@ -1054,11 +1050,7 @@ pub(crate) async fn setup_router_async(
     let id = router.id;
     debug!(name = %router.name, ns = %router.ns, "router: setup");
 
-    // Create router namespace.
     create_named_netns(netns, &router.ns, None)?;
-    if let Err(err) = run_nft_in(netns, &router.ns, "flush ruleset") {
-        debug!(error = %err, "setup_router: nft flush failed; continuing");
-    }
 
     let uplink = router
         .uplink
@@ -1364,9 +1356,6 @@ pub(crate) async fn setup_device_async(
 ) -> Result<()> {
     debug!(name = %dev.name, ns = %dev.ns, "device: setup");
     create_named_netns(netns, &dev.ns, dns_overlay)?;
-    if let Err(err) = run_nft_in(netns, &dev.ns, "flush ruleset") {
-        debug!(error = %err, "setup_device: nft flush failed; continuing");
-    }
 
     for iface in ifaces {
         wire_iface_async(netns, prefix, root_ns, iface).await?;
@@ -1481,17 +1470,13 @@ fn add_host(cidr: Ipv4Net, host: u8) -> Result<Ipv4Addr> {
 /// IPv6 DAD is disabled immediately so interfaces moved in will inherit
 /// `dad_transmits=0` and addresses go straight to "valid" state.
 ///
-/// If `dns_overlay` is provided, it is set on the namespace before any workers
-/// are started, ensuring sync/async workers get the bind-mount at startup.
+/// Creates a namespace with optional DNS overlay and disables IPv6 DAD.
 pub(crate) fn create_named_netns(
     netns: &netns::NetnsManager,
     name: &str,
     dns_overlay: Option<netns::DnsOverlay>,
 ) -> Result<()> {
-    netns.create_netns(name)?;
-    if let Some(overlay) = dns_overlay {
-        netns.set_dns_overlay(name, overlay)?;
-    }
+    netns.create_netns(name, dns_overlay)?;
     // Disable DAD before any interfaces are created or moved in.
     netns.run_closure_in(name, || {
         set_sysctl_root("net/ipv6/conf/all/accept_dad", "0").ok();

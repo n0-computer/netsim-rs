@@ -2,6 +2,6 @@
 #
 # Tests use Linux network namespaces with dedicated threads per namespace.
 # Running too many in parallel spawns thousands of threads.
-# Default: 4 concurrent tests (each creates ~6-10 threads).
+# Default: 16 concurrent tests (each creates ~6-10 threads).
 [profile.default]
-test-threads = 4
+test-threads = 8
