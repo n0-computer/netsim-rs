@@ -1,6 +1,6 @@
 # DNS & Name Resolution Plan
 
-**Status:** not started
+**Status:** phase 1 complete
 
 ---
 
