@@ -17,20 +17,20 @@
 //!
 //! # Builder API
 //! ```no_run
-//! # use netsim_core::{Lab, NatMode};
+//! # use netsim_core::{Lab, Nat};
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() -> anyhow::Result<()> {
 //! let lab = Lab::new();
 //! let isp = lab
 //!     .add_router("isp1")
 //!     .region("eu")
-//!     .nat(NatMode::Cgnat)
+//!     .nat(Nat::Cgnat)
 //!     .build()
 //!     .await?;
 //! let home = lab
 //!     .add_router("home1")
 //!     .upstream(isp.id())
-//!     .nat(NatMode::DestinationIndependent)
+//!     .nat(Nat::Home)
 //!     .build()
 //!     .await?;
 //! lab.add_device("dev1")
@@ -62,9 +62,12 @@ mod userns;
 pub mod util;
 
 pub use lab::{
-    Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Ix, Lab, NatMode, NatV6Mode,
-    ObservedAddr, Router, RouterBuilder,
+    Device, DeviceBuilder, DeviceIface, Impair, IpSupport, Ix, Lab, Nat, NatFiltering, NatMapping,
+    NatV6Mode, ObservedAddr, Router, RouterBuilder,
 };
+
+#[allow(deprecated)]
+pub use lab::NatMode;
 
 pub use crate::{
     core::NodeId,

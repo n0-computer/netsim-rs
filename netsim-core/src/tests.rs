@@ -292,7 +292,7 @@ async fn spawn_tcp_reflector(bind: SocketAddr) -> Result<()> {
 }
 
 async fn build_nat_case(
-    nat_mode: NatMode,
+    nat_mode: Nat,
     wiring: UplinkWiring,
     port_base: u16,
 ) -> Result<(Lab, NatTestCtx)> {
@@ -304,7 +304,7 @@ async fn build_nat_case(
         UplinkWiring::ViaCgnatIsp => Some(
             lab.add_router("isp")
                 .region("eu")
-                .nat(NatMode::Cgnat)
+                .nat(Nat::Cgnat)
                 .build()
                 .await?,
         ),
@@ -345,7 +345,7 @@ async fn build_nat_case(
             .context("missing isp")?
             .uplink_ip()
             .context("no uplink ip")?,
-        (NatMode::None, _) => dev_ip,
+        (Nat::None, _) => dev_ip,
         _ => nat.uplink_ip().context("no uplink ip")?,
     };
     Ok((
@@ -361,8 +361,8 @@ async fn build_nat_case(
 }
 
 async fn build_dual_nat_lab(
-    mode_a: NatMode,
-    mode_b: NatMode,
+    mode_a: Nat,
+    mode_b: Nat,
     port_base: u16,
 ) -> Result<DualNatLab> {
     let lab = Lab::new();
@@ -397,7 +397,7 @@ async fn build_dual_nat_lab(
 }
 
 async fn build_single_nat_case(
-    nat_mode: NatMode,
+    nat_mode: Nat,
     wiring: UplinkWiring,
     port_base: u16,
 ) -> Result<(Lab, String, SocketAddr, SocketAddr, Ipv4Addr)> {
@@ -409,7 +409,7 @@ async fn build_single_nat_case(
         UplinkWiring::ViaCgnatIsp => Some(
             lab.add_router("isp")
                 .region("eu")
-                .nat(NatMode::Cgnat)
+                .nat(Nat::Cgnat)
                 .build()
                 .await?,
         ),
@@ -442,7 +442,7 @@ async fn build_single_nat_case(
             .context("missing isp")?
             .uplink_ip()
             .context("no uplink ip")?,
-        (NatMode::None, _) => dev.ip(),
+        (Nat::None, _) => dev.ip(),
         _ => nat.uplink_ip().context("no uplink ip")?,
     };
     Ok((lab, dev_ns, r_dc, r_ix, expected_ip))
@@ -540,7 +540,7 @@ async fn nat_dest_independent_keeps_port() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     lab.add_device("dev1")
@@ -583,7 +583,7 @@ async fn nat_dest_dependent_changes_port() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationDependent)
+        .nat(Nat::Corporate)
         .build()
         .await?;
     lab.add_device("dev1")
@@ -624,14 +624,14 @@ async fn cgnat_hides_behind_isp_public_ip() -> Result<()> {
     let isp = lab
         .add_router("isp1")
         .region("eu")
-        .nat(NatMode::Cgnat)
+        .nat(Nat::Cgnat)
         .build()
         .await?;
     let dc = lab.add_router("dc1").region("eu").build().await?;
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     lab.add_device("dev1")
@@ -666,19 +666,19 @@ async fn iroh_nat_like_nodes_report_public_203_mapped_addrs() -> Result<()> {
     let isp = lab
         .add_router("isp")
         .region("eu")
-        .nat(NatMode::Cgnat)
+        .nat(Nat::Cgnat)
         .build()
         .await?;
     let lan_provider = lab
         .add_router("lan-provider")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let lan_fetcher = lab
         .add_router("lan-fetcher")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     lab.add_device("provider")
@@ -758,7 +758,7 @@ region = "eu"
 [[router]]
 name     = "lan1"
 upstream = "isp1"
-nat      = "destination-independent"
+nat      = "home"
 
 [device.dev1.eth0]
 gateway = "lan1"
@@ -780,7 +780,7 @@ async fn smoke_ping_gateway() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -805,7 +805,7 @@ async fn smoke_udp_dc_roundtrip() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -834,7 +834,7 @@ async fn smoke_tcp_dc_roundtrip() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -866,7 +866,7 @@ async fn smoke_ping_home_to_isp() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
 
@@ -901,12 +901,12 @@ async fn smoke_nat_homes_can_ping_public_relay_device() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let lan_provider = lab
         .add_router("lan-provider")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let lan_fetcher = lab
         .add_router("lan-fetcher")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
 
@@ -939,14 +939,14 @@ async fn smoke_nat_homes_can_ping_public_relay_device() -> Result<()> {
 async fn nat_matrix_public_connectivity_and_reflexive_ip() -> Result<()> {
     check_caps()?;
     let cases = [
-        (NatMode::None, UplinkWiring::DirectIx),
-        (NatMode::Cgnat, UplinkWiring::DirectIx),
-        (NatMode::DestinationIndependent, UplinkWiring::DirectIx),
-        (NatMode::DestinationIndependent, UplinkWiring::ViaPublicIsp),
-        (NatMode::DestinationIndependent, UplinkWiring::ViaCgnatIsp),
-        (NatMode::DestinationDependent, UplinkWiring::DirectIx),
-        (NatMode::DestinationDependent, UplinkWiring::ViaPublicIsp),
-        (NatMode::DestinationDependent, UplinkWiring::ViaCgnatIsp),
+        (Nat::None, UplinkWiring::DirectIx),
+        (Nat::Cgnat, UplinkWiring::DirectIx),
+        (Nat::Home, UplinkWiring::DirectIx),
+        (Nat::Home, UplinkWiring::ViaPublicIsp),
+        (Nat::Home, UplinkWiring::ViaCgnatIsp),
+        (Nat::Corporate, UplinkWiring::DirectIx),
+        (Nat::Corporate, UplinkWiring::ViaPublicIsp),
+        (Nat::Corporate, UplinkWiring::ViaCgnatIsp),
     ];
 
     let mut case_idx = 0u16;
@@ -975,8 +975,8 @@ async fn nat_matrix_public_connectivity_and_reflexive_ip() -> Result<()> {
 async fn nat_mapping_port_behavior_by_mode_and_wiring() -> Result<()> {
     check_caps()?;
     let modes = [
-        NatMode::DestinationIndependent,
-        NatMode::DestinationDependent,
+        Nat::Home,
+        Nat::Corporate,
     ];
     let wirings = [
         UplinkWiring::DirectIx,
@@ -1009,13 +1009,13 @@ async fn nat_mapping_port_behavior_by_mode_and_wiring() -> Result<()> {
             );
 
             match mode {
-                NatMode::DestinationIndependent => assert_eq!(
+                Nat::Home => assert_eq!(
                     o1.observed.port(),
                     o2.observed.port(),
                     "expected stable external port for mode={mode:?} wiring={}",
                     wiring.label()
                 ),
-                NatMode::DestinationDependent => assert_ne!(
+                Nat::Corporate => assert_ne!(
                     o1.observed.port(),
                     o2.observed.port(),
                     "expected destination-dependent external port for mode={mode:?} wiring={}",
@@ -1036,12 +1036,12 @@ async fn nat_private_reachability_isolated_public_reachable() -> Result<()> {
     let dc = lab.add_router("dc").region("eu").build().await?;
     let nat_a = lab
         .add_router("nat-a")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let nat_b = lab
         .add_router("nat-b")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
 
@@ -1114,7 +1114,7 @@ async fn smoke_device_to_device_same_lan() -> Result<()> {
     let home = lab
         .add_router("home1")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev1 = lab
@@ -1290,19 +1290,19 @@ async fn isp_home_wan_pool_selection() -> Result<()> {
     let isp_cgnat = lab
         .add_router("isp-cgnat")
         .region("eu")
-        .nat(NatMode::Cgnat)
+        .nat(Nat::Cgnat)
         .build()
         .await?;
     let home_public = lab
         .add_router("home-public")
         .upstream(isp_public.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let home_cgnat = lab
         .add_router("home-cgnat")
         .upstream(isp_cgnat.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
 
@@ -1342,14 +1342,14 @@ async fn dynamic_set_impair_changes_rtt() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev1").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_impair(&default_if, Some(Impair::Mobile))?;
+    dev_handle.set_link_condition(&default_if, Some(Impair::Mobile))?;
     let impaired_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         impaired_rtt >= base_rtt + Duration::from_millis(40),
         "expected impaired RTT >= base + 40ms, base={base_rtt:?} impaired={impaired_rtt:?}"
     );
 
-    dev_handle.set_impair(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None)?;
     let recovered_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         recovered_rtt < base_rtt + Duration::from_millis(30),
@@ -1417,7 +1417,7 @@ async fn dynamic_switch_route_changes_path() -> Result<()> {
 
     lab.device_by_name("dev1")
         .unwrap()
-        .switch_route("eth1")
+        .set_default_route("eth1")
         .await?;
     let slow_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
 
@@ -1519,15 +1519,15 @@ async fn tcp_reflector_basic() -> Result<()> {
 async fn reflexive_ip_all_combos() -> Result<()> {
     use strum::IntoEnumIterator;
 
-    // NatMode::None + Via*Isp is skipped: with no NAT the device gets a public
+    // Nat::None + Via*Isp is skipped: with no NAT the device gets a public
     // IP, but the nat router sits behind an ISP router (not directly on IX),
     // so no return route is installed from DC → device subnet.  DC's reply
     // is dropped and all probes time out.  The meaningful None case is
     // DirectIx where the return route IS set up.
-    let combos: Vec<_> = NatMode::iter()
+    let combos: Vec<_> = Nat::iter()
         .flat_map(|m| UplinkWiring::iter().map(move |w| (m, w)))
         .filter(|(m, w)| {
-            !(*m == NatMode::None
+            !(*m == Nat::None
                 && matches!(w, UplinkWiring::ViaPublicIsp | UplinkWiring::ViaCgnatIsp))
         })
         .flat_map(|(m, w)| Proto::iter().map(move |p| (m, w, p)))
@@ -1570,7 +1570,7 @@ async fn port_mapping_eim_stable() -> Result<()> {
     for wiring in UplinkWiring::iter() {
         let result: Result<()> = async {
             let (lab, ctx) =
-                build_nat_case(NatMode::DestinationIndependent, wiring, port_base).await?;
+                build_nat_case(Nat::Home, wiring, port_base).await?;
             let dev = lab.device_by_name("dev").unwrap();
             let o1 = dev.probe_udp_mapping(ctx.r_dc)?;
             let o2 = dev.probe_udp_mapping(ctx.r_ix)?;
@@ -1604,7 +1604,7 @@ async fn port_mapping_edm_changes() -> Result<()> {
     for wiring in UplinkWiring::iter() {
         let result: Result<()> = async {
             let (lab, ctx) =
-                build_nat_case(NatMode::DestinationDependent, wiring, port_base).await?;
+                build_nat_case(Nat::Corporate, wiring, port_base).await?;
             let dev = lab.device_by_name("dev").unwrap();
             let o1 = dev.probe_udp_mapping(ctx.r_dc)?;
             let o2 = dev.probe_udp_mapping(ctx.r_ix)?;
@@ -1643,8 +1643,8 @@ async fn switch_route_reflexive_ip() -> Result<()> {
         reflector,
         dc: _,
     } = build_dual_nat_lab(
-        NatMode::DestinationIndependent,
-        NatMode::DestinationDependent,
+        Nat::Home,
+        Nat::Corporate,
         16_200,
     )
     .await?;
@@ -1668,7 +1668,7 @@ async fn switch_route_reflexive_ip() -> Result<()> {
                 Err(e) => failures.push(format!("{proto}/{bind} before switch: {e:#}")),
             }
 
-            dev.switch_route("eth1").await?;
+            dev.set_default_route("eth1").await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             let dev_ip = dev.ip();
@@ -1682,7 +1682,7 @@ async fn switch_route_reflexive_ip() -> Result<()> {
                 Err(e) => failures.push(format!("{proto}/{bind} after switch: {e:#}")),
             }
 
-            dev.switch_route("eth0").await?;
+            dev.set_default_route("eth0").await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -1703,8 +1703,8 @@ async fn switch_route_multiple() -> Result<()> {
         nat_b,
         reflector,
     } = build_dual_nat_lab(
-        NatMode::DestinationIndependent,
-        NatMode::DestinationIndependent,
+        Nat::Home,
+        Nat::Home,
         16_300,
     )
     .await?;
@@ -1719,7 +1719,7 @@ async fn switch_route_multiple() -> Result<()> {
         "expected nat_a WAN on eth0"
     );
 
-    dev.switch_route("eth1").await?;
+    dev.set_default_route("eth1").await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let o = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
     assert_eq!(
@@ -1728,7 +1728,7 @@ async fn switch_route_multiple() -> Result<()> {
         "expected nat_b WAN on eth1"
     );
 
-    dev.switch_route("eth0").await?;
+    dev.set_default_route("eth0").await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let o = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
     assert_eq!(
@@ -1751,8 +1751,8 @@ async fn switch_route_tcp_roundtrip() -> Result<()> {
         nat_b: _,
         reflector: _,
     } = build_dual_nat_lab(
-        NatMode::DestinationIndependent,
-        NatMode::DestinationDependent,
+        Nat::Home,
+        Nat::Corporate,
         16_400,
     )
     .await?;
@@ -1768,7 +1768,7 @@ async fn switch_route_tcp_roundtrip() -> Result<()> {
         .await
         .context("tcp roundtrip task panicked")??;
 
-    dev.switch_route("eth1").await?;
+    dev.set_default_route("eth1").await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
     dev.spawn(move |_| async move { tcp_roundtrip(r).await })
         .await
@@ -1788,8 +1788,8 @@ async fn switch_route_udp_reflexive_change() -> Result<()> {
         nat_b,
         reflector,
     } = build_dual_nat_lab(
-        NatMode::DestinationIndependent,
-        NatMode::DestinationIndependent,
+        Nat::Home,
+        Nat::Home,
         16_500,
     )
     .await?;
@@ -1804,7 +1804,7 @@ async fn switch_route_udp_reflexive_change() -> Result<()> {
         "before switch: expected nat_a WAN"
     );
 
-    dev.switch_route("eth1").await?;
+    dev.set_default_route("eth1").await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let after = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
@@ -1830,12 +1830,12 @@ async fn switch_uplink_udp_smoke() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let nat_a = lab
         .add_router("nat-a")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let nat_b = lab
         .add_router("nat-b")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -1854,7 +1854,7 @@ async fn switch_uplink_udp_smoke() -> Result<()> {
         .context("udp before switch_uplink")?;
 
     // Move eth0 from nat_a → nat_b.
-    dev.switch_uplink("eth0", nat_b.id()).await?;
+    dev.replug_iface("eth0", nat_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connectivity through nat_b works.
@@ -1871,12 +1871,12 @@ async fn switch_uplink_reflexive_ip_changes() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let nat_a = lab
         .add_router("nat-a")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let nat_b = lab
         .add_router("nat-b")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -1900,7 +1900,7 @@ async fn switch_uplink_reflexive_ip_changes() -> Result<()> {
         "before switch: expected nat_a WAN IP"
     );
 
-    dev.switch_uplink("eth0", nat_b.id()).await?;
+    dev.replug_iface("eth0", nat_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let after = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
@@ -1924,7 +1924,7 @@ async fn custom_downstream_cidr() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let custom = lab
         .add_router("custom")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .downstream_cidr("172.30.99.0/24".parse()?)
         .build()
         .await?;
@@ -2047,16 +2047,16 @@ async fn link_down_up_connectivity() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
 async fn nat_rebind_mode_port() -> Result<()> {
-    // DestIndep→DestDep: port changes; DestDep→DestIndep: port stabilises.
-    let cases: &[(NatMode, NatMode, bool)] = &[
+    // Home→Corporate: port changes (EIM→EDM); Corporate→Home: port stabilises.
+    let cases: &[(Nat, Nat, bool)] = &[
         (
-            NatMode::DestinationIndependent,
-            NatMode::DestinationDependent,
+            Nat::Home,
+            Nat::Corporate,
             false,
         ),
         (
-            NatMode::DestinationDependent,
-            NatMode::DestinationIndependent,
+            Nat::Corporate,
+            Nat::Home,
             true,
         ),
     ];
@@ -2097,10 +2097,10 @@ async fn nat_rebind_mode_port() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
 async fn nat_rebind_mode_ip() -> Result<()> {
-    // DestinationIndependent→None is omitted: with NAT=None, the device's
-    // private IP appears as the packet source; the DC has no return route, so
-    // the UDP probe times out rather than completing.
-    let cases: &[(NatMode, NatMode)] = &[(NatMode::None, NatMode::DestinationIndependent)];
+    // Home→None is omitted: with NAT=None, the device's private IP appears
+    // as the packet source; the DC has no return route, so the UDP probe
+    // times out rather than completing.
+    let cases: &[(Nat, Nat)] = &[(Nat::None, Nat::Home)];
     let mut port_base = 16_900u16;
     let mut failures = Vec::new();
     for &(from, to) in cases {
@@ -2114,8 +2114,8 @@ async fn nat_rebind_mode_ip() -> Result<()> {
             let r_dc = ctx.r_dc;
             let o = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
             let expected = match to {
-                NatMode::DestinationIndependent => IpAddr::V4(wan_ip),
-                NatMode::None => IpAddr::V4(ctx.dev_ip),
+                Nat::Home => IpAddr::V4(wan_ip),
+                Nat::None => IpAddr::V4(ctx.dev_ip),
                 _ => unreachable!(),
             };
             if o.observed.ip() != expected {
@@ -2148,7 +2148,7 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
         return Ok(());
     }
     let (lab, ctx) = build_nat_case(
-        NatMode::DestinationDependent,
+        Nat::Corporate,
         UplinkWiring::DirectIx,
         17_000,
     )
@@ -2157,7 +2157,7 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let r_dc = ctx.r_dc;
     let o1 = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
-    nat_handle.rebind_nats()?;
+    nat_handle.flush_nat_state()?;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let o2 = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
     assert_ne!(
@@ -2177,7 +2177,7 @@ async fn devices_same_nat_share_ip() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let nat = lab
         .add_router("nat")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev_a = lab
@@ -2213,12 +2213,12 @@ async fn devices_diff_nat_isolate() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let nat_a = lab
         .add_router("nat-a")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let nat_b = lab
         .add_router("nat-b")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev_a = lab
@@ -2313,7 +2313,7 @@ async fn rate_limit_tcp_download() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 2000,
         loss: 0.0,
         latency: 0,
@@ -2381,7 +2381,7 @@ async fn rate_limit_udp_download() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 2000,
         loss: 0.0,
         latency: 0,
@@ -2422,7 +2422,7 @@ async fn rate_limit_asymmetric() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 4000,
         loss: 0.0,
         latency: 0,
@@ -2463,7 +2463,7 @@ async fn rate_limit_multihop_bottleneck() -> Result<()> {
     let nat = lab
         .add_router("nat")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -2472,7 +2472,7 @@ async fn rate_limit_multihop_bottleneck() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_link(
+    lab.set_link_condition(
         nat.id(),
         isp.id(),
         Some(Impair::Manual {
@@ -2516,7 +2516,7 @@ async fn rate_limit_two_hops_stack() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 2000,
         loss: 0.0,
         latency: 0,
@@ -2674,7 +2674,7 @@ async fn loss_udp_both_directions() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 0,
         loss: 30.0,
         latency: 0,
@@ -2716,7 +2716,7 @@ async fn latency_download_direction() -> Result<()> {
 
     let base = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 0,
         loss: 0.0,
         latency: 50,
@@ -2749,7 +2749,7 @@ async fn latency_upload_and_download() -> Result<()> {
         .build()
         .await?;
 
-    dc.impair_downlink(Some(Impair::Manual {
+    dc.set_downlink_condition(Some(Impair::Manual {
         rate: 0,
         loss: 0.0,
         latency: 30,
@@ -2829,7 +2829,7 @@ async fn latency_multihop_chain() -> Result<()> {
     let nat = lab
         .add_router("nat")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
     let dev = lab
@@ -2846,7 +2846,7 @@ async fn latency_multihop_chain() -> Result<()> {
         .build()
         .await?;
 
-    lab.impair_link(
+    lab.set_link_condition(
         nat.id(),
         isp.id(),
         Some(Impair::Manual {
@@ -2902,7 +2902,7 @@ async fn rate_dynamic_decrease() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_impair(
+    dev_handle.set_link_condition(
         &default_if,
         Some(Impair::Manual {
             rate: 500,
@@ -2963,7 +2963,7 @@ async fn rate_dynamic_remove() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_impair(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None)?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_901)))?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2999,7 +2999,7 @@ async fn latency_dynamic_add_remove() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_impair(
+    dev_handle.set_link_condition(
         &default_if,
         Some(Impair::Manual {
             rate: 0,
@@ -3013,7 +3013,7 @@ async fn latency_dynamic_add_remove() -> Result<()> {
         "expected RTT +90ms after 100ms impair, baseline={baseline:?} high={high:?}"
     );
 
-    dev_handle.set_impair(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None)?;
     let recovered = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         recovered < baseline + Duration::from_millis(30),
@@ -3575,7 +3575,7 @@ async fn nat_v6_masquerade() -> Result<()> {
     let home = lab
         .add_router("nat")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .ip_support(IpSupport::DualStack)
         .nat_v6(NatV6Mode::Masquerade)
         .build()
@@ -3763,7 +3763,7 @@ async fn nat_v6_none_global() -> Result<()> {
     let home = lab
         .add_router("home")
         .upstream(isp.id())
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .ip_support(IpSupport::DualStack)
         .nat_v6(NatV6Mode::None)
         .build()
@@ -3887,7 +3887,7 @@ async fn latency_dual_stack_region() -> Result<()> {
 #[traced_test]
 async fn netsim_basic_holepunch() -> Result<()> {
     let lab = Lab::default();
-    let nat_mode = NatMode::DestinationIndependent;
+    let nat_mode = Nat::FullCone;
     let dc = lab.add_router("dc").build().await?;
     let nat1 = lab.add_router("nat1").nat(nat_mode).build().await?;
     let nat2 = lab.add_router("nat2").nat(nat_mode).build().await?;
@@ -3952,6 +3952,126 @@ async fn netsim_basic_holepunch() -> Result<()> {
         task2.await.unwrap()
     },)?;
     Ok(())
+}
+
+/// Home NAT (EIM+APDF) holepunch with simultaneous open.
+///
+/// Both sides discover their public address via STUN, exchange addresses
+/// through a signaling channel, then both start sending simultaneously.
+/// With Home NAT (EIM+APDF), both sides must create outbound conntrack
+/// entries for each other before either can receive — no unsolicited inbound.
+///
+/// Also tests a "slightly staggered" variant (200ms delay on one side),
+/// simulating real-world timing where simultaneous open is approximate.
+/// Home routers typically allow this because the first probe from the faster
+/// side creates the conntrack entry before the second side's probe times out.
+#[tokio::test]
+#[traced_test]
+async fn netsim_holepunch_home_nat() -> Result<()> {
+    check_caps()?;
+    for (label, stagger_ms) in [("simultaneous", 0u64), ("staggered-200ms", 200)] {
+        info!("--- {label} ---");
+        let lab = Lab::default();
+        let dc = lab.add_router("dc").build().await?;
+        let nat1 = lab.add_router("nat1").nat(Nat::Home).build().await?;
+        let nat2 = lab.add_router("nat2").nat(Nat::Home).build().await?;
+        let stun = lab.add_device("stun").uplink(dc.id()).build().await?;
+        let dev1 = lab.add_device("dev1").uplink(nat1.id()).build().await?;
+        let dev2 = lab.add_device("dev2").uplink(nat2.id()).build().await?;
+
+        let (stun_tx, stun_rx) = oneshot::channel();
+        let _task_relay = stun.spawn({
+            async move |ctx| {
+                let addr = SocketAddr::from((ctx.ip(), 9999));
+                ctx.spawn_reflector(addr)?;
+                stun_tx.send(addr).unwrap();
+                anyhow::Ok(())
+            }
+        });
+        let stun_addr = stun_rx.await.unwrap();
+
+        let timeout = Duration::from_secs(15);
+        let stagger = Duration::from_millis(stagger_ms);
+
+        // Use a barrier-style sync: both sides exchange addresses, then
+        // a "go" signal ensures ep1 starts immediately while ep2 waits
+        // `stagger` ms.
+        let (addr1_tx, addr1_rx) = oneshot::channel();
+        let (addr2_tx, addr2_rx) = oneshot::channel();
+
+        let task1 = dev1.spawn({
+            async move |_| {
+                span_log_timeout("ep1", timeout, async {
+                    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                    let public_addr = get_public_addr(&socket, stun_addr).await?;
+                    info!("ep1 public {public_addr}");
+                    addr1_tx.send(public_addr).unwrap();
+                    let dst = addr2_rx.await.unwrap();
+                    info!("ep1 peer {dst}");
+                    // ep1 sends immediately — creates conntrack for ep2's addr
+                    holepunch_send_recv(&socket, dst).await?;
+                    anyhow::Ok(())
+                })
+                .await
+            }
+        });
+
+        let task2 = dev2.spawn(async move |_| {
+            span_log_timeout("ep2", timeout, async {
+                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                let public_addr = get_public_addr(&socket, stun_addr).await?;
+                info!("ep2 public {public_addr}");
+                addr2_tx.send(public_addr).unwrap();
+                let dst = addr1_rx.await.unwrap();
+                info!("ep2 peer {dst}");
+                tokio::time::sleep(stagger).await;
+                holepunch_send_recv(&socket, dst).await?;
+                anyhow::Ok(())
+            })
+            .await
+        });
+        tokio::try_join!(async { task1.await.unwrap() }, async {
+            task2.await.unwrap()
+        },)?;
+        info!("--- {label} OK ---");
+    }
+    Ok(())
+}
+
+/// Sends probes and waits for a response from the peer. Used for holepunching.
+///
+/// Sends packets every 200ms for up to 8s, succeeds as soon as one response arrives.
+/// After receiving, continues sending probes briefly so the peer also receives.
+async fn holepunch_send_recv(socket: &UdpSocket, dst: SocketAddr) -> Result<()> {
+    let mut buf = [0u8; 512];
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    let mut i = 0u32;
+    loop {
+        let msg = format!("punch {i}");
+        socket.send_to(msg.as_bytes(), dst).await?;
+        if i % 5 == 0 {
+            info!("sent probe {i} to {dst}");
+        }
+        i += 1;
+        match tokio::time::timeout(Duration::from_millis(200), socket.recv_from(&mut buf)).await {
+            Ok(Ok((len, from))) => {
+                let msg = std::str::from_utf8(&buf[..len])?;
+                info!("recv from {from}: {msg} (after {i} probes)");
+                // Send a few more probes so the peer also receives
+                for j in 0..3 {
+                    let msg = format!("ack {j}");
+                    let _ = socket.send_to(msg.as_bytes(), dst).await;
+                }
+                return Ok(());
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                if tokio::time::Instant::now() > deadline {
+                    bail!("holepunch timed out after 8s ({i} probes sent to {dst})");
+                }
+            }
+        }
+    }
 }
 
 async fn get_public_addr(socket: &UdpSocket, reflector: SocketAddr) -> Result<SocketAddr> {

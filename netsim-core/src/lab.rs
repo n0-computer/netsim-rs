@@ -1,4 +1,4 @@
-//! High-level lab API: [`Lab`], [`DeviceBuilder`], [`NatMode`], [`Impair`], [`ObservedAddr`].
+//! High-level lab API: [`Lab`], [`DeviceBuilder`], [`Nat`], [`Impair`] (aka `LinkCondition`), [`ObservedAddr`].
 
 use std::{
     collections::HashMap,
@@ -33,21 +33,114 @@ pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Public types
 // ─────────────────────────────────────────────
 
-/// NAT mode for a router.
+/// NAT behavior preset for common real-world equipment.
+///
+/// Abbreviations used in variant docs:
+/// - EIM: Endpoint-Independent Mapping (same external port for all destinations)
+/// - EDM: Endpoint-Dependent Mapping (different port per destination, "symmetric")
+/// - EIF: Endpoint-Independent Filtering (any host can reach the mapped port)
+/// - APDF: Address-and-Port-Dependent Filtering (only contacted host:port can reply)
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, strum::EnumIter, strum::Display,
 )]
 #[serde(rename_all = "kebab-case")]
-pub enum NatMode {
-    /// No NAT — downstream addresses are publicly routable (DC behaviour).
+pub enum Nat {
+    /// No NAT - addresses are publicly routable.
+    ///
+    /// Use for datacenter racks, cloud VMs with elastic IPs,
+    /// or any host that needs a stable public address.
     #[default]
     None,
-    /// CGNAT — SNAT subscriber traffic on the IX-facing interface.
+
+    /// Home router - the most common consumer NAT.
+    ///
+    /// EIM + APDF. Port-preserving. No hairpin. UDP timeout 300s.
+    /// This is what Linux `snat to <ip>` produces.
+    ///
+    /// Observed on: FritzBox, Unifi (default), TP-Link Archer, ASUS RT-AX,
+    /// OpenWRT default masquerade.
+    ///
+    /// Hole-punching works with simultaneous open (both sides must send).
+    /// This is the RFC 4787 REQ-1 compliant "port-restricted cone" NAT.
+    #[serde(alias = "destination-independent")]
+    Home,
+
+    /// Corporate firewall - symmetric NAT.
+    ///
+    /// EDM + APDF. Random ports. No hairpin. UDP timeout 120s.
+    /// Produces a different external port per (dst_ip, dst_port) 4-tuple.
+    ///
+    /// Observed on: Cisco ASA (PAT), Palo Alto NGFW (DIPP), Fortinet
+    /// FortiGate, Juniper SRX. AWS/Azure/GCP NAT gateways behave identically.
+    ///
+    /// Hole-punching is impossible without relay (TURN/DERP).
+    #[serde(alias = "destination-dependent")]
+    Corporate,
+
+    /// Carrier-grade NAT per RFC 6888.
+    ///
+    /// EIM + EIF. Port-preserving. No hairpin. UDP timeout 300s.
+    /// Applied on the ISP/IX-facing interface (stacks with home NAT).
+    ///
+    /// Observed on: A10 Thunder CGN, Cisco ASR CGNAT, Juniper MX MS-MPC.
+    /// Mobile carriers (T-Mobile, Vodafone, O2) use this for LTE/5G subscribers.
+    /// RFC 6888 mandates EIM to preserve P2P traversal at the ISP layer.
     Cgnat,
-    /// Endpoint-independent mapping: same external port regardless of destination.
-    DestinationIndependent,
-    /// Endpoint-dependent (symmetric-ish): different port per destination.
-    DestinationDependent,
+
+    /// Cloud NAT gateway - symmetric NAT with randomized ports.
+    ///
+    /// EDM + APDF. Random ports. No hairpin. UDP timeout 350s.
+    ///
+    /// Observed on: AWS NAT Gateway, Azure NAT Gateway, GCP Cloud NAT
+    /// (default dynamic port allocation mode).
+    ///
+    /// Functionally identical to Corporate but with longer timeouts
+    /// matching documented cloud provider behavior.
+    CloudNat,
+
+    /// Full cone - most permissive NAT for testing.
+    ///
+    /// EIM + EIF. Port-preserving. Hairpin on. UDP timeout 300s.
+    /// Any external host can send to the mapped port after first outbound packet.
+    ///
+    /// Observed on: older FritzBox firmware, some CGNAT with full-cone policy.
+    /// Hole-punching always succeeds.
+    FullCone,
+}
+
+/// Deprecated alias for [`Nat`].
+#[deprecated(note = "renamed to `Nat`")]
+pub type NatMode = Nat;
+
+/// NAT mapping behavior per RFC 4787 Section 4.1.
+///
+/// Controls how the NAT assigns external ports when translating outbound packets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NatMapping {
+    /// Same external port for all destinations (EIM).
+    ///
+    /// Port-preserving: the NAT reuses the internal source port when free.
+    /// nftables: `snat to <ip>`.
+    EndpointIndependent,
+    /// Different external port per destination IP+port (symmetric/EDM).
+    ///
+    /// Port randomized per 4-tuple. nftables: `masquerade random,fully-random`.
+    EndpointDependent,
+}
+
+/// NAT filtering behavior per RFC 4787 Section 5.
+///
+/// Controls which inbound packets the NAT allows through to the internal host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NatFiltering {
+    /// Any external host can send to the mapped port (full cone).
+    ///
+    /// nftables: fullcone DNAT map in prerouting.
+    EndpointIndependent,
+    /// Only the exact (IP, port) the internal endpoint contacted can reply.
+    ///
+    /// nftables: conntrack-only (no prerouting DNAT).
+    AddressAndPortDependent,
 }
 
 /// IPv6 NAT mode for a router.
@@ -483,7 +576,7 @@ impl Lab {
     /// [`.upstream()`][RouterBuilder::upstream] as needed, then
     /// [`.build()`][RouterBuilder::build] to finalise.
     ///
-    /// Default NAT mode is [`NatMode::None`] (public DC-style router, IX-connected).
+    /// Default NAT mode is [`Nat::None`] (public DC-style router, IX-connected).
     pub fn add_router(&self, name: &str) -> RouterBuilder {
         let inner = self.inner.lock().unwrap();
         let lab_span = inner.cfg.span.clone();
@@ -494,7 +587,7 @@ impl Lab {
                 name: name.to_string(),
                 region: None,
                 upstream: None,
-                nat: NatMode::None,
+                nat: Nat::None,
                 ip_support: IpSupport::V4Only,
                 nat_v6: NatV6Mode::None,
                 downstream_cidr: None,
@@ -507,7 +600,7 @@ impl Lab {
             name: name.to_string(),
             region: None,
             upstream: None,
-            nat: NatMode::None,
+            nat: Nat::None,
             ip_support: IpSupport::V4Only,
             nat_v6: NatV6Mode::None,
             downstream_cidr: None,
@@ -634,8 +727,8 @@ impl Lab {
     ///
     /// The order of `from` and `to` does not matter — the method resolves the
     /// connected pair in either direction.
-    pub fn impair_link(&self, a: NodeId, b: NodeId, impair: Option<Impair>) -> Result<()> {
-        debug!(a = ?a, b = ?b, impair = ?impair, "lab: impair_link");
+    pub fn set_link_condition(&self, a: NodeId, b: NodeId, impair: Option<Impair>) -> Result<()> {
+        debug!(a = ?a, b = ?b, impair = ?impair, "lab: set_link_condition");
         let inner = self.inner.lock().unwrap();
         let netns = Arc::clone(&inner.netns);
 
@@ -691,6 +784,12 @@ impl Lab {
             a,
             b
         )
+    }
+
+    /// Deprecated alias for [`Lab::set_link_condition`].
+    #[deprecated(note = "renamed to `set_link_condition`")]
+    pub fn impair_link(&self, a: NodeId, b: NodeId, impair: Option<Impair>) -> Result<()> {
+        self.set_link_condition(a, b, impair)
     }
 
     // ── Lookup helpers ───────────────────────────────────────────────────
@@ -775,7 +874,7 @@ pub struct RouterBuilder {
     name: String,
     region: Option<String>,
     upstream: Option<NodeId>,
-    nat: NatMode,
+    nat: Nat,
     ip_support: IpSupport,
     nat_v6: NatV6Mode,
     downstream_cidr: Option<Ipv4Net>,
@@ -801,8 +900,8 @@ impl RouterBuilder {
         self
     }
 
-    /// Sets the NAT mode. Defaults to [`NatMode::None`] (no NAT, public addressing).
-    pub fn nat(mut self, mode: NatMode) -> Self {
+    /// Sets the NAT mode. Defaults to [`Nat::None`] (no NAT, public addressing).
+    pub fn nat(mut self, mode: Nat) -> Self {
         if self.result.is_ok() {
             self.nat = mode;
         }
@@ -844,7 +943,7 @@ impl RouterBuilder {
         let (id, setup_data, netns, need_root_setup) = {
             let mut inner = self.inner.lock().unwrap();
             let nat = self.nat;
-            let downstream_pool = if nat == NatMode::None {
+            let downstream_pool = if nat == Nat::None {
                 DownstreamPool::Public
             } else {
                 DownstreamPool::Private
@@ -1402,8 +1501,8 @@ impl Device {
         Ok(())
     }
 
-    /// Switches the active default route to a different interface.
-    pub async fn switch_route(&self, to: &str) -> Result<()> {
+    /// Sets the active default route to a different interface.
+    pub async fn set_default_route(&self, to: &str) -> Result<()> {
         let (ns, uplink, impair, netns) = {
             let inner = self.lab.lock().unwrap();
             let dev = inner
@@ -1437,10 +1536,14 @@ impl Device {
         Ok(())
     }
 
+    /// Deprecated alias for [`Device::set_default_route`].
+    #[deprecated(note = "renamed to `set_default_route`")]
+    pub async fn switch_route(&self, to: &str) -> Result<()> {
+        self.set_default_route(to).await
+    }
+
     /// Applies or removes a link-layer impairment on the named interface.
-    ///
-    /// If `ifname` is `None`, applies to the default interface.
-    pub fn set_impair(&self, ifname: &str, impair: Option<Impair>) -> Result<()> {
+    pub fn set_link_condition(&self, ifname: &str, impair: Option<Impair>) -> Result<()> {
         let mut inner = self.lab.lock().unwrap();
         let (ns, resolved_ifname, netns) = {
             let dev = inner
@@ -1459,6 +1562,12 @@ impl Device {
             }
         }
         Ok(())
+    }
+
+    /// Deprecated alias for [`Device::set_link_condition`].
+    #[deprecated(note = "renamed to `set_link_condition`")]
+    pub fn set_impair(&self, ifname: &str, impair: Option<Impair>) -> Result<()> {
+        self.set_link_condition(ifname, impair)
     }
 
     // ── Spawn / run ────────────────────────────────────────────────────
@@ -1578,12 +1687,12 @@ impl Device {
     }
 
     /// Moves one of this device's interfaces to a different router's downstream
-    /// network, simulating a WiFi handoff or network switch.
+    /// network, simulating unplugging a cable and plugging it into a new router.
     ///
     /// The interface name is preserved but the IP address changes (allocated from
     /// the new router's pool). The old veth pair is torn down and a fresh one is
     /// created.
-    pub async fn switch_uplink(&self, ifname: &str, to_router: NodeId) -> Result<()> {
+    pub async fn replug_iface(&self, ifname: &str, to_router: NodeId) -> Result<()> {
         use crate::core::{self, IfaceBuild};
 
         // Phase 1: Lock → extract data + allocate from new router's pool → unlock
@@ -1684,6 +1793,12 @@ impl Device {
 
         Ok(())
     }
+
+    /// Deprecated alias for [`Device::replug_iface`].
+    #[deprecated(note = "renamed to `replug_iface`")]
+    pub async fn switch_uplink(&self, ifname: &str, to_router: NodeId) -> Result<()> {
+        self.replug_iface(ifname, to_router).await
+    }
 }
 
 /// Cloneable handle to a router in the lab topology.
@@ -1740,7 +1855,7 @@ impl Router {
     }
 
     /// Returns the NAT mode.
-    pub fn nat_mode(&self) -> NatMode {
+    pub fn nat_mode(&self) -> Nat {
         let inner = self.lab.lock().unwrap();
         inner.router(self.id).map(|r| r.cfg.nat).unwrap_or_default()
     }
@@ -1804,7 +1919,7 @@ impl Router {
     /// Replaces NAT rules on this router at runtime.
     ///
     /// Flushes the `ip nat` table then re-applies the new rules.
-    pub fn set_nat_mode(&self, mode: NatMode) -> Result<()> {
+    pub fn set_nat_mode(&self, mode: Nat) -> Result<()> {
         let (ns, lan_if, wan_if, wan_ip, netns) = {
             let inner = self.lab.lock().unwrap();
             let (ns, lan_if, wan_if, wan_ip) = inner.router_nat_params(self.id)?;
@@ -1863,7 +1978,7 @@ impl Router {
     /// Flushes the conntrack table, forcing all active NAT mappings to expire.
     ///
     /// Subsequent flows get new external port assignments. Requires `conntrack-tools`.
-    pub fn rebind_nats(&self) -> Result<()> {
+    pub fn flush_nat_state(&self) -> Result<()> {
         let (ns, netns) = {
             let inner = self.lab.lock().unwrap();
             let ns = inner.router_ns(self.id)?.to_string();
@@ -1876,6 +1991,12 @@ impl Router {
             }
             Ok(())
         })
+    }
+
+    /// Deprecated alias for [`Router::flush_nat_state`].
+    #[deprecated(note = "renamed to `flush_nat_state`")]
+    pub fn rebind_nats(&self) -> Result<()> {
+        self.flush_nat_state()
     }
 
     // ── Spawn / run ────────────────────────────────────────────────────
@@ -1950,8 +2071,8 @@ impl Router {
 
     /// Applies or removes impairment on this router's downlink bridge, affecting
     /// download-direction traffic to all downstream devices.
-    pub fn impair_downlink(&self, impair: Option<Impair>) -> Result<()> {
-        debug!(router = ?self.id, impair = ?impair, "router: impair_downlink");
+    pub fn set_downlink_condition(&self, impair: Option<Impair>) -> Result<()> {
+        debug!(router = ?self.id, impair = ?impair, "router: set_downlink_condition");
         let (ns, bridge, netns) = {
             let inner = self.lab.lock().unwrap();
             let r = inner.router(self.id).context("unknown router id")?;
@@ -1963,6 +2084,12 @@ impl Router {
         };
         apply_or_remove_impair(&netns, &ns, &bridge, impair);
         Ok(())
+    }
+
+    /// Deprecated alias for [`Router::set_downlink_condition`].
+    #[deprecated(note = "renamed to `set_downlink_condition`")]
+    pub fn impair_downlink(&self, impair: Option<Impair>) -> Result<()> {
+        self.set_downlink_condition(impair)
     }
 
     /// Spawns a UDP reflector in this router's network namespace.

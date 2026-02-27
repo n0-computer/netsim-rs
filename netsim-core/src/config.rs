@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::{IpSupport, NatMode, NatV6Mode};
+use crate::{IpSupport, Nat, NatV6Mode};
 
 /// Parsed lab configuration from TOML.
 #[derive(Deserialize, Clone, Default)]
@@ -38,7 +38,7 @@ pub struct RouterConfig {
     pub upstream: Option<String>,
     /// NAT mode.  Defaults to `"none"` (public downstream, no NAT).
     #[serde(default)]
-    pub nat: NatMode,
+    pub nat: Nat,
     /// IP address family support.  Defaults to `"v4-only"`.
     #[serde(default)]
     pub ip_support: IpSupport,

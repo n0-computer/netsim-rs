@@ -11,7 +11,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, Instrument as _};
 
-use crate::{netlink::Netlink, netns, qdisc, Impair, IpSupport, NatMode, NatV6Mode};
+use crate::{netlink::Netlink, netns, qdisc, Impair, IpSupport, Nat, NatV6Mode};
 
 /// Defines static addressing and naming for one lab instance.
 #[derive(Clone, Debug)]
@@ -61,7 +61,7 @@ pub(crate) enum DownstreamPool {
 #[derive(Clone, Debug)]
 pub(crate) struct RouterConfig {
     /// Selects router NAT behavior.
-    pub nat: NatMode,
+    pub nat: Nat,
     /// Selects which pool to allocate downstream subnets from.
     pub downstream_pool: DownstreamPool,
     /// Selects router IPv6 NAT behavior.
@@ -503,7 +503,7 @@ impl NetworkCore {
     }
 
     /// Stores an updated NAT mode on the router record.
-    pub(crate) fn set_router_nat_mode(&mut self, id: NodeId, mode: NatMode) -> Result<()> {
+    pub(crate) fn set_router_nat_mode(&mut self, id: NodeId, mode: Nat) -> Result<()> {
         let router = self.routers.get_mut(&id).context("unknown router id")?;
         router.cfg.nat = mode;
         Ok(())
@@ -515,7 +515,7 @@ impl NetworkCore {
     pub(crate) fn add_router(
         &mut self,
         name: &str,
-        nat: NatMode,
+        nat: Nat,
         downstream_pool: DownstreamPool,
         region: Option<String>,
         ip_support: IpSupport,
@@ -1457,17 +1457,84 @@ pub(crate) fn run_nft_in(netns: &netns::NetnsManager, ns: &str, rules: &str) -> 
     netns.run_closure_in(ns, move || run_nft(&rules))
 }
 
+/// Configures conntrack timeouts for the given NAT profile.
+fn apply_conntrack_timeouts(netns: &netns::NetnsManager, ns: &str, mode: Nat) -> Result<()> {
+    let (udp_timeout, udp_stream, tcp_established) = match mode {
+        Nat::Home | Nat::Cgnat | Nat::FullCone => (30, 300, 7200),
+        Nat::Corporate => (30, 120, 3600),
+        Nat::CloudNat => (30, 350, 3600),
+        Nat::None => return Ok(()),
+    };
+    netns.run_closure_in(ns, move || {
+        set_sysctl_root(
+            "net/netfilter/nf_conntrack_udp_timeout",
+            &udp_timeout.to_string(),
+        )?;
+        set_sysctl_root(
+            "net/netfilter/nf_conntrack_udp_timeout_stream",
+            &udp_stream.to_string(),
+        )?;
+        set_sysctl_root(
+            "net/netfilter/nf_conntrack_tcp_timeout_established",
+            &tcp_established.to_string(),
+        )?;
+        Ok(())
+    })
+}
+
 /// Applies home-router NAT rules in `ns` for `mode`.
 pub(crate) fn apply_home_nat(
     netns: &netns::NetnsManager,
     ns: &str,
-    mode: NatMode,
+    mode: Nat,
     _lan_if: &str,
     wan_if: &str,
     wan_ip: Ipv4Addr,
 ) -> Result<()> {
     let rules = match mode {
-        NatMode::DestinationIndependent => {
+        Nat::Home => {
+            // Home router NAT (EIM + APDF).
+            //
+            // Uses the same dynamic @fullcone map as FullCone for
+            // endpoint-independent mapping.  Prerouting DNATs via the
+            // map.  A forward-chain filter restricts inbound forwarded
+            // traffic to established/related conntrack flows (APDF):
+            // an unsolicited packet from an address the internal host
+            // never contacted will not match any conntrack entry and
+            // is dropped.  Hole-punching works because both sides
+            // create outbound conntrack entries before receiving.
+            format!(
+                r#"
+table ip nat {{
+    map fullcone {{
+        type inet_service : ipv4_addr . inet_service
+        flags dynamic,timeout
+        timeout 300s
+        size 65536
+    }}
+    chain prerouting {{
+        type nat hook prerouting priority dstnat; policy accept;
+        iif "{wan}" meta l4proto udp dnat to udp dport map @fullcone
+    }}
+    chain postrouting {{
+        type nat hook postrouting priority srcnat; policy accept;
+        oif "{wan}" meta l4proto udp update @fullcone {{ udp sport timeout 300s : ip saddr . udp sport }}
+        oif "{wan}" snat to {ip}
+    }}
+}}
+table ip filter {{
+    chain forward {{
+        type filter hook forward priority 0; policy accept;
+        iif "{wan}" ct state established,related accept
+        iif "{wan}" drop
+    }}
+}}
+"#,
+                wan = wan_if,
+                ip = wan_ip,
+            )
+        }
+        Nat::FullCone => {
             // Full-cone NAT (EIM + EIF) via dynamic nftables map.
             //
             // postrouting: record udp sport → src_ip . src_port in @fullcone,
@@ -1503,7 +1570,9 @@ table ip nat {{
                 ip = wan_ip,
             )
         }
-        NatMode::DestinationDependent => {
+        Nat::Corporate | Nat::CloudNat => {
+            // Symmetric NAT (EDM + APDF): masquerade with random port selection.
+            // Different external port per (dst_ip, dst_port) tuple.
             format!(
                 r#"
 table ip nat {{
@@ -1516,7 +1585,7 @@ table ip nat {{
                 wan = wan_if,
             )
         }
-        NatMode::None | NatMode::Cgnat => {
+        Nat::None | Nat::Cgnat => {
             return Ok(());
         }
     };
@@ -1527,18 +1596,20 @@ table ip nat {{
 pub(crate) fn apply_nat(
     netns: &netns::NetnsManager,
     ns: &str,
-    mode: NatMode,
+    mode: Nat,
     lan_if: &str,
     wan_if: &str,
     wan_ip: Ipv4Addr,
 ) -> Result<()> {
-    match mode {
-        NatMode::None => Ok(()),
-        NatMode::Cgnat => apply_isp_cgnat(netns, ns, wan_if),
-        NatMode::DestinationIndependent | NatMode::DestinationDependent => {
+    let result = match mode {
+        Nat::None => return Ok(()),
+        Nat::Cgnat => apply_isp_cgnat(netns, ns, wan_if),
+        Nat::Home | Nat::FullCone | Nat::Corporate | Nat::CloudNat => {
             apply_home_nat(netns, ns, mode, lan_if, wan_if, wan_ip)
         }
-    }
+    };
+    result?;
+    apply_conntrack_timeouts(netns, ns, mode)
 }
 
 /// Applies IPv6 NAT rules in `ns`.

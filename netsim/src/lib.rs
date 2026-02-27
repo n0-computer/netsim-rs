@@ -4,7 +4,7 @@ pub use netsim_core as core;
 pub use netsim_core::{
     check_caps,
     config::{LabConfig, RegionConfig, RouterConfig},
-    init_userns, DeviceBuilder, Impair, Lab, NatMode, NodeId, ObservedAddr,
+    init_userns, DeviceBuilder, Impair, Lab, Nat, NodeId, ObservedAddr,
 };
 pub use netsim_utils::assets::BinaryOverride;
 

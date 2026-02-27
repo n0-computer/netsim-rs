@@ -644,16 +644,16 @@ multiple addresses per interface natively.
 
 ### Phase 1: NAT presets + API rename (high value)
 
-- [ ] Add `Nat` enum with `None`, `Home`, `Corporate`, `Cgnat`, `CloudNat`, `FullCone`
-- [ ] Add `NatMapping`, `NatFiltering` enums for custom builder
-- [ ] Implement nftables rules per profile
-- [ ] Add conntrack timeout sysctls per profile
-- [ ] Migrate existing `DestinationIndependent` sites to `Home` (move to `FullCone` if tests fail)
-- [ ] Rename `switch_route` to `set_default_route`
-- [ ] Rename `switch_uplink` to `replug_iface`
-- [ ] Rename `rebind_nats` to `flush_nat_state`
-- [ ] Rename `Impair` to `LinkCondition`, update all method names
-- [ ] Keep old names as `#[deprecated]` aliases for one cycle
+- [x] Add `Nat` enum with `None`, `Home`, `Corporate`, `Cgnat`, `CloudNat`, `FullCone`
+- [x] Add `NatMapping`, `NatFiltering` enums for custom builder
+- [x] Implement nftables rules per profile (Home: snat, FullCone: fullcone map, Corporate/CloudNat: masquerade random)
+- [x] Add conntrack timeout sysctls per profile
+- [x] Migrate existing `DestinationIndependent` sites to `Home` (FullCone for holepunch test)
+- [x] Rename `switch_route` to `set_default_route`
+- [x] Rename `switch_uplink` to `replug_iface`
+- [x] Rename `rebind_nats` to `flush_nat_state`
+- [x] Rename `Impair` method names (`set_impair` → `set_link_condition`, `impair_link` → `set_link_condition`, `impair_downlink` → `set_downlink_condition`)
+- [x] Keep old names as `#[deprecated]` aliases + serde aliases for TOML compat
 
 ### Phase 2: Enhanced impairment (high value)
 

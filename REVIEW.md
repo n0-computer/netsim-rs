@@ -6,13 +6,6 @@ Higher-level suggestions that were not applied directly.
 
 ## Open
 
-### API Naming & Networking Terminology
-
-Planned in [real-world-conditions.md](plans/real-world-conditions.md) Phase 1:
-- `NatMode` variant rename to `Nat` enum with RFC 4787 presets
-- `Impair` rename to `LinkCondition`
-- `switch_route` / `switch_uplink` / `rebind_nats` renames
-
 #### `ObservedAddr` wrapper (low)
 
 `ObservedAddr` wraps a single `pub observed: SocketAddr` field. This could be a

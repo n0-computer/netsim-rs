@@ -1,5 +1,5 @@
 use anyhow::Result;
-use netsim_core::{Impair, Lab, NatMode};
+use netsim_core::{Impair, Lab, Nat};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn main() -> Result<()> {
@@ -20,7 +20,7 @@ async fn async_main() -> Result<()> {
     // A "home" router with a NAT: downstream devices get private IPs.
     let home = lab
         .add_router("home")
-        .nat(NatMode::DestinationIndependent)
+        .nat(Nat::Home)
         .build()
         .await?;
 

@@ -115,7 +115,7 @@ gateway = "r1"
                     name: "r1".into(),
                     region: None,
                     upstream: None,
-                    nat: netsim_core::NatMode::None,
+                    nat: netsim_core::Nat::None,
                     ip_support: netsim_core::IpSupport::V4Only,
                     nat_v6: netsim_core::NatV6Mode::None,
                 }],

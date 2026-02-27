@@ -374,7 +374,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 Some(n) => n.to_string(),
                 None => dev.default_iface().name().to_string(),
             };
-            dev.set_impair(&ifname, impair)?;
+            dev.set_link_condition(&ifname, impair)?;
         }
 
         // ── switch-route / set-default-route ──────────────────────────────
@@ -383,7 +383,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 .lab
                 .device_by_name(device)
                 .ok_or_else(|| anyhow::anyhow!("unknown device '{}'", device))?
-                .switch_route(to)
+                .set_default_route(to)
                 .await?;
         }
 
