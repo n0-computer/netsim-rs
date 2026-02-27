@@ -1515,7 +1515,7 @@ impl Device {
         use crate::core::{self, IfaceBuild};
 
         // Phase 1: Lock → extract data + allocate from new router's pool → unlock
-        let (iface_build, old_idx, netns, prefix, root_ns) = {
+        let (iface_build, netns, prefix, root_ns) = {
             let mut inner = self.lab.lock().unwrap();
             let dev = inner
                 .device(self.id)
@@ -1527,7 +1527,6 @@ impl Device {
                 .find(|i| i.ifname == ifname)
                 .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
             let old_idx = iface.idx;
-
             let target_router = inner
                 .router(to_router)
                 .ok_or_else(|| anyhow!("unknown target router id"))?
@@ -1574,20 +1573,18 @@ impl Device {
                 is_default: ifname == dev.default_via,
                 idx: old_idx,
             };
-            (build, old_idx, netns, prefix, root_ns)
+            (build, netns, prefix, root_ns)
         };
 
-        // Phase 2: Delete old veth pair (from root NS)
-        let old_root_gw = format!("{}g{}", prefix, old_idx);
-        let old_root_dev = format!("{}e{}", prefix, old_idx);
-        core::nl_run(&netns, &root_ns, {
-            let old_root_gw = old_root_gw.clone();
-            let old_root_dev = old_root_dev.clone();
-            move |h: Netlink| async move {
-                h.ensure_link_deleted(&old_root_gw).await.ok();
-                h.ensure_link_deleted(&old_root_dev).await.ok();
-                Ok(())
-            }
+        // Phase 2: Delete old veth pair.
+        // The veth ends were moved out of root NS during initial setup:
+        // the device end lives as `ifname` in dev_ns, the gateway end as
+        // `v{idx}` in the old router's NS.  Deleting one end destroys both.
+        let dev_ns = iface_build.dev_ns.clone();
+        let ifname_owned = ifname.to_string();
+        core::nl_run(&netns, &dev_ns, move |h: Netlink| async move {
+            h.ensure_link_deleted(&ifname_owned).await.ok();
+            Ok(())
         })
         .await?;
 

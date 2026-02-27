@@ -94,7 +94,12 @@ impl Drop for SyncWorker {
     fn drop(&mut self) {
         let _ = self.tx.send(SyncMsg::Shutdown);
         if let Some(j) = self.join.take() {
-            let _ = j.join();
+            if j.thread().id() == thread::current().id() {
+                // Being dropped on the sync worker thread — skip join to avoid
+                // EDEADLK.
+            } else {
+                let _ = j.join();
+            }
         }
     }
 }
@@ -241,10 +246,18 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        // Signal async worker to exit and join.
+        // Signal async worker to exit.
         self.cancel_token.cancel();
         if let Some(j) = self.async_join.lock().expect("async_join poisoned").take() {
-            let _ = j.join();
+            // If we're being dropped on the async worker thread itself (e.g. the
+            // last Arc<NetworkCore> is released inside a spawned task after
+            // cancellation), joining would deadlock (EDEADLK).  Detect this and
+            // just let the thread exit naturally.
+            if j.thread().id() == thread::current().id() {
+                // Already on this thread — nothing to join.
+            } else {
+                let _ = j.join();
+            }
         }
         // SyncWorker drops via its own Drop impl (sends Shutdown, joins).
     }

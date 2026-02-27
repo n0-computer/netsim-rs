@@ -1817,6 +1817,102 @@ async fn switch_route_udp_reflexive_change() -> Result<()> {
     Ok(())
 }
 
+// ── 5d2: Uplink switching (switch_uplink) ────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn switch_uplink_udp_smoke() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let nat_a = lab
+        .add_router("nat-a")
+        .nat(NatMode::DestinationIndependent)
+        .build()
+        .await?;
+    let nat_b = lab
+        .add_router("nat-b")
+        .nat(NatMode::DestinationIndependent)
+        .build()
+        .await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", nat_a.id(), None)
+        .build()
+        .await?;
+
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_100);
+    dc.spawn_reflector(reflector)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Connectivity through nat_a works.
+    dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))
+        .context("udp before switch_uplink")?;
+
+    // Move eth0 from nat_a → nat_b.
+    dev.switch_uplink("eth0", nat_b.id()).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connectivity through nat_b works.
+    dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))
+        .context("udp after switch_uplink")?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn switch_uplink_reflexive_ip_changes() -> Result<()> {
+    let lab = Lab::new();
+    let dc = lab.add_router("dc").build().await?;
+    let nat_a = lab
+        .add_router("nat-a")
+        .nat(NatMode::DestinationIndependent)
+        .build()
+        .await?;
+    let nat_b = lab
+        .add_router("nat-b")
+        .nat(NatMode::DestinationIndependent)
+        .build()
+        .await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", nat_a.id(), None)
+        .build()
+        .await?;
+
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_200);
+    dc.spawn_reflector(reflector)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let wan_a = nat_a.uplink_ip().context("no nat_a uplink ip")?;
+    let wan_b = nat_b.uplink_ip().context("no nat_b uplink ip")?;
+
+    let before = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
+    assert_eq!(
+        before.observed.ip(),
+        IpAddr::V4(wan_a),
+        "before switch: expected nat_a WAN IP"
+    );
+
+    dev.switch_uplink("eth0", nat_b.id()).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let after = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
+    assert_eq!(
+        after.observed.ip(),
+        IpAddr::V4(wan_b),
+        "after switch: expected nat_b WAN IP"
+    );
+    assert_ne!(
+        before.observed.ip(),
+        after.observed.ip(),
+        "reflexive IP must change after uplink switch"
+    );
+    Ok(())
+}
+
 // ── 5e: Link down/up ─────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
