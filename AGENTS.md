@@ -76,7 +76,7 @@ ALWAYS add a timeout to test runs, like 90s.
 cargo fmt
 cargo clippy -p netsim-core --tests --fix --allow-dirty
 cargo check -p netsim-core --tests
-cargo nextest run -p netsim-core -j 1      # use nextest, not cargo test
+cargo nextest run -p netsim-core             # use nextest, not cargo test; parallelism in .config/nextest.toml
 ```
 
 when that is clean, run cargo check for the full workspace and test the other crates individually

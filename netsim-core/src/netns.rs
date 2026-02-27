@@ -22,6 +22,18 @@ use tracing::{debug, debug_span, error};
 
 use crate::netlink::Netlink;
 
+/// Builds a thread name from a prefix and namespace name, truncated to 15 chars
+/// (Linux `pthread_setname_np` limit).
+fn truncate_thread_name(prefix: &str, ns: &str) -> String {
+    let max = 15;
+    let budget = max - prefix.len();
+    if ns.len() <= budget {
+        format!("{prefix}{ns}")
+    } else {
+        format!("{prefix}{}", &ns[ns.len() - budget..])
+    }
+}
+
 // ─────────────────────────────────────────────
 // Namespace creation helpers (process-global)
 // ─────────────────────────────────────────────
@@ -41,21 +53,24 @@ fn open_current_thread_netns_fd() -> Result<File> {
 
 fn create_unshared_netns_fd() -> Result<File> {
     let (res_tx, res_rx) = mpsc::channel();
-    let _ = thread::spawn(move || {
-        let res: Result<()> = (|| {
-            unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
-            let fd =
-                open_current_thread_netns_fd().context("open current thread netns fd in new ns")?;
-            let fd_for_parent = fd
-                .try_clone()
-                .context("clone namespace fd for parent registry")?;
-            let _ = res_tx.send(Ok(fd_for_parent));
-            Ok(())
-        })();
-        if let Err(err) = res {
-            let _ = res_tx.send(Err(err));
-        }
-    });
+    let _ = thread::Builder::new()
+        .name("ns-create".into())
+        .spawn(move || {
+            let res: Result<()> = (|| {
+                unshare(CloneFlags::CLONE_NEWNET).context("unshare CLONE_NEWNET")?;
+                let fd = open_current_thread_netns_fd()
+                    .context("open current thread netns fd in new ns")?;
+                let fd_for_parent = fd
+                    .try_clone()
+                    .context("clone namespace fd for parent registry")?;
+                let _ = res_tx.send(Ok(fd_for_parent));
+                Ok(())
+            })();
+            if let Err(err) = res {
+                let _ = res_tx.send(Err(err));
+            }
+        })
+        .context("spawn ns-create thread")?;
     res_rx
         .recv()
         .context("receive netns fd from helper thread")?
@@ -87,7 +102,11 @@ impl SyncWorker {
             .with_context(|| format!("clone fd for sync worker '{ns}'"))?;
         let (tx, rx) = mpsc::sync_channel(64);
         let span = debug_span!(parent: parent_span, "sync", ns = %ns);
-        let join = thread::spawn(move || sync_worker_main(target, rx, span, dns_overlay));
+        let thread_name = truncate_thread_name("syn:", ns);
+        let join = thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || sync_worker_main(target, rx, span, dns_overlay))
+            .context("spawn sync worker thread")?;
         Ok(Self {
             tx,
             join: Some(join),
@@ -235,46 +254,50 @@ impl Worker {
         let (handle_tx, handle_rx) = std::sync::mpsc::channel();
 
         let dns_overlay = self.dns_overlay.clone();
-        let join = thread::spawn(move || {
-            let _guard = span.entered();
-            if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
-                error!(error = %err, "async netns worker: setns failed");
-                let _ = handle_tx.send(Err(anyhow!("setns failed: {err}")));
-                return;
-            }
-            // Private mount namespace so bind-mounted overlays only affect this thread.
-            if let Err(err) = unshare(CloneFlags::CLONE_NEWNS) {
-                debug!(error = %err, "async netns worker: unshare(CLONE_NEWNS) failed");
-            }
-            if let Some(ref overlay) = dns_overlay {
-                apply_dns_overlay(overlay);
-            }
-
-            let mut builder = tokio::runtime::Builder::new_current_thread();
-            builder.enable_all();
-            // on_thread_start covers blocking pool threads spawned by spawn_blocking.
-            // Each gets its own mount namespace with the DNS overlay.
-            if let Some(overlay) = dns_overlay {
-                builder.on_thread_start(move || {
-                    let _ = unshare(CloneFlags::CLONE_NEWNS);
-                    apply_dns_overlay(&overlay);
-                });
-            }
-            let rt = match builder.build() {
-                Ok(rt) => rt,
-                Err(err) => {
-                    error!(error = %err, "async netns worker: runtime build failed");
-                    let _ = handle_tx.send(Err(anyhow!("runtime build failed: {err}")));
+        let thread_name = truncate_thread_name("tok:", &self.ns);
+        let join = thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let _guard = span.entered();
+                if let Err(err) = setns(&target, CloneFlags::CLONE_NEWNET) {
+                    error!(error = %err, "async netns worker: setns failed");
+                    let _ = handle_tx.send(Err(anyhow!("setns failed: {err}")));
                     return;
                 }
-            };
+                // Private mount namespace so bind-mounted overlays only affect this thread.
+                if let Err(err) = unshare(CloneFlags::CLONE_NEWNS) {
+                    debug!(error = %err, "async netns worker: unshare(CLONE_NEWNS) failed");
+                }
+                if let Some(ref overlay) = dns_overlay {
+                    apply_dns_overlay(overlay);
+                }
 
-            let _ = handle_tx.send(Ok(rt.handle().clone()));
+                let mut builder = tokio::runtime::Builder::new_current_thread();
+                builder.enable_all();
+                // on_thread_start covers blocking pool threads spawned by spawn_blocking.
+                // Each gets its own mount namespace with the DNS overlay.
+                if let Some(overlay) = dns_overlay {
+                    builder.on_thread_start(move || {
+                        let _ = unshare(CloneFlags::CLONE_NEWNS);
+                        apply_dns_overlay(&overlay);
+                    });
+                }
+                let rt = match builder.build() {
+                    Ok(rt) => rt,
+                    Err(err) => {
+                        error!(error = %err, "async netns worker: runtime build failed");
+                        let _ = handle_tx.send(Err(anyhow!("runtime build failed: {err}")));
+                        return;
+                    }
+                };
 
-            // Keep the runtime alive until cancellation.
-            rt.block_on(cancel.cancelled());
-            debug!("async worker shutting down");
-        });
+                let _ = handle_tx.send(Ok(rt.handle().clone()));
+
+                // Keep the runtime alive until cancellation.
+                rt.block_on(cancel.cancelled());
+                debug!("async worker shutting down");
+            })
+            .context("spawn async worker thread")?;
 
         let handle = handle_rx
             .recv()
@@ -510,15 +533,19 @@ impl NetnsManager {
                 .ok_or_else(|| anyhow!("namespace '{ns}' not registered"))?;
             worker.ns_fd.clone()
         };
+        let thread_name = truncate_thread_name("usr:", ns);
         let ns_name = ns.to_string();
-        Ok(thread::spawn(move || {
-            let target = fd
-                .try_clone()
-                .with_context(|| format!("clone fd for spawned thread in '{ns_name}'"))?;
-            setns(&target, CloneFlags::CLONE_NEWNET)
-                .with_context(|| format!("setns for spawned thread in '{ns_name}'"))?;
-            f()
-        }))
+        thread::Builder::new()
+            .name(thread_name)
+            .spawn(move || {
+                let target = fd
+                    .try_clone()
+                    .with_context(|| format!("clone fd for spawned thread in '{ns_name}'"))?;
+                setns(&target, CloneFlags::CLONE_NEWNET)
+                    .with_context(|| format!("setns for spawned thread in '{ns_name}'"))?;
+                f()
+            })
+            .context("spawn user thread")
     }
 
     /// Clone the namespace fd (for external use like moving veth endpoints).
