@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
     process::Command,
     sync::{
@@ -2752,8 +2752,14 @@ impl Device {
     pub fn probe_udp_mapping(&self, reflector: SocketAddr) -> Result<ObservedAddr> {
         let base = 40000u16;
         let port = base + ((self.id.0 % 20000) as u16);
+        let unspec = if reflector.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        let bind = SocketAddr::new(unspec, port);
         self.run_sync(move || {
-            crate::test_utils::probe_udp(reflector, Duration::from_millis(500), Some(port))
+            crate::test_utils::probe_udp(reflector, Duration::from_millis(500), Some(bind))
         })
     }
 

@@ -2,7 +2,7 @@
 //!
 //! All functions are namespace-free: they assume the calling thread/task is
 //! already inside the target network namespace. Callers use
-//! `device.run_sync(|| ...)` or `device.spawn_thread(|| ...)` to wrap them.
+//! `device.spawn(|_| async { ... })` or `device.run_sync(|| ...)` to wrap them.
 
 use std::{
     io::ErrorKind,
@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -39,17 +39,21 @@ pub async fn run_reflector(bind: SocketAddr, cancel: CancellationToken) -> Resul
 /// Sends a UDP probe to `reflector` and returns the observed external address.
 ///
 /// Assumes the calling thread is already in the target namespace.
+/// Pass `bind` to specify an explicit local address; `None` uses the unspecified
+/// address matching the reflector's address family.
 pub fn probe_udp(
     reflector: SocketAddr,
     timeout: Duration,
-    bind_port: Option<u16>,
+    bind: Option<SocketAddr>,
 ) -> Result<ObservedAddr> {
-    let unspecified = if reflector.is_ipv4() {
-        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-    } else {
-        IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-    };
-    let bind_addr = SocketAddr::new(unspecified, bind_port.unwrap_or(0));
+    let bind_addr = bind.unwrap_or_else(|| {
+        let unspecified = if reflector.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        };
+        SocketAddr::new(unspecified, 0)
+    });
     let sock = UdpSocket::bind(bind_addr)?;
     sock.set_read_timeout(Some(timeout))?;
     let mut buf = [0u8; 512];
@@ -92,4 +96,59 @@ pub fn udp_rtt(reflector: SocketAddr) -> Result<Duration> {
     sock.send_to(b"PING", reflector)?;
     let _ = sock.recv_from(&mut buf)?;
     Ok(start.elapsed())
+}
+
+/// Async UDP round-trip time measurement.
+///
+/// Use inside `handle.spawn(|_| async move { udp_rtt_async(r).await })`.
+pub async fn udp_rtt_async(reflector: SocketAddr) -> Result<Duration> {
+    let bind: SocketAddr = if reflector.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
+    let sock = tokio::net::UdpSocket::bind(bind).await?;
+    let mut buf = [0u8; 256];
+    let start = Instant::now();
+    sock.send_to(b"PING", reflector).await?;
+    tokio::time::timeout(Duration::from_secs(2), sock.recv_from(&mut buf))
+        .await
+        .context("udp_rtt timeout")?
+        .context("udp_rtt recv")?;
+    Ok(start.elapsed())
+}
+
+/// Async UDP send/recv with paced sending for loss measurement.
+///
+/// Sends `total` packets of `payload` bytes at a paced rate (1ms apart),
+/// then collects responses until `wait` elapses. Returns `(sent, received)`.
+///
+/// Use inside `handle.spawn(|_| async move { udp_send_recv_count(r, 1000, 64, dur).await })`.
+pub async fn udp_send_recv_count(
+    target: SocketAddr,
+    total: usize,
+    payload: usize,
+    wait: Duration,
+) -> Result<(usize, usize)> {
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.context("udp bind")?;
+    let buf = vec![0u8; payload];
+    let mut recv_buf = vec![0u8; payload + 64];
+
+    // Send all packets with 1ms pacing to avoid overwhelming socket buffers.
+    for _ in 0..total {
+        let _ = sock.send_to(&buf, target).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+
+    // Collect responses until deadline.
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut received = 0usize;
+    loop {
+        match tokio::time::timeout_at(deadline, sock.recv_from(&mut recv_buf)).await {
+            Ok(Ok(_)) => received += 1,
+            Ok(Err(_)) => break,
+            Err(_) => break, // deadline reached
+        }
+    }
+    Ok((total, received))
 }

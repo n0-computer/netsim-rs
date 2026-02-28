@@ -89,36 +89,6 @@ struct DualNatLab {
 
 // ── Test helper functions ────────────────────────────────────────────
 
-/// UDP probe with explicit bind address — ns-free, call inside `handle.run_sync`.
-fn probe_udp_from(reflector: SocketAddr, bind: SocketAddr) -> Result<ObservedAddr> {
-    use std::net::UdpSocket;
-    let sock = UdpSocket::bind(bind)?;
-    sock.set_read_timeout(Some(Duration::from_millis(500)))?;
-    let mut buf = [0u8; 512];
-    for _attempt in 1..=3 {
-        sock.send_to(b"PROBE", reflector)?;
-        match sock.recv_from(&mut buf) {
-            Ok((n, _)) => {
-                let s = std::str::from_utf8(&buf[..n]).context("utf8")?;
-                let addr_str = s
-                    .strip_prefix("OBSERVED ")
-                    .ok_or_else(|| anyhow!("unexpected reflector reply: {:?}", s))?;
-                return Ok(addr_str.parse().context("parse observed addr")?);
-            }
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err(anyhow!("probe timed out after 3 attempts"))
-}
-
 /// TCP probe — ns-free async, call inside `handle.spawn(|_| async { probe_tcp(t).await })`.
 async fn probe_tcp(target: SocketAddr) -> Result<ObservedAddr> {
     use tokio::io::AsyncReadExt;
@@ -151,7 +121,9 @@ async fn probe_reflexive_addr(
         BindMode::SpecificIp => SocketAddr::new(IpAddr::V4(dev_ip), 0),
     };
     match proto {
-        Proto::Udp => dev.run_sync(move || probe_udp_from(reflector, bind_addr)),
+        Proto::Udp => dev.run_sync(move || {
+            crate::test_utils::probe_udp(reflector, Duration::from_millis(500), Some(bind_addr))
+        }),
         Proto::Tcp => dev
             .spawn(move |_| async move { probe_tcp(reflector).await })
             .await
@@ -216,46 +188,6 @@ fn tcp_measure_throughput(server_addr: SocketAddr, bytes: usize) -> Result<(Dura
     let elapsed = start.elapsed();
     let kbps = ((bytes as u64 * 8) / (elapsed.as_millis() as u64).max(1)) as u32;
     Ok((elapsed, kbps))
-}
-
-/// Sends `total` UDP datagrams to `target` and collects echoes — ns-free.
-/// Call via `handle.run_sync(move || udp_send_recv_count(target, total, payload, wait))`.
-/// Returns `(sent, received)`.
-fn udp_send_recv_count(
-    target: SocketAddr,
-    total: usize,
-    payload: usize,
-    wait: Duration,
-) -> Result<(usize, usize)> {
-    use std::time::Instant;
-    let sock = std::net::UdpSocket::bind("0.0.0.0:0").context("udp bind")?;
-    sock.set_read_timeout(Some(Duration::from_millis(200)))
-        .context("set timeout")?;
-    let buf = vec![0u8; payload];
-    let mut recv_buf = vec![0u8; payload + 64];
-    for _ in 0..total {
-        let _ = sock.send_to(&buf, target);
-    }
-    let deadline = Instant::now() + wait;
-    let mut received = 0usize;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        let timeout = remaining.min(Duration::from_millis(200));
-        sock.set_read_timeout(Some(timeout)).ok();
-        match sock.recv_from(&mut recv_buf) {
-            Ok(_) => received += 1,
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(_) => break,
-        }
-    }
-    Ok((total, received))
 }
 
 /// Spawns an async TCP reflector (accept → "OBSERVED {peer}" → close) — ns-free.
@@ -466,32 +398,6 @@ async fn spawn_tcp_echo_server(bind: SocketAddr) -> Result<()> {
     ready_rx
         .await
         .map_err(|_| anyhow!("tcp echo server task dropped before ready"))?
-}
-
-/// Spawns an async TCP echo server that accepts one connection, echoes bytes, then stops — ns-free.
-/// Returns when the listener is bound. Call inside `handle.spawn(|_| async { spawn_tcp_echo_in(b).await })`.
-async fn spawn_tcp_echo_in(bind: SocketAddr) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
-    tokio::spawn(async move {
-        match tokio::net::TcpListener::bind(bind).await {
-            Ok(listener) => {
-                let _ = ready_tx.send(Ok(()));
-                if let Ok((mut stream, _)) = listener.accept().await {
-                    let mut buf = [0u8; 64];
-                    if let Ok(n) = stream.read(&mut buf).await {
-                        let _ = stream.write_all(&buf[..n]).await;
-                    }
-                }
-            }
-            Err(e) => {
-                let _ = ready_tx.send(Err(anyhow!("tcp echo bind {bind}: {e}")));
-            }
-        }
-    });
-    ready_rx
-        .await
-        .map_err(|_| anyhow!("tcp echo task dropped before ready"))?
 }
 
 /// TCP roundtrip — ns-free async. Call inside `handle.spawn(|_| async { tcp_roundtrip(t).await })`.
@@ -831,7 +737,7 @@ async fn smoke_tcp_dc_roundtrip() -> Result<()> {
 
     let dc_ip = dc.uplink_ip().context("no uplink ip")?;
     let bind = SocketAddr::new(IpAddr::V4(dc_ip), 9000);
-    dc.spawn(move |_| async move { spawn_tcp_echo_in(bind).await })
+    dc.spawn(move |_| async move { spawn_tcp_echo_server(bind).await })
         .await
         .context("tcp echo task panicked")??;
 
@@ -1939,15 +1845,15 @@ async fn link_down_up_connectivity() -> Result<()> {
                 Proto::Udp => {
                     dc.spawn_reflector(r)?;
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    dev.run_sync(move || probe_udp_from(r, bind))
+                    dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind)))
                         .context("before link_down")?;
                     dev_handle.link_down("eth0").await?;
-                    if dev.run_sync(move || probe_udp_from(r, bind)).is_ok() {
+                    if dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))).is_ok() {
                         bail!("probe should fail after link_down");
                     }
                     dev_handle.link_up("eth0").await?;
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    dev.run_sync(move || probe_udp_from(r, bind))
+                    dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind)))
                         .context("after link_up")?;
                 }
                 Proto::Tcp => {
@@ -2053,7 +1959,7 @@ async fn nat_rebind_mode_ip() -> Result<()> {
             tokio::time::sleep(Duration::from_millis(50)).await;
             let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
             let r_dc = ctx.r_dc;
-            let o = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
+            let o = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
             let expected = match to {
                 Nat::Home => IpAddr::V4(wan_ip),
                 Nat::None => IpAddr::V4(ctx.dev_ip),
@@ -2092,10 +1998,10 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
     let nat_handle = lab.router_by_name("nat").context("missing nat")?;
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let r_dc = ctx.r_dc;
-    let o1 = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
+    let o1 = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
     nat_handle.flush_nat_state()?;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let o2 = ctx.dev.run_sync(move || probe_udp_from(r_dc, bind))?;
+    let o2 = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
     assert_ne!(
         o1.port(),
         o2.port(),
@@ -2433,7 +2339,9 @@ async fn rate_limit_udp_upload() -> Result<()> {
 
     // ~300 KB at 2 Mbit/s ≈ 1.2 s.
     let start = Instant::now();
-    dev.run_sync(move || udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)))?;
+    dev.spawn(move |_| async move {
+        crate::test_utils::udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)).await
+    }).await??;
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(1000),
@@ -2468,7 +2376,9 @@ async fn rate_limit_udp_download() -> Result<()> {
 
     // Replies travel the download path (DC → device) which is throttled.
     let start = Instant::now();
-    dev_id.run_sync(move || udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)))?;
+    dev_id.spawn(move |_| async move {
+        crate::test_utils::udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)).await
+    }).await??;
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(1000),
@@ -2644,7 +2554,9 @@ async fn loss_udp_moderate() -> Result<()> {
     // Send 1000 packets for stable statistics at 50% loss.
     // Expected ~500 received; bounds [200, 800] give wide margin.
     let (_, received) =
-        dev.run_sync(move || udp_send_recv_count(r, 1000, 64, Duration::from_secs(8)))?;
+        dev.spawn(move |_| async move {
+            crate::test_utils::udp_send_recv_count(r, 1000, 64, Duration::from_secs(8)).await
+        }).await??;
     assert!(
         received >= 200,
         "expected ≥ 200 received at 50% loss (of 1000 sent), got {received}"
@@ -2682,7 +2594,9 @@ async fn loss_udp_high() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let (_, received) =
-        dev.run_sync(move || udp_send_recv_count(r, 100, 64, Duration::from_secs(3)))?;
+        dev.spawn(move |_| async move {
+            crate::test_utils::udp_send_recv_count(r, 100, 64, Duration::from_secs(3)).await
+        }).await??;
     assert!(
         received <= 30,
         "expected ≤ 30 received at 90% loss, got {received}"
@@ -2773,7 +2687,9 @@ async fn loss_udp_both_directions() -> Result<()> {
 
     // Round-trip delivery ≈ (1-0.3)×(1-0.3) = 49 %; expect < 80.
     let (_, received) =
-        dev.run_sync(move || udp_send_recv_count(r, 100, 64, Duration::from_secs(3)))?;
+        dev.spawn(move |_| async move {
+            crate::test_utils::udp_send_recv_count(r, 100, 64, Duration::from_secs(3)).await
+        }).await??;
     assert!(
         received <= 80,
         "expected < 80 echoes with bidirectional loss, got {received}"
@@ -3156,7 +3072,9 @@ async fn rate_presets() -> Result<()> {
             if loss_pct > 0.0 {
                 // 1000 packets: P(zero loss at 1%) ≈ 0.000045 — reliably detects loss.
                 let (_, received) =
-                    dev.run_sync(move || udp_send_recv_count(r, 1000, 64, Duration::from_secs(5)))?;
+                    dev.spawn(move |_| async move {
+                        crate::test_utils::udp_send_recv_count(r, 1000, 64, Duration::from_secs(5)).await
+                    }).await??;
                 if received == 1000 {
                     bail!(
                         "preset {preset:?}: expected some loss at {loss_pct}%, got {received}/1000"
@@ -4850,7 +4768,7 @@ async fn firewall_corporate_blocks_udp() -> Result<()> {
 
     // TCP on port 443 should work.
     let tcp_bind = SocketAddr::new(IpAddr::V4(dc_ip), 443);
-    dc.spawn(async move |_| spawn_tcp_echo_in(tcp_bind).await)
+    dc.spawn(async move |_| spawn_tcp_echo_server(tcp_bind).await)
         .await??;
     dev.spawn(async move |_| tcp_roundtrip(tcp_bind).await)
         .await??;
@@ -4895,7 +4813,7 @@ async fn firewall_captive_portal_blocks_udp() -> Result<()> {
 
     // TCP on port 8080 (non-standard) should work — captive portal only blocks UDP.
     let tcp_bind = SocketAddr::new(IpAddr::V4(dc_ip), 8080);
-    dc.spawn(async move |_| spawn_tcp_echo_in(tcp_bind).await)
+    dc.spawn(async move |_| spawn_tcp_echo_server(tcp_bind).await)
         .await??;
     dev.spawn(async move |_| tcp_roundtrip(tcp_bind).await)
         .await??;
