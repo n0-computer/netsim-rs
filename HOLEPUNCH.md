@@ -1,4 +1,4 @@
-# NAT Implementation & Hole-Punching in netsim
+# NAT Implementation & Hole-Punching in patchbay
 
 Lessons learned implementing the `Nat` presets and getting UDP hole-punching
 to work across different NAT types in Linux network namespaces with nftables.

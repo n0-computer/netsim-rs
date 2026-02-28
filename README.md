@@ -1,6 +1,6 @@
-# netsim
+# patchbay
 
-netsim lets you build realistic network topologies out of Linux network
+patchbay lets you build realistic network topologies out of Linux network
 namespaces and run real code against them. You define routers, devices, NAT
 policies, and link conditions through a Rust builder API, and the library
 wires everything up with veth pairs, nftables rules, and tc qdisc
@@ -14,11 +14,11 @@ address allocation, NAT configuration, and cleanup automatically.
 
 ## Quick example
 
-See the [`simple.rs`](netsim/examples/simple.rs) example for the runnable version.
+See the [`simple.rs`](patchbay-runner/examples/simple.rs) example for the runnable version.
 
 ```rust
 // We need to enter a user namespace before any threads are spawned.
-netsim_core::init_userns().expect("failed to enter user namespace");
+patchbay::init_userns().expect("failed to enter user namespace");
 
 // Create a lab (async — sets up the root namespace and IX bridge).
 let lab = Lab::new().await;
@@ -239,25 +239,25 @@ latencies = { us = 80 }
 
 | Crate | Description |
 |-------|-------------|
-| `netsim-core` | Core library: topology builder, namespace management, NAT, link conditions |
-| `netsim` | CLI runner for TOML-defined simulations with step sequencing |
-| `netsim-vm` | QEMU VM wrapper for running simulations on macOS |
-| `netsim-utils` | Shared utilities |
+| `patchbay` | Core library: topology builder, namespace management, NAT, link conditions |
+| `patchbay-runner` | CLI runner for TOML-defined simulations with step sequencing |
+| `patchbay-vm` | QEMU VM wrapper for running simulations on macOS |
+| `patchbay-utils` | Shared utilities |
 
 ## TOML simulation runner
 
-The `netsim` binary runs simulations defined in TOML files with a step-based
+The `patchbay` binary runs simulations defined in TOML files with a step-based
 execution model: spawn processes, apply link conditions, wait for captures, and
 assert on outputs.
 
 ```bash
-cargo install --git https://github.com/n0-computer/netsim-rs
+cargo install --git https://github.com/n0-computer/patchbay
 
 # Run a simulation
-netsim run ./sims/iperf-baseline.toml
+patchbay run ./sims/iperf-baseline.toml
 
-# Run all sims discovered from netsim.toml
-netsim run
+# Run all sims discovered from patchbay.toml
+patchbay run
 ```
 
 See [docs/reference.md](docs/reference.md) for the full simulation file
@@ -265,13 +265,13 @@ syntax.
 
 ## VM mode (macOS)
 
-The `netsim-vm` crate wraps simulations in a QEMU Linux VM, allowing
+The `patchbay-vm` crate wraps simulations in a QEMU Linux VM, allowing
 development on macOS:
 
 ```bash
-cargo install --git https://github.com/n0-computer/netsim-rs netsim-vm
-netsim-vm run ./sims/my-sim.toml
-netsim-vm down
+cargo install --git https://github.com/n0-computer/patchbay patchbay-vm
+patchbay-vm run ./sims/my-sim.toml
+patchbay-vm down
 ```
 
 ## License

@@ -3,14 +3,14 @@
 ## TODO
 
 - [x] Write plan
-- [x] Step 1: Scaffold crate directories (`netsim-core/`, `netsim-utils/`, `netsim/`, `netsim-vm/`)
-- [x] Step 2: `cargo check -p netsim-core` clean; `RouterCfg`/`LabCore` renamed
-- [x] Step 3: `cargo check -p netsim-utils` clean; `build_ui` fn present
-- [x] Step 4: `cargo check -p netsim` clean; `RunOpts::from_env` + typed overrides
-- [x] Step 5: `cargo check -p netsim-vm` clean; no netsim-core dep
+- [x] Step 1: Scaffold crate directories (`patchbay/`, `patchbay-utils/`, `patchbay-runner/`, `patchbay-vm/`)
+- [x] Step 2: `cargo check -p patchbay` clean; `RouterCfg`/`LabCore` renamed
+- [x] Step 3: `cargo check -p patchbay-utils` clean; `build_ui` fn present
+- [x] Step 4: `cargo check -p patchbay-runner` clean; `RunOpts::from_env` + typed overrides
+- [x] Step 5: `cargo check -p patchbay-vm` clean; no patchbay dep
 - [x] Step 6: Root `Cargo.toml` replaced; old `src/` deleted
 - [x] Step 7: `cargo build --workspace && cargo test --workspace` green
-- [x] Step 8: `ctor`/`init_userns` refactor — `init_userns_for_ctor` in `netsim-core`, called from `netsim/src/init.rs`
+- [x] Step 8: `ctor`/`init_userns` refactor — `init_userns_for_ctor` in `patchbay`, called from `patchbay-runner/src/init.rs`
 - [ ] Step 9: Report/`SimOutcome` refactor — `TransferResult` still present in `report.rs`; separate PR
 - [ ] Final review
 
@@ -27,51 +27,51 @@ clean up the public APIs, and (as a separate final step) refactor the reporting 
 repo/
 ├── Cargo.toml          workspace manifest only (no [package])
 ├── ui/                 Vite/TS frontend source (unchanged by reorg; see Step 9)
-├── netsim-core/        pure network management lib (no workspace deps)
-├── netsim-utils/       shared sim utilities lib (no workspace deps)
-├── netsim/             sim CLI + runner (lib + bin; deps: core + utils)
-└── netsim-vm/          VM orchestrator bin (dep: utils only)
+├── patchbay/        pure network management lib (no workspace deps)
+├── patchbay-utils/       shared sim utilities lib (no workspace deps)
+├── patchbay-runner/             sim CLI + runner (lib + bin; deps: core + utils)
+└── patchbay-vm/          VM orchestrator bin (dep: utils only)
 ```
 
 ## Dependency Graph
 
 ```
-netsim-core  ──► rtnetlink, nix (full), ipnet, tokio, libc, futures, …
-netsim-utils ──► anyhow, serde, reqwest (blocking+rustls), sha2, flate2, tar,
+patchbay  ──► rtnetlink, nix (full), ipnet, tokio, libc, futures, …
+patchbay-utils ──► anyhow, serde, reqwest (blocking+rustls), sha2, flate2, tar,
                  tracing, webbrowser, glob  + whatever serve.rs HTTP stack uses
-netsim       ──► netsim-core, netsim-utils
+netsim       ──► patchbay, patchbay-utils
              ──► clap, serde_json, regex, toml, rcgen, comfy-table, ctrlc,
                  chrono, tracing-subscriber, ctor
-netsim-vm    ──► netsim-utils   ← the only workspace dep; no kernel deps
+patchbay-vm    ──► patchbay-utils   ← the only workspace dep; no kernel deps
              ──► clap, serde, serde_json, toml, nix (signal/process), dirs,
                  flate2, tar
 ```
 
-Key win: `netsim-vm` no longer drags in rtnetlink / nix-full / ipnet.
+Key win: `patchbay-vm` no longer drags in rtnetlink / nix-full / ipnet.
 
 ---
 
 ## File Movement Map
 
 ```
-src/core.rs           → netsim-core/src/core.rs
-src/netlink.rs        → netsim-core/src/netlink.rs
-src/netns.rs          → netsim-core/src/netns.rs
-src/qdisc.rs          → netsim-core/src/qdisc.rs
-src/userns.rs         → netsim-core/src/userns.rs
-src/util.rs           → netsim-core/src/util.rs   (used by core for naming)
-src/lib.rs            → netsim-core/src/lib.rs     (trimmed, renamed items — see below)
+src/core.rs           → patchbay/src/core.rs
+src/netlink.rs        → patchbay/src/netlink.rs
+src/netns.rs          → patchbay/src/netns.rs
+src/qdisc.rs          → patchbay/src/qdisc.rs
+src/userns.rs         → patchbay/src/userns.rs
+src/util.rs           → patchbay/src/util.rs   (used by core for naming)
+src/lib.rs            → patchbay/src/lib.rs     (trimmed, renamed items — see below)
 
-src/assets.rs         → netsim-utils/src/assets.rs
-src/binary_cache.rs   → netsim-utils/src/binary_cache.rs
-src/serve.rs          → netsim-utils/src/serve.rs
-build.rs              → netsim-utils/build.rs      (adjust ui_dir path)
+src/assets.rs         → patchbay-utils/src/assets.rs
+src/binary_cache.rs   → patchbay-utils/src/binary_cache.rs
+src/serve.rs          → patchbay-utils/src/serve.rs
+build.rs              → patchbay-utils/build.rs      (adjust ui_dir path)
 
-src/sim/              → netsim/src/sim/            (whole directory, cp -r)
-src/main.rs           → netsim/src/main.rs
-NEW                   → netsim/src/lib.rs           (public sim runner API)
+src/sim/              → patchbay-runner/src/sim/            (whole directory, cp -r)
+src/main.rs           → patchbay-runner/src/main.rs
+NEW                   → patchbay-runner/src/lib.rs           (public sim runner API)
 
-crates/netsim-vm/     → netsim-vm/                 (mv whole dir)
+crates/patchbay-vm/     → patchbay-vm/                 (mv whole dir)
 ```
 
 ---
@@ -80,13 +80,13 @@ crates/netsim-vm/     → netsim-vm/                 (mv whole dir)
 
 | Old name | New name | Location | Reason |
 |----------|----------|----------|--------|
-| `RouterCfg` | `RouterConfig` | netsim-core `config` | consistency with other `*Config` |
-| `LabCore` | `NetworkCore` | netsim-core `core` | descriptive; avoids "LabCore" leaking as a public name. `NetworkManager` clashes with the Linux system daemon name. |
-| `bootstrap_userns` | `init_userns` | netsim-core `lib` | imperative verb; idiomatic for an init fn |
+| `RouterCfg` | `RouterConfig` | patchbay `config` | consistency with other `*Config` |
+| `LabCore` | `NetworkCore` | patchbay `core` | descriptive; avoids "LabCore" leaking as a public name. `NetworkManager` clashes with the Linux system daemon name. |
+| `bootstrap_userns` | `init_userns` | patchbay `lib` | imperative verb; idiomatic for an init fn |
 
 ---
 
-## `netsim-core` Public API
+## `patchbay` Public API
 
 ```rust
 // ── Top-level lib re-exports ────────────────────────────────────────────────
@@ -154,12 +154,12 @@ pub mod test_utils {
 }
 ```
 
-`netsim-core` carries **no** `ctor` dep in `[dependencies]`.
+`patchbay` carries **no** `ctor` dep in `[dependencies]`.
 `ctor = "0.2"` goes in `[dev-dependencies]` only (used for the test-module ctor; see Step 8).
 
 ---
 
-## `netsim-utils` Public API
+## `patchbay-utils` Public API
 
 All functionality is grouped under named modules; nothing is re-exported at crate root.
 
@@ -200,10 +200,10 @@ pub mod ui {
 }
 ```
 
-`netsim-utils/build.rs` calls `ui::build_ui(ui_dir)` so the logic is not duplicated
+`patchbay-utils/build.rs` calls `ui::build_ui(ui_dir)` so the logic is not duplicated
 between the build script and the library function.
 
-**Path adjustment for `build.rs`**: `CARGO_MANIFEST_DIR` will be `netsim-utils/`,
+**Path adjustment for `build.rs`**: `CARGO_MANIFEST_DIR` will be `patchbay-utils/`,
 so `ui/` is one level up:
 ```rust
 let ui_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -213,21 +213,21 @@ build_ui(&ui_dir)?;
 
 ---
 
-## `netsim` Public API (lib + bin)
+## `patchbay` Public API (lib + bin)
 
 ```rust
-// Re-export the entire netsim-core as `core`, plus the most common top-level
-// items so callers can write `use netsim::{Lab, init_userns}` without reaching
+// Re-export the entire patchbay as `core`, plus the most common top-level
+// items so callers can write `use patchbay_runner::{Lab, init_userns}` without reaching
 // into sub-modules.
-pub use netsim_core as core;
+pub use patchbay as core;
 
 // Most-used items surfaced at crate root for ergonomics:
-pub use netsim_core::{
+pub use patchbay::{
     Lab, DeviceBuilder, NodeId, NatMode, Impair, ObservedAddr,
     init_userns, check_caps,
     config::{LabConfig, RouterConfig, RegionConfig},
 };
-pub use netsim_utils::assets::BinaryOverride;
+pub use patchbay_utils::assets::BinaryOverride;
 
 mod sim;  // private; all orchestration detail
 
@@ -259,7 +259,7 @@ pub struct RunOpts {
 
 impl RunOpts {
     /// Build `RunOpts` from environment defaults.
-    /// `work_dir` defaults to `$NETSIM_WORK_DIR` or `.netsim-work`;
+    /// `work_dir` defaults to `$NETSIM_WORK_DIR` or `.patchbay-work`;
     /// `build_root` defaults to the current directory.
     pub fn from_env(sim_paths: Vec<PathBuf>) -> Self;
 }
@@ -328,7 +328,7 @@ Nothing pending (plans dir already created, MAINTENANCE.md already removed).
 ### Step 1 — Scaffold crate directories
 
 ```bash
-mkdir -p netsim-core/src netsim-utils/src netsim/src/sim netsim-vm/src
+mkdir -p patchbay/src patchbay-utils/src patchbay-runner/src/sim patchbay-vm/src
 ```
 
 Create stub `Cargo.toml` + `src/lib.rs` for each new crate so workspace compiles
@@ -336,20 +336,20 @@ throughout. Fill real deps incrementally as files move in.
 
 ---
 
-### Step 2 — Populate `netsim-core`
+### Step 2 — Populate `patchbay`
 
-**File copies** (keep originals until `cargo check -p netsim-core` is clean):
+**File copies** (keep originals until `cargo check -p patchbay` is clean):
 
 ```bash
-cp src/core.rs      netsim-core/src/core.rs
-cp src/netlink.rs   netsim-core/src/netlink.rs
-cp src/netns.rs     netsim-core/src/netns.rs
-cp src/qdisc.rs     netsim-core/src/qdisc.rs
-cp src/userns.rs    netsim-core/src/userns.rs
-cp src/util.rs      netsim-core/src/util.rs
+cp src/core.rs      patchbay/src/core.rs
+cp src/netlink.rs   patchbay/src/netlink.rs
+cp src/netns.rs     patchbay/src/netns.rs
+cp src/qdisc.rs     patchbay/src/qdisc.rs
+cp src/userns.rs    patchbay/src/userns.rs
+cp src/util.rs      patchbay/src/util.rs
 ```
 
-**`netsim-core/src/lib.rs`**: start from current `src/lib.rs` and:
+**`patchbay/src/lib.rs`**: start from current `src/lib.rs` and:
 - Remove `pub mod assets`, `pub mod binary_cache`, `pub mod serve` and their imports.
 - Remove `bootstrap_userns` (replaced by `init_userns` with OnceLock — see Step 8).
 - Add `pub mod test_utils;` referencing the moved probe/reflector helpers.
@@ -357,7 +357,7 @@ cp src/util.rs      netsim-core/src/util.rs
 - In `core.rs`, rename `LabCore` → `NetworkCore` throughout (use sed or replace_all
   edit; it appears in ~30 places).
 
-**`netsim-core/src/test_utils.rs`** (new small file): move `spawn_reflector_in`,
+**`patchbay/src/test_utils.rs`** (new small file): move `spawn_reflector_in`,
 `probe_in_ns`, `udp_roundtrip_in_ns`, `udp_rtt_in_ns` out of `src/lib.rs` into this
 file, wrapped in `pub mod test_utils`. The `spawn_reflector` / `spawn_reflector_on_ix`
 helpers on `Lab` can be left on `Lab` (they're builder convenience methods) or
@@ -366,9 +366,9 @@ free-function versions.
 
 **Rename note for `RouterCfg`**: it appears in `src/lib.rs` (config mod) and in
 `src/sim/topology.rs`, `src/sim/runner.rs`, `src/sim/mod.rs`. Apply the rename when
-copying to netsim-core; update sim/ references in Step 4.
+copying to patchbay; update sim/ references in Step 4.
 
-**`netsim-core/Cargo.toml`**:
+**`patchbay/Cargo.toml`**:
 ```toml
 [dependencies]
 anyhow = "1"
@@ -392,16 +392,16 @@ ctor = "0.2"    # test-only; see Step 8
 
 ---
 
-### Step 3 — Populate `netsim-utils`
+### Step 3 — Populate `patchbay-utils`
 
 ```bash
-cp src/assets.rs       netsim-utils/src/assets.rs
-cp src/binary_cache.rs netsim-utils/src/binary_cache.rs
-cp src/serve.rs        netsim-utils/src/serve.rs
-cp build.rs            netsim-utils/build.rs
+cp src/assets.rs       patchbay-utils/src/assets.rs
+cp src/binary_cache.rs patchbay-utils/src/binary_cache.rs
+cp src/serve.rs        patchbay-utils/src/serve.rs
+cp build.rs            patchbay-utils/build.rs
 ```
 
-**`netsim-utils/src/lib.rs`**:
+**`patchbay-utils/src/lib.rs`**:
 ```rust
 pub mod assets;
 pub mod binary_cache;
@@ -409,7 +409,7 @@ pub mod ui;
 mod serve;   // private; re-exported via ui
 ```
 
-**`netsim-utils/src/ui.rs`** (new small file):
+**`patchbay-utils/src/ui.rs`** (new small file):
 ```rust
 use std::path::Path;
 use anyhow::Result;
@@ -427,13 +427,13 @@ pub fn build_ui(ui_dir: &Path) -> Result<()> {
 fn run_npm(ui_dir: &Path, args: &[&str]) -> Result<()> { … }
 ```
 
-**`netsim-utils/build.rs`** — delegate to lib:
+**`patchbay-utils/build.rs`** — delegate to lib:
 ```rust
 fn main() {
     let ui_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent().unwrap().join("ui");
     // Emit rerun-if-changed directives (keep current list).
-    netsim_utils::ui::build_ui(&ui_dir).unwrap();
+    patchbay_utils::ui::build_ui(&ui_dir).unwrap();
 }
 ```
 Wait: `build.rs` cannot call the lib (the lib isn't built yet at build-script time).
@@ -442,7 +442,7 @@ lib duplicates the same logic for programmatic use. They share an extracted priv
 `run_npm(dir, args)` helper; easiest approach is to put it in both since build.rs and
 the lib are distinct compilation units.
 
-**`netsim-utils/Cargo.toml`**:
+**`patchbay-utils/Cargo.toml`**:
 ```toml
 [dependencies]
 anyhow = "1"
@@ -461,20 +461,20 @@ No workspace dependencies.
 
 ---
 
-### Step 4 — Populate `netsim`
+### Step 4 — Populate `patchbay`
 
 ```bash
-cp -r src/sim   netsim/src/sim
-cp src/main.rs  netsim/src/main.rs
+cp -r src/sim   patchbay-runner/src/sim
+cp src/main.rs  patchbay-runner/src/main.rs
 ```
 
-**`netsim/src/lib.rs`** — write fresh:
+**`patchbay-runner/src/lib.rs`** — write fresh:
 ```rust
-pub use netsim_core as core;
-pub use netsim_core::{Lab, DeviceBuilder, NodeId, NatMode, Impair, ObservedAddr,
+pub use patchbay as core;
+pub use patchbay::{Lab, DeviceBuilder, NodeId, NatMode, Impair, ObservedAddr,
                       init_userns, check_caps,
                       config::{LabConfig, RouterConfig, RegionConfig}};
-pub use netsim_utils::assets::BinaryOverride;
+pub use patchbay_utils::assets::BinaryOverride;
 
 mod sim;
 
@@ -494,31 +494,31 @@ pub enum SimStatus { … }
 pub struct StepResult { … }
 ```
 
-**Import changes inside `netsim/src/sim/`** — all `use netsim::*` become:
+**Import changes inside `patchbay-runner/src/sim/`** — all `use patchbay_runner::*` become:
 ```
-netsim::assets::*      → netsim_utils::assets::*
-netsim::binary_cache::*→ netsim_utils::binary_cache::*
-netsim::serve::*       → netsim_utils::ui::*
-netsim::Lab            → netsim_core::Lab
-netsim::config::*      → netsim_core::config::*
-netsim::NatMode        → netsim_core::NatMode
-netsim::Impair         → netsim_core::Impair
+patchbay_utils::assets::*      → patchbay_utils::assets::*
+patchbay_utils::binary_cache::*→ patchbay_utils::binary_cache::*
+patchbay_utils::ui::*       → patchbay_utils::ui::*
+patchbay::Lab            → patchbay::Lab
+patchbay::config::*      → patchbay::config::*
+patchbay::NatMode        → patchbay::NatMode
+patchbay::Impair         → patchbay::Impair
 RouterCfg              → RouterConfig (all occurrences in topology.rs, runner.rs, mod.rs)
 ```
 
-**`netsim/src/main.rs`** changes:
-- `use netsim::serve` → `use netsim_utils::ui`
+**`patchbay-runner/src/main.rs`** changes:
+- `use patchbay_runner::serve` → `use patchbay_utils::ui`
 - `--binary` arg parsing: parse strings into `Vec<(String, BinaryOverride)>` via
-  `netsim_utils::assets::parse_binary_overrides`, store typed values in `RunOpts`.
+  `patchbay_utils::assets::parse_binary_overrides`, store typed values in `RunOpts`.
 - Use `RunOpts::from_env` for defaults when flags are absent.
 - The explicit `bootstrap_userns()` call becomes `init_userns()` (or `crate::init_userns()`
   since lib re-exports it).
 
-**`netsim/Cargo.toml`**:
+**`patchbay-runner/Cargo.toml`**:
 ```toml
 [dependencies]
-netsim-core  = { path = "../netsim-core" }
-netsim-utils = { path = "../netsim-utils" }
+patchbay  = { path = "../patchbay" }
+patchbay-utils = { path = "../patchbay-utils" }
 anyhow = "1"
 tokio  = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process"] }
 clap   = { version = "4", features = ["derive"] }
@@ -543,27 +543,27 @@ n0-tracing-test = "0.3"
 
 ---
 
-### Step 5 — Move `netsim-vm`
+### Step 5 — Move `patchbay-vm`
 
 ```bash
-mv crates/netsim-vm netsim-vm
+mv crates/patchbay-vm patchbay-vm
 rmdir crates   # if now empty
 ```
 
-**`netsim-vm/Cargo.toml`**:
+**`patchbay-vm/Cargo.toml`**:
 ```toml
 # remove:  netsim = { path = "../.." }
 # add:
-netsim-utils = { path = "../netsim-utils" }
+patchbay-utils = { path = "../patchbay-utils" }
 ```
 
 **Import changes**:
 ```
-use netsim::assets::*       → use netsim_utils::assets::*
-use netsim::binary_cache::* → use netsim_utils::binary_cache::*
-use netsim::serve::*        → use netsim_utils::ui::*
+use patchbay_runner::assets::*       → use patchbay_utils::assets::*
+use patchbay_runner::binary_cache::* → use patchbay_utils::binary_cache::*
+use patchbay_runner::serve::*        → use patchbay_utils::ui::*
 ```
-That is the complete change set for netsim-vm.
+That is the complete change set for patchbay-vm.
 
 ---
 
@@ -571,7 +571,7 @@ That is the complete change set for netsim-vm.
 
 ```toml
 [workspace]
-members  = ["netsim-core", "netsim-utils", "netsim", "netsim-vm"]
+members  = ["patchbay", "patchbay-utils", "patchbay-runner", "patchbay-vm"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -591,10 +591,10 @@ rm -rf src build.rs
 ### Step 7 — Verify
 
 ```bash
-cargo check  -p netsim-core   # must be clean first
-cargo check  -p netsim-utils
-cargo check  -p netsim
-cargo check  -p netsim-vm
+cargo check  -p patchbay   # must be clean first
+cargo check  -p patchbay-utils
+cargo check  -p patchbay-runner
+cargo check  -p patchbay-vm
 cargo build  --workspace
 cargo test   --workspace      # network tests need caps; skip via env filter if needed
 ```
@@ -607,13 +607,13 @@ cargo test   --workspace      # network tests need caps; skip via env filter if 
 
 | | Current | After |
 |---|---|---|
-| ELF init | `#[ctor]` in `userns.rs` (raw libc) | `#[ctor]` in `netsim/src/init.rs` (still raw libc) |
+| ELF init | `#[ctor]` in `userns.rs` (raw libc) | `#[ctor]` in `patchbay-runner/src/init.rs` (still raw libc) |
 | Explicit call in `main()` | `bootstrap_userns()` | `init_userns()` (OnceLock-idempotent) |
-| Tests | covered by lib ctor | `#[ctor]` in `netsim-core` test module (dev-dep only) |
+| Tests | covered by lib ctor | `#[ctor]` in `patchbay` test module (dev-dep only) |
 
 #### Changes
 
-**`netsim-core/src/userns.rs`**:
+**`patchbay/src/userns.rs`**:
 - Keep the private `userns_bootstrap_libc()` (raw, pre-TLS safe); rename to
   `pub unsafe fn init_userns_for_ctor()` and make it public.
 - Add public `init_userns() -> Result<()>` with an internal `OnceLock` guard:
@@ -631,10 +631,10 @@ cargo test   --workspace      # network tests need caps; skip via env filter if 
   ```
   where `do_bootstrap()` is the current body of `bootstrap_userns()`.
 - Remove `#[ctor::ctor] fn userns_bootstrap_ctor()` from this file.
-- Re-export both fns from `netsim-core/src/lib.rs`.
-- Remove `ctor` from `netsim-core` `[dependencies]`; it remains in `[dev-dependencies]`.
+- Re-export both fns from `patchbay/src/lib.rs`.
+- Remove `ctor` from `patchbay` `[dependencies]`; it remains in `[dev-dependencies]`.
 
-**`netsim/src/init.rs`** (new file):
+**`patchbay-runner/src/init.rs`** (new file):
 ```rust
 /// ELF .init_array bootstrap — runs before main() and before tokio spawns threads.
 /// Uses raw libc so it is safe to call before Rust TLS initialisation.
@@ -642,15 +642,15 @@ cargo test   --workspace      # network tests need caps; skip via env filter if 
 #[ctor::ctor]
 fn userns_ctor() {
     // SAFETY: single-threaded .init_array context; raw libc only.
-    unsafe { netsim_core::init_userns_for_ctor() }
+    unsafe { patchbay::init_userns_for_ctor() }
 }
 ```
-Add `mod init;` to `netsim/src/lib.rs` (or `main.rs`).
+Add `mod init;` to `patchbay-runner/src/lib.rs` (or `main.rs`).
 
-**`netsim/src/main.rs`**: keep `init_userns()?` at the very top of `fn main()` —
+**`patchbay-runner/src/main.rs`**: keep `init_userns()?` at the very top of `fn main()` —
 the OnceLock makes it a no-op when the ctor already ran.
 
-**Test bootstrap in `netsim-core`**: add to `netsim-core/src/lib.rs`:
+**Test bootstrap in `patchbay`**: add to `patchbay/src/lib.rs`:
 ```rust
 #[cfg(test)]
 mod test_init {
@@ -658,7 +658,7 @@ mod test_init {
     fn init() { let _ = super::init_userns(); }
 }
 ```
-`ctor` is only in `[dev-dependencies]` of `netsim-core`, so it does not leak into
+`ctor` is only in `[dev-dependencies]` of `patchbay`, so it does not leak into
 the library's dependency surface.
 
 #### Alternative (no `ctor` at all)
@@ -689,14 +689,14 @@ and eliminates the `ctor` dev-dep entirely, at the cost of boilerplate.
 3. **`write_results` and `write_combined_results_for_runs` are tightly coupled to the
    `TransferResult` shape**, preventing future result types from being added cleanly.
 
-4. **`SimOutcome` (in the `netsim` lib API defined in Step 4) carries `step_results`**,
+4. **`SimOutcome` (in the `patchbay` lib API defined in Step 4) carries `step_results`**,
    but the current internal `SimRunOutcome` doesn't expose step data to the caller —
    the results are written to disk and that's the only path.
 
 #### Target model
 
 ```rust
-// netsim/src/sim/report.rs  (after refactor)
+// patchbay-runner/src/sim/report.rs  (after refactor)
 
 /// Generic per-step measurement.  Replaces TransferResult + StepResultRecord.
 pub(crate) struct StepResultRecord {
@@ -708,7 +708,7 @@ pub(crate) struct StepResultRecord {
     pub up_mbps: Option<f64>,
     pub down_mbps: Option<f64>,
 }
-// (mirrors the public StepResult in netsim/src/lib.rs — convert on the way out)
+// (mirrors the public StepResult in patchbay-runner/src/lib.rs — convert on the way out)
 ```
 
 Remove `TransferResult` struct.  Consolidate `StepResultRecord` + `TransferResult`

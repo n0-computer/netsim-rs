@@ -435,11 +435,11 @@ Examples: `"30s"`, `"500ms"`, `"2m"`, `"300s"`.
 
 ## Output files
 
-For each sim run, netsim writes to a timestamped directory under the work root
-(default `.netsim-work/`):
+For each sim run, patchbay writes to a timestamped directory under the work root
+(default `.patchbay-work/`):
 
 ```
-.netsim-work/
+.patchbay-work/
   latest/                     # symlink to the most recent run
   <sim-name>-YYMMDD-HHMMSS/
     results.json              # captures and normalized results

@@ -101,7 +101,7 @@ pub(crate) struct DnsEntries {
 
 Single hosts file per device at `<hosts_dir>/<node_id>.hosts`. One shared
 `resolv.conf` at `<hosts_dir>/resolv.conf`. The `hosts_dir` is
-`$TMPDIR/netsim-<prefix>-hosts/`.
+`$TMPDIR/patchbay-<prefix>-hosts/`.
 
 ### Worker thread mount setup (`netns.rs`)
 

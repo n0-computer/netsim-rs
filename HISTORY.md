@@ -1,6 +1,6 @@
 # Project History
 
-Chronological record of significant changes to netsim-rs. Moved from AGENTS.md to
+Chronological record of significant changes to patchbay. Moved from AGENTS.md to
 keep agent-facing instructions concise.
 
 For current architecture and conventions, see [AGENTS.md](AGENTS.md).
@@ -51,7 +51,7 @@ For current architecture and conventions, see [AGENTS.md](AGENTS.md).
 - Config-driven sim flow, iroh integration layout.
 - Relay/QAD runtime wiring, transfer steps.
 - FD-only netns backend, namespace lifecycle via in-process FD registry.
-- VM orchestration (netsim-vm), QEMU artifact staging.
+- VM orchestration (patchbay-vm), QEMU artifact staging.
 - Browser UI (Vite + React), live progress, log viewer.
 - Sim runner with progress.json, manifest.json, combined reports.
 - Netlink-based cleanup, prefix isolation, Ctrl-C handling.

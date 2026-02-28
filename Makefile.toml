@@ -6,14 +6,14 @@ script = ['''
   set -euo pipefail
   TARGET_BASE="$(cargo metadata --format-version 1 --no-deps | jq -r '.target_directory')"
   MUSL_TARGET="x86_64-unknown-linux-musl"
-  cargo build --release --target "${MUSL_TARGET}" -p netsim --bin netsim --example transfer
-  cargo run -p netsim-vm -- run --netsim-version "path:${TARGET_BASE}/${MUSL_TARGET}/release/netsim" ${@}
+  cargo build --release --target "${MUSL_TARGET}" -p patchbay-runner --bin patchbay --example transfer
+  cargo run -p patchbay-vm -- run --patchbay-version "path:${TARGET_BASE}/${MUSL_TARGET}/release/patchbay" ${@}
   ''']
 
 [tasks.test-vm]
 script = ['''
   set -euo pipefail
-  cargo run -p netsim-vm -- test --target "x86_64-unknown-linux-musl" ${@}
+  cargo run -p patchbay-vm -- test --target "x86_64-unknown-linux-musl" ${@}
   ''']
 
 [tasks.format]

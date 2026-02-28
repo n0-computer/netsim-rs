@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Project: **netsim-rs** — Linux network-namespace lab for NAT/routing/impairment experiments.
+Project: **patchbay** — Linux network-namespace lab for NAT/routing/impairment experiments.
 
 This file is the single entry point for agents. Read it fully before working. Follow all rules below — they are mandatory, not suggestions.
 
@@ -20,7 +20,7 @@ This file is the single entry point for agents. Read it fully before working. Fo
 
 ## Architecture
 
-### Crate: `netsim-core`
+### Crate: `patchbay`
 
 The library crate. All network simulation logic lives here.
 
@@ -45,10 +45,10 @@ The library crate. All network simulation logic lives here.
 ### Workspace
 
 ```
-netsim-core/    — Library crate (main development target)
-netsim-utils/   — CLI utilities
-netsim/         — Binary crate (sim runner, inspect)
-netsim-vm/      — VM orchestration
+patchbay/    — Library crate (main development target)
+patchbay-utils/   — CLI utilities
+patchbay-runner/ — Binary crate (sim runner, inspect)
+patchbay-vm/      — VM orchestration
 ui/             — Vite + React browser UI
 ```
 
@@ -74,9 +74,9 @@ ALWAYS add a timeout to test runs, like 90s.
 
 ```bash
 cargo fmt
-cargo clippy -p netsim-core --tests --fix --allow-dirty
-cargo check -p netsim-core --tests
-cargo nextest run -p netsim-core             # use nextest, not cargo test; parallelism in .config/nextest.toml
+cargo clippy -p patchbay --tests --fix --allow-dirty
+cargo check -p patchbay --tests
+cargo nextest run -p patchbay             # use nextest, not cargo test; parallelism in .config/nextest.toml
 ```
 
 when that is clean, run cargo check for the full workspace and test the other crates individually

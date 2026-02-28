@@ -1332,94 +1332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "netsim"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "comfy-table",
- "ctor",
- "ctrlc",
- "flate2",
- "glob",
- "n0-tracing-test",
- "netsim-core",
- "netsim-utils",
- "nix",
- "rcgen",
- "regex",
- "serde",
- "serde_json",
- "serial_test",
- "sha2",
- "tar",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "netsim-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "ctor",
- "derive_more",
- "futures",
- "futures-buffered",
- "hickory-resolver",
- "ipnet",
- "libc",
- "n0-tracing-test",
- "netlink-packet-route",
- "nix",
- "rtnetlink",
- "serde",
- "strum",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "netsim-utils"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flate2",
- "glob",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tracing",
- "tracing-subscriber",
- "webbrowser",
-]
-
-[[package]]
-name = "netsim-vm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "flate2",
- "netsim-utils",
- "nix",
- "serde",
- "serde_json",
- "tar",
- "toml",
-]
-
-[[package]]
 name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1530,6 +1442,94 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "patchbay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "ctor",
+ "derive_more",
+ "futures",
+ "futures-buffered",
+ "hickory-resolver",
+ "ipnet",
+ "libc",
+ "n0-tracing-test",
+ "netlink-packet-route",
+ "nix",
+ "rtnetlink",
+ "serde",
+ "strum",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "patchbay-runner"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "comfy-table",
+ "ctor",
+ "ctrlc",
+ "flate2",
+ "glob",
+ "n0-tracing-test",
+ "nix",
+ "patchbay",
+ "patchbay-utils",
+ "rcgen",
+ "regex",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "sha2",
+ "tar",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "patchbay-utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "glob",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tracing",
+ "tracing-subscriber",
+ "webbrowser",
+]
+
+[[package]]
+name = "patchbay-vm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "flate2",
+ "nix",
+ "patchbay-utils",
+ "serde",
+ "serde_json",
+ "tar",
+ "toml",
+]
 
 [[package]]
 name = "pem"

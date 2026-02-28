@@ -1,10 +1,10 @@
-# netsim UI Plan
+# patchbay UI Plan
 
 ## TODO
 
 - [x] Write plan
 - [x] Scaffold Vite + React + TS project at `ui/` with `vite-plugin-singlefile`
-- [x] Dev server: serve `.netsim-work` + `GET /__netsim/runs` run listing endpoint
+- [x] Dev server: serve `.patchbay-work` + `GET /__patchbay/runs` run listing endpoint
 - [x] Perf tab: sortable transfer/iperf tables + two-run compare with Δmbps/Δ%
 - [x] Logs tab: ANSI tracing + iroh NDJSON rendering + filters + sidebar file tree
 - [x] Timeline tab: SVG swimlane (Y=time, X=node lanes), scroll/zoom, tooltips
@@ -15,7 +15,7 @@
 - [ ] Final review
 
 Interactive browser UI for viewing simulation results, logs, timelines and
-qlogs. Served from the sim work root (or a run dir) via a future `netsim serve`
+qlogs. Served from the sim work root (or a run dir) via a future `patchbay serve`
 command. Built with Vite + React; output is a single `index.html` via
 `vite-plugin-singlefile` so it can also be dropped anywhere and opened.
 
@@ -28,7 +28,7 @@ command. Built with Vite + React; output is a single `index.html` via
   combined-results.json          {runs: [{run, sim, transfers[], iperf[]}]}
   combined-results.md
   latest -> <run-dir>            symlink
-  index.html                     <-- UI lives here (embedded by netsim)
+  index.html                     <-- UI lives here (embedded by patchbay)
   <sim-name>-YYMMDD-HHMMSS/     run dir
     results.json                 {sim, transfers[], iperf[]}
     manifest.json                <-- NEW: log index for UI (see below)
@@ -66,7 +66,7 @@ command. Built with Vite + React; output is a single `index.html` via
 
 **tracing NDJSON** (relay.log, step logs — emitted by tracing-subscriber json):
 ```jsonc
-{"timestamp":"2026-02-20T11:02:05.334Z","level":"INFO","target":"netsim::sim::transfer",
+{"timestamp":"2026-02-20T11:02:05.334Z","level":"INFO","target":"patchbay::sim::transfer",
  "fields":{"message":"iroh-transfer: provider ready","step_id":"xfer","endpoint_id":"ab6d..."}}
 {"timestamp":"...","level":"DEBUG","target":"netsim::core",
  "fields":{"message":"netlink: add bridge","bridge":"br-p12680-1"}}
@@ -103,7 +103,7 @@ command. Built with Vite + React; output is a single `index.html` via
 
 Project lives at `ui/` in the repo root. `npm run build` → `dist/index.html`.
 The Rust binary embeds `dist/index.html` at compile time (via `include_str!`)
-and writes it to `<work_root>/index.html` after each run (and on `netsim serve`).
+and writes it to `<work_root>/index.html` after each run (and on `patchbay serve`).
 
 ---
 
@@ -167,7 +167,7 @@ render as a formatted log line mimicking the tracing-subscriber `pretty`/compact
 format:
 
 ```
-2026-02-20T11:02:05.334Z  INFO netsim::sim::transfer: iroh-transfer: provider ready
+2026-02-20T11:02:05.334Z  INFO patchbay::sim::transfer: iroh-transfer: provider ready
     step_id="xfer" endpoint_id="ab6d..."
 ```
 
@@ -301,7 +301,7 @@ The runner already knows which log files it creates; adding manifest writing to
 
 The built `dist/index.html` is embedded in the binary via `include_str!` and
 written to `<work_root>/index.html` at the end of each `netsim run`. Later,
-`netsim serve [work_root]` starts a minimal HTTP server and opens the browser.
+`patchbay serve [work_root]` starts a minimal HTTP server and opens the browser.
 
 For development: `vite dev` with `NETSIM_WORK_ROOT` env var pointing at a real
 work root so the dev server can proxy `fetch()` calls.
@@ -312,7 +312,7 @@ work root so the dev server can proxy `fetch()` calls.
 
 ### Done ✅
 - `ui/` scaffold: Vite + React 18 + TypeScript, `vite-plugin-singlefile` → `dist/index.html` (~175 KB).
-- Vite dev plugin: serves `<repo_root>/.netsim-work` by default; `NETSIMS=/path` override; `GET /__netsim/runs` endpoint for run listing; prints resolved workRoot on startup.
+- Vite dev plugin: serves `<repo_root>/.patchbay-work` by default; `NETSIMS=/path` override; `GET /__patchbay/runs` endpoint for run listing; prints resolved workRoot on startup.
 - URL hash tab routing (`#perf`, `#logs`, `#timeline`, `#qlog`); `?run=name` run selection; auto-selects newest run in dev mode.
 - **Perf tab**: sortable transfers + iperf tables; all-runs overview (click to jump); two-run compare diff (Δmbps + Δ% colour-coded).
 - **Logs tab**: ANSI-stripped tracing text rendered as `TIME LEVL target: message` with level colours; iroh NDJSON events with inline badges (⚡ DIRECT / ↔ RELAY / ✓ DONE N Mbit/s); `iroh::_events` lines highlighted amber; sidebar file tree by node; regex + level-toggle + iroh-only filters; 20k-line cap with truncation notice.
@@ -330,7 +330,7 @@ work root so the dev server can proxy `fetch()` calls.
 1. **`manifest.json`**: write per run dir from `write_results` (log paths + kinds + `started_at`). Eliminates all heuristic inference in the UI.
 2. **`qlog-index.json`**: write per qlog dir listing the actual `*.qlog` filenames so the UI can discover them without a directory listing API.
 3. **Embed + serve**: `include_str!("../../ui/dist/index.html")` in `src/main.rs`, write to `<work_root>/index.html` after each run.
-4. **`netsim serve [work_root]`**: minimal HTTP server (e.g. `hyper` or `axum`) + browser open; expose `/__netsim/runs` equivalent.
+4. **`patchbay serve [work_root]`**: minimal HTTP server (e.g. `hyper` or `axum`) + browser open; expose `/__patchbay/runs` equivalent.
 
 ### Next steps (UI side)
 - Virtual scrolling in logs (react-window).
@@ -343,7 +343,7 @@ work root so the dev server can proxy `fetch()` calls.
 ```bash
 cd ui && npm install
 
-# Dev with real data (default: <repo_root>/.netsim-work):
+# Dev with real data (default: <repo_root>/.patchbay-work):
 npm run dev
 
 # Override work root:
@@ -353,8 +353,8 @@ NETSIMS=/absolute/or/relative/path npm run dev
 npm run build   # → dist/index.html
 
 # Serve manually (needs HTTP server, not file://):
-cp dist/index.html /path/to/.netsim-work/
-cd /path/to/.netsim-work && python3 -m http.server 8080
+cp dist/index.html /path/to/.patchbay-work/
+cd /path/to/.patchbay-work && python3 -m http.server 8080
 # open http://localhost:8080
 ```
 

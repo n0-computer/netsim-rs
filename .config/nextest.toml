@@ -1,4 +1,4 @@
-# Nextest configuration for netsim-core.
+# Nextest configuration for patchbay.
 #
 # Tests use Linux network namespaces with dedicated threads per namespace.
 # Running too many in parallel spawns thousands of threads.
