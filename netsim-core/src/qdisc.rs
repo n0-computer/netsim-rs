@@ -6,7 +6,8 @@ use ipnet::IpNet;
 /// Parameters for `tc netem` impairment.
 ///
 /// All fields default to zero (no impairment). Set only the fields you need.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
 pub struct LinkLimits {
     /// Rate limit in kbit/s (0 = unlimited).
     pub rate_kbit: u32,

@@ -1322,7 +1322,7 @@ region = "eu"
 
 [device.dev1.eth0]
 gateway = "dc1"
-impair = { rate = 5000, loss = 1.5, latency = 40 }
+impair = { rate_kbit = 5000, loss_pct = 1.5, latency_ms = 40 }
 "#;
     let parsed: config::LabConfig = toml::from_str(cfg)?;
     let dev1 = parsed.device.get("dev1").context("missing dev1")?;

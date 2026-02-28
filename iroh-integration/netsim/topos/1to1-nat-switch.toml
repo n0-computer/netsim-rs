@@ -3,15 +3,15 @@ name = "dc"
 
 [[router]]
 name     = "lan-provider"
-nat      = "destination-independent"
+nat      = "home"
 
 [[router]]
 name     = "lan-fetcher"
-nat      = "destination-independent"
+nat      = "home"
 
 [[router]]
 name     = "lan-fetcher2"
-nat      = "destination-independent"
+nat      = "home"
 
 [device.relay.eth0]
 gateway = "dc"

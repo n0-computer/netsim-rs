@@ -48,7 +48,10 @@ use anyhow::{anyhow, bail, Context, Result};
 /// Defines TOML configuration structures used by [`Lab::load`].
 pub mod config;
 pub(crate) mod core;
+pub(crate) mod firewall;
+pub(crate) mod handles;
 mod lab;
+pub(crate) mod nat;
 mod netlink;
 mod netns;
 mod qdisc;
@@ -62,9 +65,9 @@ pub mod util;
 
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Device, DeviceBuilder, DeviceIface, Firewall,
-    FirewallConfig, IpSupport, Ix, Lab, LinkCondition, LinkLimits, Nat, NatConfig,
-    NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, ObservedAddr, Region, RegionLink,
-    Router, RouterBuilder,
+    FirewallConfig, FirewallConfigBuilder, IpSupport, Ix, Lab, LinkCondition, LinkLimits, Nat,
+    NatConfig, NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, ObservedAddr, Region,
+    RegionLink, Router, RouterBuilder,
 };
 
 
