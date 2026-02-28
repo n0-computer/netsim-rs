@@ -536,8 +536,10 @@ See [region-routing.md](region-routing.md) for full plan with address space, rou
 
 ### Phase 6: Firewall presets (low priority)
 
-- [ ] Add `Firewall` enum with `Corporate`, `CaptivePortal` presets
-- [ ] Add `.firewall()` / `.firewall_custom()` to router builder
+- [x] Add `Firewall` enum with `Corporate`, `CaptivePortal` presets
+- [x] Add `.firewall()` / `.firewall_custom()` to router builder
+- [x] Add `Router::set_firewall()` for runtime changes
+- [x] Add `FirewallConfig` builder for custom per-port rules
 
 ---
 
