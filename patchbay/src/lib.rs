@@ -70,7 +70,6 @@ pub use lab::{
     RegionLink, Router, RouterBuilder,
 };
 
-
 pub use crate::{
     core::NodeId,
     userns::{init_userns, init_userns_for_ctor},

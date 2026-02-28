@@ -229,12 +229,7 @@ async fn build_nat_case(
     let upstream = match wiring {
         UplinkWiring::DirectIx => None,
         UplinkWiring::ViaPublicIsp => Some(lab.add_router("isp").build().await?),
-        UplinkWiring::ViaCgnatIsp => Some(
-            lab.add_router("isp")
-                .nat(Nat::Cgnat)
-                .build()
-                .await?,
-        ),
+        UplinkWiring::ViaCgnatIsp => Some(lab.add_router("isp").nat(Nat::Cgnat).build().await?),
     };
     let nat = {
         let mut rb = lab.add_router("nat").nat(nat_mode);
@@ -329,12 +324,7 @@ async fn build_single_nat_case(
     let upstream = match wiring {
         UplinkWiring::DirectIx => None,
         UplinkWiring::ViaPublicIsp => Some(lab.add_router("isp").build().await?),
-        UplinkWiring::ViaCgnatIsp => Some(
-            lab.add_router("isp")
-                .nat(Nat::Cgnat)
-                .build()
-                .await?,
-        ),
+        UplinkWiring::ViaCgnatIsp => Some(lab.add_router("isp").nat(Nat::Cgnat).build().await?),
     };
     let nat = {
         let mut rb = lab.add_router("nat").nat(nat_mode);
@@ -517,11 +507,7 @@ async fn nat_dest_dependent_changes_port() -> Result<()> {
 async fn cgnat_hides_behind_isp_public_ip() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await;
-    let isp = lab
-        .add_router("isp1")
-        .nat(Nat::Cgnat)
-        .build()
-        .await?;
+    let isp = lab.add_router("isp1").nat(Nat::Cgnat).build().await?;
     let dc = lab.add_router("dc1").build().await?;
     let home = lab
         .add_router("home1")
@@ -558,11 +544,7 @@ async fn iroh_nat_like_nodes_report_public_203_mapped_addrs() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await;
     let dc = lab.add_router("dc").build().await?;
-    let isp = lab
-        .add_router("isp")
-        .nat(Nat::Cgnat)
-        .build()
-        .await?;
+    let isp = lab.add_router("isp").nat(Nat::Cgnat).build().await?;
     let lan_provider = lab
         .add_router("lan-provider")
         .upstream(isp.id())
@@ -608,12 +590,14 @@ async fn iroh_nat_like_nodes_report_public_203_mapped_addrs() -> Result<()> {
         provider_ip.octets()[0],
         198,
         "provider STUN report should be public 198.18.* mapped IP, got {}",
-        provider_obs    );
+        provider_obs
+    );
     assert_eq!(
         fetcher_ip.octets()[0],
         198,
         "fetcher STUN report should be public 198.18.* mapped IP, got {}",
-        fetcher_obs    );
+        fetcher_obs
+    );
     assert_eq!(
         provider_ip, isp_public,
         "provider should be mapped behind ISP public address"
@@ -1173,11 +1157,7 @@ async fn isp_home_wan_pool_selection() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await;
     let isp_public = lab.add_router("isp-public").build().await?;
-    let isp_cgnat = lab
-        .add_router("isp-cgnat")
-        .nat(Nat::Cgnat)
-        .build()
-        .await?;
+    let isp_cgnat = lab.add_router("isp-cgnat").nat(Nat::Cgnat).build().await?;
     let home_public = lab
         .add_router("home-public")
         .upstream(isp_public.id())
@@ -1227,14 +1207,16 @@ async fn dynamic_set_impair_changes_rtt() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev1").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_link_condition(&default_if, Some(LinkCondition::Mobile4G))?;
+    dev_handle
+        .set_link_condition(&default_if, Some(LinkCondition::Mobile4G))
+        .await?;
     let impaired_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         impaired_rtt >= base_rtt + Duration::from_millis(10),
         "expected impaired RTT >= base + 10ms, base={base_rtt:?} impaired={impaired_rtt:?}"
     );
 
-    dev_handle.set_link_condition(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None).await?;
     let recovered_rtt = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         recovered_rtt < base_rtt + Duration::from_millis(30),
@@ -1594,20 +1576,12 @@ async fn switch_route_multiple() -> Result<()> {
     let wan_b = nat_b.uplink_ip().context("no uplink ip")?;
 
     let o = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
-    assert_eq!(
-        o.ip(),
-        IpAddr::V4(wan_a),
-        "expected nat_a WAN on eth0"
-    );
+    assert_eq!(o.ip(), IpAddr::V4(wan_a), "expected nat_a WAN on eth0");
 
     dev.set_default_route("eth1").await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
     let o = dev.run_sync(move || crate::test_utils::udp_roundtrip(reflector))?;
-    assert_eq!(
-        o.ip(),
-        IpAddr::V4(wan_b),
-        "expected nat_b WAN on eth1"
-    );
+    assert_eq!(o.ip(), IpAddr::V4(wan_b), "expected nat_b WAN on eth1");
 
     dev.set_default_route("eth0").await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1845,16 +1819,25 @@ async fn link_down_up_connectivity() -> Result<()> {
                 Proto::Udp => {
                     dc.spawn_reflector(r)?;
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind)))
-                        .context("before link_down")?;
+                    dev.run_sync(move || {
+                        crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))
+                    })
+                    .context("before link_down")?;
                     dev_handle.link_down("eth0").await?;
-                    if dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))).is_ok() {
+                    if dev
+                        .run_sync(move || {
+                            crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))
+                        })
+                        .is_ok()
+                    {
                         bail!("probe should fail after link_down");
                     }
                     dev_handle.link_up("eth0").await?;
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    dev.run_sync(move || crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind)))
-                        .context("after link_up")?;
+                    dev.run_sync(move || {
+                        crate::test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))
+                    })
+                    .context("after link_up")?;
                 }
                 Proto::Tcp => {
                     // Persistent echo server: handles all connections for the whole test.
@@ -1913,7 +1896,7 @@ async fn nat_rebind_mode_port() -> Result<()> {
         let result: Result<()> = async {
             let (lab, ctx) = build_nat_case(from, UplinkWiring::DirectIx, port_base).await?;
             let nat_handle = lab.router_by_name("nat").context("missing nat")?;
-            nat_handle.set_nat_mode(to)?;
+            nat_handle.set_nat_mode(to).await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
             let dev = lab.device_by_name("dev").unwrap();
             let o1 = dev.probe_udp_mapping(ctx.r_dc)?;
@@ -1955,11 +1938,13 @@ async fn nat_rebind_mode_ip() -> Result<()> {
             let (lab, ctx) = build_nat_case(from, UplinkWiring::DirectIx, port_base).await?;
             let nat_handle = lab.router_by_name("nat").context("missing nat")?;
             let wan_ip = nat_handle.uplink_ip().context("no uplink ip")?;
-            nat_handle.set_nat_mode(to)?;
+            nat_handle.set_nat_mode(to).await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
             let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
             let r_dc = ctx.r_dc;
-            let o = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
+            let o = ctx.dev.run_sync(move || {
+                crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind))
+            })?;
             let expected = match to {
                 Nat::Home => IpAddr::V4(wan_ip),
                 Nat::None => IpAddr::V4(ctx.dev_ip),
@@ -1998,10 +1983,14 @@ async fn nat_rebind_conntrack_flush() -> Result<()> {
     let nat_handle = lab.router_by_name("nat").context("missing nat")?;
     let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
     let r_dc = ctx.r_dc;
-    let o1 = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
-    nat_handle.flush_nat_state()?;
+    let o1 = ctx.dev.run_sync(move || {
+        crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind))
+    })?;
+    nat_handle.flush_nat_state().await?;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let o2 = ctx.dev.run_sync(move || crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind)))?;
+    let o2 = ctx.dev.run_sync(move || {
+        crate::test_utils::probe_udp(r_dc, Duration::from_millis(500), Some(bind))
+    })?;
     assert_ne!(
         o1.port(),
         o2.port(),
@@ -2175,7 +2164,10 @@ async fn hairpin_home_blocked() -> Result<()> {
         let mut buf = [0u8; 512];
         match sock.recv_from(&mut buf) {
             Ok(_) => bail!("unexpected reply — hairpin should be blocked"),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 Ok(())
             }
             Err(e) => Err(e.into()),
@@ -2295,7 +2287,8 @@ async fn rate_limit_tcp_download() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 0,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dev_ip = dev_id.ip().unwrap();
     let addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_400);
@@ -2341,7 +2334,8 @@ async fn rate_limit_udp_upload() -> Result<()> {
     let start = Instant::now();
     dev.spawn(move |_| async move {
         crate::test_utils::udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)).await
-    }).await??;
+    })
+    .await??;
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(1000),
@@ -2367,7 +2361,8 @@ async fn rate_limit_udp_download() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 0,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_600);
@@ -2376,9 +2371,11 @@ async fn rate_limit_udp_download() -> Result<()> {
 
     // Replies travel the download path (DC → device) which is throttled.
     let start = Instant::now();
-    dev_id.spawn(move |_| async move {
-        crate::test_utils::udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)).await
-    }).await??;
+    dev_id
+        .spawn(move |_| async move {
+            crate::test_utils::udp_send_recv_count(r, 300, 1024, Duration::from_secs(5)).await
+        })
+        .await??;
     let elapsed = start.elapsed();
     assert!(
         elapsed >= Duration::from_millis(1000),
@@ -2412,7 +2409,8 @@ async fn rate_limit_asymmetric() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 0,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let up_addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_700);
@@ -2467,7 +2465,8 @@ async fn rate_limit_multihop_bottleneck() -> Result<()> {
             latency_ms: 0,
             ..Default::default()
         })),
-    )?;
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_800);
@@ -2509,7 +2508,8 @@ async fn rate_limit_two_hops_stack() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 0,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_900);
@@ -2553,10 +2553,11 @@ async fn loss_udp_moderate() -> Result<()> {
 
     // Send 1000 packets for stable statistics at 50% loss.
     // Expected ~500 received; bounds [200, 800] give wide margin.
-    let (_, received) =
-        dev.spawn(move |_| async move {
+    let (_, received) = dev
+        .spawn(move |_| async move {
             crate::test_utils::udp_send_recv_count(r, 1000, 64, Duration::from_secs(8)).await
-        }).await??;
+        })
+        .await??;
     assert!(
         received >= 200,
         "expected ≥ 200 received at 50% loss (of 1000 sent), got {received}"
@@ -2593,10 +2594,11 @@ async fn loss_udp_high() -> Result<()> {
     dc.spawn_reflector(r)?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let (_, received) =
-        dev.spawn(move |_| async move {
+    let (_, received) = dev
+        .spawn(move |_| async move {
             crate::test_utils::udp_send_recv_count(r, 100, 64, Duration::from_secs(3)).await
-        }).await??;
+        })
+        .await??;
     assert!(
         received <= 30,
         "expected ≤ 30 received at 90% loss, got {received}"
@@ -2678,7 +2680,8 @@ async fn loss_udp_both_directions() -> Result<()> {
         loss_pct: 30.0,
         latency_ms: 0,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_300);
@@ -2686,10 +2689,11 @@ async fn loss_udp_both_directions() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Round-trip delivery ≈ (1-0.3)×(1-0.3) = 49 %; expect < 80.
-    let (_, received) =
-        dev.spawn(move |_| async move {
+    let (_, received) = dev
+        .spawn(move |_| async move {
             crate::test_utils::udp_send_recv_count(r, 100, 64, Duration::from_secs(3)).await
-        }).await??;
+        })
+        .await??;
     assert!(
         received <= 80,
         "expected < 80 echoes with bidirectional loss, got {received}"
@@ -2723,7 +2727,8 @@ async fn latency_download_direction() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 50,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let impaired = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
@@ -2758,7 +2763,8 @@ async fn latency_upload_and_download() -> Result<()> {
         loss_pct: 0.0,
         latency_ms: 30,
         ..Default::default()
-    })))?;
+    })))
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_500);
@@ -2864,7 +2870,8 @@ async fn latency_multihop_chain() -> Result<()> {
             latency_ms: 30,
             ..Default::default()
         })),
-    )?;
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_700);
@@ -2913,15 +2920,17 @@ async fn rate_dynamic_decrease() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_link_condition(
-        &default_if,
-        Some(LinkCondition::Manual(LinkLimits {
-            rate_kbit: 500,
-            loss_pct: 0.0,
-            latency_ms: 0,
-            ..Default::default()
-        })),
-    )?;
+    dev_handle
+        .set_link_condition(
+            &default_if,
+            Some(LinkCondition::Manual(LinkLimits {
+                rate_kbit: 500,
+                loss_pct: 0.0,
+                latency_ms: 0,
+                ..Default::default()
+            })),
+        )
+        .await?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_801)))?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2976,7 +2985,7 @@ async fn rate_dynamic_remove() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_link_condition(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None).await?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_901)))?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3012,22 +3021,24 @@ async fn latency_dynamic_add_remove() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().name().to_string();
-    dev_handle.set_link_condition(
-        &default_if,
-        Some(LinkCondition::Manual(LinkLimits {
-            rate_kbit: 0,
-            loss_pct: 0.0,
-            latency_ms: 100,
-            ..Default::default()
-        })),
-    )?;
+    dev_handle
+        .set_link_condition(
+            &default_if,
+            Some(LinkCondition::Manual(LinkLimits {
+                rate_kbit: 0,
+                loss_pct: 0.0,
+                latency_ms: 100,
+                ..Default::default()
+            })),
+        )
+        .await?;
     let high = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         high >= baseline + Duration::from_millis(90),
         "expected RTT +90ms after 100ms impair, baseline={baseline:?} high={high:?}"
     );
 
-    dev_handle.set_link_condition(&default_if, None)?;
+    dev_handle.set_link_condition(&default_if, None).await?;
     let recovered = dev.run_sync(move || crate::test_utils::udp_rtt(r))?;
     assert!(
         recovered < baseline + Duration::from_millis(30),
@@ -3071,10 +3082,12 @@ async fn rate_presets() -> Result<()> {
             }
             if loss_pct > 0.0 {
                 // 1000 packets: P(zero loss at 1%) ≈ 0.000045 — reliably detects loss.
-                let (_, received) =
-                    dev.spawn(move |_| async move {
-                        crate::test_utils::udp_send_recv_count(r, 1000, 64, Duration::from_secs(5)).await
-                    }).await??;
+                let (_, received) = dev
+                    .spawn(move |_| async move {
+                        crate::test_utils::udp_send_recv_count(r, 1000, 64, Duration::from_secs(5))
+                            .await
+                    })
+                    .await??;
                 if received == 1000 {
                     bail!(
                         "preset {preset:?}: expected some loss at {loss_pct}%, got {received}/1000"
@@ -3628,10 +3641,7 @@ async fn smoke_v6_only_roundtrip() -> Result<()> {
     // Device must have v6 but no v4.
     let dev_ip6 = dev.ip6().expect("device should have v6 addr");
     assert!(!dev_ip6.is_unspecified(), "v6 addr must not be unspecified");
-    assert!(
-        dev.ip().is_none(),
-        "V6Only device should have no v4 addr"
-    );
+    assert!(dev.ip().is_none(), "V6Only device should have no v4 addr");
     assert!(
         dc.uplink_ip().is_none(),
         "V6Only router should have no v4 uplink"
@@ -4211,7 +4221,7 @@ async fn send_recv(socket: &UdpSocket, dst: SocketAddr, wait_before_send: Durati
 async fn test_ix_ip_alloc_no_duplicates() {
     let lab = Lab::new().await;
     let mut ips = std::collections::HashSet::new();
-    let mut inner = lab.inner.lock().unwrap();
+    let mut inner = lab.inner.core.lock().unwrap();
     // next_ix_low starts at 10, so we can allocate 245 IPs (10..=254).
     let mut count = 0;
     while let Ok(ip) = inner.alloc_ix_ip_low() {
@@ -4227,7 +4237,7 @@ async fn test_ix_ip_alloc_no_duplicates() {
 async fn test_ix_ip_v6_alloc_no_duplicates() {
     let lab = Lab::new().await;
     let mut ips = std::collections::HashSet::new();
-    let mut inner = lab.inner.lock().unwrap();
+    let mut inner = lab.inner.core.lock().unwrap();
     // next_ix_low_v6 starts at 0x10 = 16.
     let mut count = 0u32;
     while let Ok(ip) = inner.alloc_ix_ip_v6_low() {
@@ -4347,8 +4357,9 @@ async fn pmtu_blackhole_drops_large_packets() -> Result<()> {
         let mut buf = [0u8; 2048];
         match sock.recv_from(&mut buf) {
             Ok((n, _)) => bail!("unexpectedly received {n} bytes — packet should be blackholed"),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 // Timeout — expected, packet was blackholed.
                 Ok(())
@@ -4386,8 +4397,7 @@ async fn pmtu_blackhole_drops_large_packets() -> Result<()> {
     })?;
 
     // Server should have timed out without receiving anything.
-    tokio::task::spawn_blocking(move || server_thread.join().unwrap())
-        .await??;
+    tokio::task::spawn_blocking(move || server_thread.join().unwrap()).await??;
 
     Ok(())
 }
@@ -4568,7 +4578,11 @@ async fn region_break_restore() -> Result<()> {
     let regions = lab.add_default_regions().await?;
 
     let dc_eu = lab.add_router("dc-eu").region(&regions.eu).build().await?;
-    let dc_asia = lab.add_router("dc-asia").region(&regions.asia).build().await?;
+    let dc_asia = lab
+        .add_router("dc-asia")
+        .region(&regions.asia)
+        .build()
+        .await?;
 
     let asia_ip = dc_asia.uplink_ip().context("no uplink ip")?;
     let r_asia = SocketAddr::new(IpAddr::V4(asia_ip), 9102);
@@ -4704,7 +4718,10 @@ async fn region_mixed_nat() -> Result<()> {
 async fn region_reserved_name_rejected() -> Result<()> {
     let lab = Lab::new().await;
     let result = lab.add_router("region_foo").build().await;
-    assert!(result.is_err(), "expected error for reserved name 'region_foo'");
+    assert!(
+        result.is_err(),
+        "expected error for reserved name 'region_foo'"
+    );
     assert!(
         result.unwrap_err().to_string().contains("reserved"),
         "error should mention 'reserved'"
@@ -4844,7 +4861,10 @@ async fn firewall_none_allows_all() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let rtt = dev.run_sync(move || crate::test_utils::udp_rtt(reflector))?;
-    assert!(rtt < Duration::from_millis(100), "expected low RTT, got {rtt:?}");
+    assert!(
+        rtt < Duration::from_millis(100),
+        "expected low RTT, got {rtt:?}"
+    );
 
     Ok(())
 }
@@ -4891,7 +4911,10 @@ async fn firewall_custom_selective() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let rtt = dev.run_sync(move || crate::test_utils::udp_rtt(reflector_allowed))?;
-    assert!(rtt < Duration::from_millis(100), "expected low RTT on allowed port, got {rtt:?}");
+    assert!(
+        rtt < Duration::from_millis(100),
+        "expected low RTT on allowed port, got {rtt:?}"
+    );
 
     Ok(())
 }
@@ -4923,7 +4946,7 @@ async fn firewall_runtime_change() -> Result<()> {
     assert!(rtt < Duration::from_millis(100));
 
     // Apply corporate firewall at runtime.
-    home.set_firewall(Firewall::Corporate)?;
+    home.set_firewall(Firewall::Corporate).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // UDP should now be blocked.
@@ -4935,7 +4958,7 @@ async fn firewall_runtime_change() -> Result<()> {
     );
 
     // Remove firewall.
-    home.set_firewall(Firewall::None)?;
+    home.set_firewall(Firewall::None).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // UDP should work again.

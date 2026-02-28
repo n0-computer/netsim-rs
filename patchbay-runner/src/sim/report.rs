@@ -366,7 +366,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("patchbay-{prefix}-{ts}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-{prefix}-{ts}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

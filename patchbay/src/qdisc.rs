@@ -1,7 +1,6 @@
-use std::process::Command;
-
 use anyhow::{bail, Context, Result};
 use ipnet::IpNet;
+use tokio::process::Command;
 
 /// Parameters for `tc netem` impairment.
 ///
@@ -26,12 +25,12 @@ pub struct LinkLimits {
 }
 
 /// Applies netem impairment on `ifname`. Caller must already be in the target ns.
-pub(crate) fn apply_impair(ifname: &str, limits: LinkLimits) -> Result<()> {
-    remove_qdisc(ifname);
+pub(crate) async fn apply_impair(ifname: &str, limits: LinkLimits) -> Result<()> {
+    remove_qdisc(ifname).await;
     let qdisc = Qdisc::new(ifname);
-    qdisc.add_netem_root(limits)?;
+    qdisc.add_netem_root(limits).await?;
     if limits.rate_kbit > 0 {
-        qdisc.add_tbf(limits.rate_kbit)?;
+        qdisc.add_tbf(limits.rate_kbit).await?;
     }
     Ok(())
 }
@@ -40,35 +39,38 @@ pub(crate) fn apply_impair(ifname: &str, limits: LinkLimits) -> Result<()> {
 ///
 /// Each `IpNet` entry maps to either a v4 or v6 tc filter on the same HTB class tree.
 /// Caller must already be in the target ns.
-pub(crate) fn apply_region_latency_dual(ifname: &str, filters: &[(IpNet, u32)]) -> Result<()> {
+pub(crate) async fn apply_region_latency_dual(
+    ifname: &str,
+    filters: &[(IpNet, u32)],
+) -> Result<()> {
     if filters.is_empty() {
         return Ok(());
     }
 
-    remove_qdisc(ifname);
+    remove_qdisc(ifname).await;
     let qdisc = Qdisc::new(ifname);
-    qdisc.add_htb_root()?;
-    qdisc.add_base_class()?;
+    qdisc.add_htb_root().await?;
+    qdisc.add_base_class().await?;
 
     for (idx, (cidr, latency)) in filters.iter().enumerate() {
         let class_id = format!("1:{}", 10 + idx as u16);
         let handle = format!("{}:", 10 + idx as u16);
         let cidr_str = format!("{}/{}", cidr.addr(), cidr.prefix_len());
 
-        qdisc.add_htb_class(&class_id)?;
-        qdisc.add_netem_class(&class_id, &handle, *latency)?;
+        qdisc.add_htb_class(&class_id).await?;
+        qdisc.add_netem_class(&class_id, &handle, *latency).await?;
         match cidr {
-            IpNet::V4(_) => qdisc.add_filter(&cidr_str, &class_id)?,
-            IpNet::V6(_) => qdisc.add_filter_v6(&cidr_str, &class_id)?,
+            IpNet::V4(_) => qdisc.add_filter(&cidr_str, &class_id).await?,
+            IpNet::V6(_) => qdisc.add_filter_v6(&cidr_str, &class_id).await?,
         }
     }
 
     Ok(())
 }
 
-pub(crate) fn remove_qdisc(ifname: &str) {
+pub(crate) async fn remove_qdisc(ifname: &str) {
     let qdisc = Qdisc::new(ifname);
-    qdisc.clear_root();
+    qdisc.clear_root().await;
 }
 
 struct Qdisc<'a> {
@@ -80,14 +82,14 @@ impl<'a> Qdisc<'a> {
         Self { ifname }
     }
 
-    fn clear_root(&self) {
+    async fn clear_root(&self) {
         let mut cmd = Command::new("tc");
         cmd.args(["qdisc", "del", "dev", self.ifname, "root"]);
         cmd.stderr(std::process::Stdio::null());
-        let _ = cmd.status();
+        let _ = cmd.status().await;
     }
 
-    fn add_netem_root(&self, limits: LinkLimits) -> Result<()> {
+    async fn add_netem_root(&self, limits: LinkLimits) -> Result<()> {
         let mut args: Vec<String> = vec![
             "qdisc",
             "add",
@@ -129,11 +131,11 @@ impl<'a> Qdisc<'a> {
         let mut cmd = Command::new("tc");
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         cmd.args(&arg_refs);
-        ensure_success(cmd, "tc qdisc netem add")?;
+        ensure_success(cmd, "tc qdisc netem add").await?;
         Ok(())
     }
 
-    fn add_tbf(&self, rate_kbit: u32) -> Result<()> {
+    async fn add_tbf(&self, rate_kbit: u32) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "qdisc",
@@ -152,11 +154,11 @@ impl<'a> Qdisc<'a> {
             "latency",
             "400ms",
         ]);
-        ensure_success(cmd, "tc qdisc tbf add")?;
+        ensure_success(cmd, "tc qdisc tbf add").await?;
         Ok(())
     }
 
-    fn add_htb_root(&self) -> Result<()> {
+    async fn add_htb_root(&self) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "qdisc",
@@ -172,11 +174,11 @@ impl<'a> Qdisc<'a> {
             "r2q",
             "1000",
         ]);
-        ensure_success(cmd, "tc qdisc htb add")?;
+        ensure_success(cmd, "tc qdisc htb add").await?;
         Ok(())
     }
 
-    fn add_base_class(&self) -> Result<()> {
+    async fn add_base_class(&self) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "class",
@@ -191,11 +193,11 @@ impl<'a> Qdisc<'a> {
             "rate",
             "1000mbit",
         ]);
-        ensure_success(cmd, "tc class htb add base")?;
+        ensure_success(cmd, "tc class htb add base").await?;
         Ok(())
     }
 
-    fn add_htb_class(&self, class_id: &str) -> Result<()> {
+    async fn add_htb_class(&self, class_id: &str) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "class",
@@ -210,11 +212,11 @@ impl<'a> Qdisc<'a> {
             "rate",
             "1000mbit",
         ]);
-        ensure_success(cmd, "tc class htb add")?;
+        ensure_success(cmd, "tc class htb add").await?;
         Ok(())
     }
 
-    fn add_netem_class(&self, class_id: &str, handle: &str, latency_ms: u32) -> Result<()> {
+    async fn add_netem_class(&self, class_id: &str, handle: &str, latency_ms: u32) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "qdisc",
@@ -229,11 +231,11 @@ impl<'a> Qdisc<'a> {
             "delay",
             &format!("{}ms", latency_ms),
         ]);
-        ensure_success(cmd, "tc qdisc netem class add")?;
+        ensure_success(cmd, "tc qdisc netem class add").await?;
         Ok(())
     }
 
-    fn add_filter(&self, cidr: &str, class_id: &str) -> Result<()> {
+    async fn add_filter(&self, cidr: &str, class_id: &str) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "filter",
@@ -254,11 +256,11 @@ impl<'a> Qdisc<'a> {
             "flowid",
             class_id,
         ]);
-        ensure_success(cmd, "tc filter add")?;
+        ensure_success(cmd, "tc filter add").await?;
         Ok(())
     }
 
-    fn add_filter_v6(&self, cidr: &str, class_id: &str) -> Result<()> {
+    async fn add_filter_v6(&self, cidr: &str, class_id: &str) -> Result<()> {
         let mut cmd = Command::new("tc");
         cmd.args([
             "filter",
@@ -279,15 +281,16 @@ impl<'a> Qdisc<'a> {
             "flowid",
             class_id,
         ]);
-        ensure_success(cmd, "tc filter v6 add")?;
+        ensure_success(cmd, "tc filter v6 add").await?;
         Ok(())
     }
 }
 
-fn ensure_success(mut cmd: Command, context: &str) -> Result<()> {
+async fn ensure_success(mut cmd: Command, context: &str) -> Result<()> {
     let out = cmd
         .stderr(std::process::Stdio::piped())
         .output()
+        .await
         .with_context(|| format!("{context}: spawn"))?;
     if out.status.success() {
         Ok(())

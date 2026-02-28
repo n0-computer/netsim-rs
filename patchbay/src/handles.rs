@@ -3,7 +3,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::Arc,
     thread,
     time::Duration,
 };
@@ -13,7 +13,10 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use tracing::debug;
 
 use crate::{
-    core::{self, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, run_nft_in, NetworkCore, NodeId},
+    core::{
+        self, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, run_nft_in, LabInner,
+        NodeId,
+    },
     firewall::Firewall,
     nat::{IpSupport, Nat, NatV6Mode},
     netlink::Netlink,
@@ -65,7 +68,7 @@ impl DeviceIface {
 /// briefly lock the mutex, read a value, and return owned data.
 pub struct Device {
     id: NodeId,
-    lab: Arc<Mutex<NetworkCore>>,
+    lab: Arc<LabInner>,
 }
 
 impl Clone for Device {
@@ -84,7 +87,7 @@ impl std::fmt::Debug for Device {
 }
 
 impl Device {
-    pub(crate) fn new(id: NodeId, lab: Arc<Mutex<NetworkCore>>) -> Self {
+    pub(crate) fn new(id: NodeId, lab: Arc<LabInner>) -> Self {
         Self { id, lab }
     }
 
@@ -93,45 +96,38 @@ impl Device {
         self.id
     }
 
-    /// Returns the device name.
+    /// Returns the device name, or `""` if the device was removed.
     pub fn name(&self) -> String {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .device(self.id)
-            .map(|d| d.name.clone())
+        self.lab
+            .try_with_device(self.id, |d| d.name.clone())
             .unwrap_or_default()
     }
 
-    /// Returns the network namespace name for this device.
+    /// Returns the network namespace name for this device, or `""` if removed.
     pub fn ns(&self) -> String {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .device(self.id)
-            .map(|d| d.ns.clone())
+        self.lab
+            .try_with_device(self.id, |d| d.ns.clone())
             .unwrap_or_default()
     }
 
     /// Returns the IPv4 address of the default interface, if assigned.
     pub fn ip(&self) -> Option<Ipv4Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.device(self.id).and_then(|d| d.default_iface().ip)
+        self.lab.with_device(self.id, |d| d.default_iface().ip)
     }
 
     /// Returns the IPv6 address of the default interface, if assigned.
     pub fn ip6(&self) -> Option<Ipv6Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.device(self.id).and_then(|d| d.default_iface().ip_v6)
+        self.lab.with_device(self.id, |d| d.default_iface().ip_v6)
     }
 
     /// Returns the configured MTU, if set.
     pub fn mtu(&self) -> Option<u32> {
-        let inner = self.lab.lock().unwrap();
-        inner.device(self.id).and_then(|d| d.mtu)
+        self.lab.with_device(self.id, |d| d.mtu)
     }
 
     /// Returns a snapshot of the named interface, if it exists.
     pub fn iface(&self, name: &str) -> Option<DeviceIface> {
-        let inner = self.lab.lock().unwrap();
+        let inner = self.lab.core.lock().unwrap();
         let dev = inner.device(self.id)?;
         let iface = dev.iface(name)?;
         Some(DeviceIface {
@@ -144,20 +140,20 @@ impl Device {
 
     /// Returns a snapshot of the default interface.
     pub fn default_iface(&self) -> DeviceIface {
-        let inner = self.lab.lock().unwrap();
-        let dev = inner.device(self.id).expect("device handle has valid id");
-        let iface = dev.default_iface();
-        DeviceIface {
-            ifname: iface.ifname.clone(),
-            ip: iface.ip,
-            ip_v6: iface.ip_v6,
-            impair: iface.impair,
-        }
+        self.lab.with_device(self.id, |dev| {
+            let iface = dev.default_iface();
+            DeviceIface {
+                ifname: iface.ifname.clone(),
+                ip: iface.ip,
+                ip_v6: iface.ip_v6,
+                impair: iface.impair,
+            }
+        })
     }
 
     /// Returns snapshots of all interfaces.
     pub fn interfaces(&self) -> Vec<DeviceIface> {
-        let inner = self.lab.lock().unwrap();
+        let inner = self.lab.core.lock().unwrap();
         let dev = match inner.device(self.id) {
             Some(d) => d,
             None => return vec![],
@@ -177,15 +173,9 @@ impl Device {
 
     /// Brings an interface administratively down.
     pub async fn link_down(&self, ifname: &str) -> Result<()> {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?;
-            (dev.ns.clone(), Arc::clone(&inner.netns))
-        };
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
         let ifname = ifname.to_string();
-        core::nl_run(&netns, &ns, move |nl: Netlink| async move {
+        core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.set_link_down(&ifname).await
         })
         .await
@@ -196,23 +186,18 @@ impl Device {
     /// Linux removes routes via an interface when it goes admin-down, so we
     /// re-add the default route if `ifname` is the device's current `default_via`.
     pub async fn link_up(&self, ifname: &str) -> Result<()> {
-        let (ns, uplink, is_default_via, netns) = {
-            let inner = self.lab.lock().unwrap();
+        let (ns, uplink, is_default_via) = {
+            let inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
             let iface = dev
                 .iface(ifname)
                 .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-            (
-                dev.ns.clone(),
-                iface.uplink,
-                dev.default_via == ifname,
-                Arc::clone(&inner.netns),
-            )
+            (dev.ns.clone(), iface.uplink, dev.default_via == ifname)
         };
         let ifname_owned = ifname.to_string();
-        core::nl_run(&netns, &ns, {
+        core::nl_run(&self.lab.netns, &ns, {
             let ifname_owned = ifname_owned.clone();
             move |nl: Netlink| async move { nl.set_link_up(&ifname_owned).await }
         })
@@ -220,10 +205,11 @@ impl Device {
         if is_default_via {
             let gw_ip = self
                 .lab
+                .core
                 .lock()
                 .unwrap()
                 .router_downlink_gw_for_switch(uplink)?;
-            core::nl_run(&netns, &ns, move |nl: Netlink| async move {
+            core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
                 nl.replace_default_route_v4(&ifname_owned, gw_ip).await
             })
             .await?;
@@ -233,44 +219,43 @@ impl Device {
 
     /// Sets the active default route to a different interface.
     pub async fn set_default_route(&self, to: &str) -> Result<()> {
-        let (ns, uplink, impair, netns) = {
-            let inner = self.lab.lock().unwrap();
+        let op = self.lab.with_device(self.id, |d| Arc::clone(&d.op));
+        let _guard = op.lock().await;
+        let (ns, impair, gw_ip) = {
+            let inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
             let iface = dev
                 .iface(to)
                 .ok_or_else(|| anyhow!("interface '{}' not found", to))?;
-            (
-                dev.ns.clone(),
-                iface.uplink,
-                iface.impair,
-                Arc::clone(&inner.netns),
-            )
+            let gw_ip = inner.router_downlink_gw_for_switch(iface.uplink)?;
+            (dev.ns.clone(), iface.impair, gw_ip)
         };
-        let gw_ip = self
-            .lab
-            .lock()
-            .unwrap()
-            .router_downlink_gw_for_switch(uplink)?;
         let to_owned = to.to_string();
-        core::nl_run(&netns, &ns, move |nl: Netlink| async move {
+        core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.replace_default_route_v4(&to_owned, gw_ip).await
         })
         .await?;
-        apply_or_remove_impair(&netns, &ns, to, impair);
+        apply_or_remove_impair(&self.lab.netns, &ns, to, impair).await;
         self.lab
+            .core
             .lock()
             .unwrap()
             .set_device_default_via(self.id, to)?;
         Ok(())
     }
 
-
     /// Applies or removes a link-layer impairment on the named interface.
-    pub fn set_link_condition(&self, ifname: &str, impair: Option<LinkCondition>) -> Result<()> {
-        let mut inner = self.lab.lock().unwrap();
-        let (ns, resolved_ifname, netns) = {
+    pub async fn set_link_condition(
+        &self,
+        ifname: &str,
+        impair: Option<LinkCondition>,
+    ) -> Result<()> {
+        let op = self.lab.with_device(self.id, |d| Arc::clone(&d.op));
+        let _guard = op.lock().await;
+        let (ns, resolved_ifname) = {
+            let inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
@@ -278,17 +263,19 @@ impl Device {
             if dev.iface(&iname).is_none() {
                 bail!("interface '{}' not found", iname);
             }
-            (dev.ns.clone(), iname, Arc::clone(&inner.netns))
+            (dev.ns.clone(), iname)
         };
-        apply_or_remove_impair(&netns, &ns, &resolved_ifname, impair);
-        if let Some(dev) = inner.device_mut(self.id) {
-            if let Some(iface) = dev.iface_mut(&resolved_ifname) {
-                iface.impair = impair;
+        apply_or_remove_impair(&self.lab.netns, &ns, &resolved_ifname, impair).await;
+        {
+            let mut inner = self.lab.core.lock().unwrap();
+            if let Some(dev) = inner.device_mut(self.id) {
+                if let Some(iface) = dev.iface_mut(&resolved_ifname) {
+                    iface.impair = impair;
+                }
             }
         }
         Ok(())
     }
-
 
     // ── Spawn / run ────────────────────────────────────────────────────
 
@@ -302,12 +289,11 @@ impl Device {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let inner = self.lab.lock().unwrap();
-        let ns = &inner
-            .device(self.id)
-            .expect("device handle has valid id")
-            .ns;
-        let rt = inner.rt_handle_for(ns).expect("namespace has async worker");
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        let rt = self
+            .lab
+            .rt_handle_for(&ns)
+            .expect("namespace has async worker");
         let handle = self.clone();
         rt.spawn(f(handle))
     }
@@ -321,14 +307,8 @@ impl Device {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?;
-            (dev.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, f)
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        self.lab.netns.run_closure_in(&ns, f)
     }
 
     /// Spawns a dedicated OS thread in this device's network namespace.
@@ -337,14 +317,8 @@ impl Device {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?;
-            (dev.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.spawn_thread_in(&ns, f)
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        self.lab.netns.spawn_thread_in(&ns, f)
     }
 
     /// Spawns a raw command in this device's network namespace.
@@ -353,14 +327,8 @@ impl Device {
     /// `fork()` inherits the mount namespace, so child processes automatically see
     /// the DNS overlay without a separate `pre_exec` hook.
     pub fn spawn_command(&self, mut cmd: Command) -> Result<std::process::Child> {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?;
-            (dev.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        self.lab.netns.run_closure_in(&ns, move || {
             cmd.spawn().context("spawn command in namespace")
         })
     }
@@ -373,15 +341,9 @@ impl Device {
         &self,
         mut cmd: tokio::process::Command,
     ) -> Result<tokio::process::Child> {
-        let (ns, rt, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?;
-            let rt = inner.rt_handle_for(&dev.ns)?;
-            (dev.ns.clone(), rt, Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        let rt = self.lab.rt_handle_for(&ns)?;
+        self.lab.netns.run_closure_in(&ns, move || {
             let _guard = rt.enter();
             cmd.spawn().context("spawn async command in namespace")
         })
@@ -404,12 +366,8 @@ impl Device {
 
     /// Spawns a UDP reflector in this device's network namespace.
     pub fn spawn_reflector(&self, bind: SocketAddr) -> Result<()> {
-        let inner = self.lab.lock().unwrap();
-        let ns = &inner
-            .device(self.id)
-            .ok_or_else(|| anyhow!("unknown device id"))?
-            .ns;
-        inner.spawn_reflector_in(ns, bind)
+        let ns = self.lab.with_device(self.id, |d| d.ns.clone());
+        self.lab.spawn_reflector_in(&ns, bind)
     }
 
     /// Adds a hosts entry visible only to this device.
@@ -417,7 +375,7 @@ impl Device {
     /// Written to this device's hosts file overlay. glibc picks up changes
     /// on the next `getaddrinfo()` via mtime check.
     pub fn dns_entry(&self, name: &str, ip: std::net::IpAddr) -> Result<()> {
-        let mut inner = self.lab.lock().unwrap();
+        let mut inner = self.lab.core.lock().unwrap();
         inner
             .dns
             .per_device
@@ -430,7 +388,7 @@ impl Device {
     /// Resolves a name using this device's entries + lab-wide entries.
     /// For in-process Rust code that can't see the bind-mounted `/etc/hosts`.
     pub fn resolve(&self, name: &str) -> Option<std::net::IpAddr> {
-        let inner = self.lab.lock().unwrap();
+        let inner = self.lab.core.lock().unwrap();
         inner.dns.resolve(Some(self.id), name)
     }
 
@@ -444,8 +402,8 @@ impl Device {
         use crate::core::{self, IfaceBuild};
 
         // Phase 1: Lock → extract data + allocate from new router's pool → unlock
-        let (iface_build, netns, prefix, root_ns) = {
-            let mut inner = self.lab.lock().unwrap();
+        let (iface_build, prefix, root_ns) = {
+            let mut inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?
@@ -483,7 +441,6 @@ impl Device {
             };
             let prefix_len = sw.cidr.map(|c| c.prefix_len()).unwrap_or(24);
 
-            let netns = Arc::clone(&inner.netns);
             let prefix = inner.cfg.prefix.clone();
             let root_ns = inner.cfg.root_ns.clone();
 
@@ -502,16 +459,14 @@ impl Device {
                 is_default: ifname == dev.default_via,
                 idx: old_idx,
             };
-            (build, netns, prefix, root_ns)
+            (build, prefix, root_ns)
         };
 
         // Phase 2: Delete old veth pair.
-        // The veth ends were moved out of root NS during initial setup:
-        // the device end lives as `ifname` in dev_ns, the gateway end as
-        // `v{idx}` in the old router's NS.  Deleting one end destroys both.
         let dev_ns = iface_build.dev_ns.clone();
         let ifname_owned = ifname.to_string();
-        core::nl_run(&netns, &dev_ns, move |h: Netlink| async move {
+        let netns = &self.lab.netns;
+        core::nl_run(netns, &dev_ns, move |h: Netlink| async move {
             h.ensure_link_deleted(&ifname_owned).await.ok();
             Ok(())
         })
@@ -521,14 +476,14 @@ impl Device {
         let new_ip = iface_build.dev_ip;
         let new_ip_v6 = iface_build.dev_ip_v6;
         let new_uplink = {
-            let inner = self.lab.lock().unwrap();
+            let inner = self.lab.core.lock().unwrap();
             inner.router(to_router).unwrap().downlink.unwrap()
         };
-        core::wire_iface_async(&netns, &prefix, &root_ns, iface_build).await?;
+        core::wire_iface_async(netns, &prefix, &root_ns, iface_build).await?;
 
         // Phase 4: Lock → update internal records → unlock
         {
-            let mut inner = self.lab.lock().unwrap();
+            let mut inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device_mut(self.id)
                 .ok_or_else(|| anyhow!("device disappeared"))?;
@@ -550,8 +505,8 @@ impl Device {
         use crate::core;
 
         // Phase 1: Lock → allocate new IP, update records → unlock
-        let (ns, netns, old_ip, new_ip, prefix_len) = {
-            let mut inner = self.lab.lock().unwrap();
+        let (ns, old_ip, new_ip, prefix_len) = {
+            let mut inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
@@ -567,7 +522,6 @@ impl Device {
                 .ok_or_else(|| anyhow!("switch for interface '{}' missing", ifname))?;
             let prefix_len = sw.cidr.map(|c| c.prefix_len()).unwrap_or(24);
             let ns = dev.ns.clone();
-            let netns = Arc::clone(&inner.netns);
 
             let new_ip = inner.alloc_from_switch(sw_id)?;
             // Update internal record.
@@ -575,12 +529,12 @@ impl Device {
             let iface = dev.iface_mut(ifname).unwrap();
             iface.ip = Some(new_ip);
 
-            (ns, netns, old_ip, new_ip, prefix_len)
+            (ns, old_ip, new_ip, prefix_len)
         };
 
         // Phase 2: Async netlink — remove old addr, add new addr.
         let ifname = ifname.to_string();
-        core::nl_run(&netns, &ns, move |h: Netlink| async move {
+        core::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
             h.del_addr4(&ifname, old_ip, prefix_len).await?;
             h.add_addr4(&ifname, new_ip, prefix_len).await?;
             Ok(())
@@ -597,19 +551,19 @@ impl Device {
     pub async fn add_ip(&self, ifname: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<()> {
         use crate::core;
 
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
+        let ns = {
+            let inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
             let _ = dev
                 .iface(ifname)
                 .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
-            (dev.ns.clone(), Arc::clone(&inner.netns))
+            dev.ns.clone()
         };
 
         let ifname = ifname.to_string();
-        core::nl_run(&netns, &ns, move |h: Netlink| async move {
+        core::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
             h.add_addr4(&ifname, ip, prefix_len).await?;
             Ok(())
         })
@@ -617,15 +571,14 @@ impl Device {
 
         Ok(())
     }
-
 }
 
 /// Cloneable handle to a router in the lab topology.
 ///
-/// Same pattern as [`Device`]: holds `NodeId` + `Arc<Mutex<NetworkCore>>`.
+/// Same pattern as [`Device`]: holds `NodeId` + `Arc<LabInner>`.
 pub struct Router {
     id: NodeId,
-    lab: Arc<Mutex<NetworkCore>>,
+    lab: Arc<LabInner>,
 }
 
 impl Clone for Router {
@@ -644,7 +597,7 @@ impl std::fmt::Debug for Router {
 }
 
 impl Router {
-    pub(crate) fn new(id: NodeId, lab: Arc<Mutex<NetworkCore>>) -> Self {
+    pub(crate) fn new(id: NodeId, lab: Arc<LabInner>) -> Self {
         Self { id, lab }
     }
 
@@ -653,94 +606,73 @@ impl Router {
         self.id
     }
 
-    /// Returns the router name.
+    /// Returns the router name, or `""` if the router was removed.
     pub fn name(&self) -> String {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .router(self.id)
-            .map(|r| r.name.clone())
+        self.lab
+            .try_with_router(self.id, |r| r.name.clone())
             .unwrap_or_default()
     }
 
-    /// Returns the network namespace name for this router.
+    /// Returns the network namespace name for this router, or `""` if removed.
     pub fn ns(&self) -> String {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .router(self.id)
-            .map(|r| r.ns.clone())
+        self.lab
+            .try_with_router(self.id, |r| r.ns.clone())
             .unwrap_or_default()
     }
 
     /// Returns the region label, if set.
     pub fn region(&self) -> Option<String> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.region.clone())
+        self.lab.with_router(self.id, |r| r.region.clone())
     }
 
     /// Returns the NAT mode.
     pub fn nat_mode(&self) -> Nat {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).map(|r| r.cfg.nat).unwrap_or_default()
+        self.lab.with_router(self.id, |r| r.cfg.nat)
     }
 
     /// Returns the configured MTU, if set.
     pub fn mtu(&self) -> Option<u32> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.cfg.mtu)
+        self.lab.with_router(self.id, |r| r.cfg.mtu)
     }
 
     /// Returns the uplink (WAN-side) IP, if connected.
     pub fn uplink_ip(&self) -> Option<Ipv4Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.upstream_ip)
+        self.lab.with_router(self.id, |r| r.upstream_ip)
     }
 
     /// Returns the downstream subnet CIDR, if allocated.
     pub fn downstream_cidr(&self) -> Option<Ipv4Net> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.downstream_cidr)
+        self.lab.with_router(self.id, |r| r.downstream_cidr)
     }
 
     /// Returns the downstream gateway address, if allocated.
     pub fn downstream_gw(&self) -> Option<Ipv4Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.downstream_gw)
+        self.lab.with_router(self.id, |r| r.downstream_gw)
     }
 
     /// Returns which IP address families this router supports.
     pub fn ip_support(&self) -> IpSupport {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .router(self.id)
-            .map(|r| r.cfg.ip_support)
-            .unwrap_or_default()
+        self.lab.with_router(self.id, |r| r.cfg.ip_support)
     }
 
     /// Returns the uplink (WAN-side) IPv6 address, if connected.
     pub fn uplink_ip_v6(&self) -> Option<Ipv6Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.upstream_ip_v6)
+        self.lab.with_router(self.id, |r| r.upstream_ip_v6)
     }
 
     /// Returns the downstream IPv6 subnet CIDR, if allocated.
     pub fn downstream_cidr_v6(&self) -> Option<Ipv6Net> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.downstream_cidr_v6)
+        self.lab.with_router(self.id, |r| r.downstream_cidr_v6)
     }
 
     /// Returns the downstream IPv6 gateway address, if allocated.
     pub fn downstream_gw_v6(&self) -> Option<Ipv6Addr> {
-        let inner = self.lab.lock().unwrap();
-        inner.router(self.id).and_then(|r| r.downstream_gw_v6)
+        self.lab.with_router(self.id, |r| r.downstream_gw_v6)
     }
 
     /// Returns the IPv6 NAT mode.
     pub fn nat_v6_mode(&self) -> NatV6Mode {
-        let inner = self.lab.lock().unwrap();
-        inner
-            .router(self.id)
-            .map(|r| r.cfg.nat_v6)
-            .unwrap_or_default()
+        self.lab.with_router(self.id, |r| r.cfg.nat_v6)
     }
 
     // ── Dynamic operations ──────────────────────────────────────────────
@@ -748,24 +680,31 @@ impl Router {
     /// Replaces NAT rules on this router at runtime.
     ///
     /// Flushes the `ip nat` table then re-applies the new rules.
-    pub fn set_nat_mode(&self, mode: Nat) -> Result<()> {
-        let (ns, wan_if, wan_ip, netns, cfg) = {
-            let mut inner = self.lab.lock().unwrap();
+    pub async fn set_nat_mode(&self, mode: Nat) -> Result<()> {
+        let op = self.lab.with_router(self.id, |r| Arc::clone(&r.op));
+        let _guard = op.lock().await;
+        let (ns, wan_if, wan_ip, cfg) = {
+            let mut inner = self.lab.core.lock().unwrap();
             inner.set_router_nat_mode(self.id, mode)?;
             let cfg = inner.router_effective_cfg(self.id)?;
             let (ns, _lan_if, wan_if, wan_ip) = inner.router_nat_params(self.id)?;
-            (ns, wan_if, wan_ip, Arc::clone(&inner.netns), cfg)
+            (ns, wan_if, wan_ip, cfg)
         };
-        run_nft_in(&netns, &ns, "flush table ip nat").ok();
-        run_nft_in(&netns, &ns, "flush table ip filter").ok();
-        apply_nat_for_router(&netns, &ns, &cfg, &wan_if, wan_ip)
+        run_nft_in(&self.lab.netns, &ns, "flush table ip nat")
+            .await
+            .ok();
+        run_nft_in(&self.lab.netns, &ns, "flush table ip filter")
+            .await
+            .ok();
+        apply_nat_for_router(&self.lab.netns, &ns, &cfg, &wan_if, wan_ip).await
     }
 
-
     /// Replaces IPv6 NAT rules on this router at runtime.
-    pub fn set_nat_v6_mode(&self, mode: NatV6Mode) -> Result<()> {
-        let (ns, wan_if, lan_prefix, wan_prefix, netns) = {
-            let inner = self.lab.lock().unwrap();
+    pub async fn set_nat_v6_mode(&self, mode: NatV6Mode) -> Result<()> {
+        let op = self.lab.with_router(self.id, |r| Arc::clone(&r.op));
+        let _guard = op.lock().await;
+        let (ns, wan_if, lan_prefix, wan_prefix) = {
+            let inner = self.lab.core.lock().unwrap();
             let router = inner
                 .router(self.id)
                 .ok_or_else(|| anyhow!("unknown router id"))?;
@@ -787,18 +726,14 @@ impl Router {
                 };
                 Ipv6Net::new(up_ip, up_prefix).unwrap_or_else(|_| Ipv6Net::new(up_ip, 128).unwrap())
             };
-            (
-                router.ns.clone(),
-                wan_if,
-                lan_prefix,
-                wan_prefix,
-                Arc::clone(&inner.netns),
-            )
+            (router.ns.clone(), wan_if, lan_prefix, wan_prefix)
         };
-        run_nft_in(&netns, &ns, "flush table ip6 nat").ok();
-        apply_nat_v6(&netns, &ns, mode, &wan_if, lan_prefix, wan_prefix)?;
+        run_nft_in(&self.lab.netns, &ns, "flush table ip6 nat")
+            .await
+            .ok();
+        apply_nat_v6(&self.lab.netns, &ns, mode, &wan_if, lan_prefix, wan_prefix).await?;
         {
-            let mut inner = self.lab.lock().unwrap();
+            let mut inner = self.lab.core.lock().unwrap();
             let router = inner
                 .router_mut(self.id)
                 .ok_or_else(|| anyhow!("unknown router id"))?;
@@ -810,21 +745,27 @@ impl Router {
     /// Flushes the conntrack table, forcing all active NAT mappings to expire.
     ///
     /// Subsequent flows get new external port assignments. Requires `conntrack-tools`.
-    pub fn flush_nat_state(&self) -> Result<()> {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let ns = inner.router_ns(self.id)?.to_string();
-            (ns, Arc::clone(&inner.netns))
+    pub async fn flush_nat_state(&self) -> Result<()> {
+        let op = self.lab.with_router(self.id, |r| Arc::clone(&r.op));
+        let _guard = op.lock().await;
+        let ns = {
+            let inner = self.lab.core.lock().unwrap();
+            inner.router_ns(self.id)?.to_string()
         };
-        netns.run_closure_in(&ns, || {
-            let st = std::process::Command::new("conntrack").arg("-F").status()?;
+        let rt = self.lab.netns.rt_handle_for(&ns)?;
+        rt.spawn(async move {
+            let st = tokio::process::Command::new("conntrack")
+                .arg("-F")
+                .status()
+                .await?;
             if !st.success() {
                 bail!("conntrack -F failed: {st}");
             }
             Ok(())
         })
+        .await
+        .context("conntrack flush task panicked")?
     }
-
 
     // ── Spawn / run ────────────────────────────────────────────────────
 
@@ -837,12 +778,11 @@ impl Router {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let inner = self.lab.lock().unwrap();
-        let ns = &inner
-            .router(self.id)
-            .expect("router handle has valid id")
-            .ns;
-        let rt = inner.rt_handle_for(ns).expect("namespace has async worker");
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        let rt = self
+            .lab
+            .rt_handle_for(&ns)
+            .expect("namespace has async worker");
         let handle = self.clone();
         rt.spawn(f(handle))
     }
@@ -854,14 +794,8 @@ impl Router {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let router = inner
-                .router(self.id)
-                .ok_or_else(|| anyhow!("unknown router id"))?;
-            (router.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, f)
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        self.lab.netns.run_closure_in(&ns, f)
     }
 
     /// Spawns a dedicated OS thread in this router's network namespace.
@@ -870,26 +804,14 @@ impl Router {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let router = inner
-                .router(self.id)
-                .ok_or_else(|| anyhow!("unknown router id"))?;
-            (router.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.spawn_thread_in(&ns, f)
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        self.lab.netns.spawn_thread_in(&ns, f)
     }
 
     /// Spawns a raw command in this router's network namespace.
     pub fn spawn_command(&self, mut cmd: Command) -> Result<std::process::Child> {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let router = inner
-                .router(self.id)
-                .ok_or_else(|| anyhow!("unknown router id"))?;
-            (router.ns.clone(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        self.lab.netns.run_closure_in(&ns, move || {
             cmd.spawn().context("spawn command in namespace")
         })
     }
@@ -899,15 +821,9 @@ impl Router {
         &self,
         mut cmd: tokio::process::Command,
     ) -> Result<tokio::process::Child> {
-        let (ns, rt, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let router = inner
-                .router(self.id)
-                .ok_or_else(|| anyhow!("unknown router id"))?;
-            let rt = inner.rt_handle_for(&router.ns)?;
-            (router.ns.clone(), rt, Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        let rt = self.lab.rt_handle_for(&ns)?;
+        self.lab.netns.run_closure_in(&ns, move || {
             let _guard = rt.enter();
             cmd.spawn().context("spawn async command in namespace")
         })
@@ -915,45 +831,38 @@ impl Router {
 
     /// Applies or removes impairment on this router's downlink bridge, affecting
     /// download-direction traffic to all downstream devices.
-    pub fn set_downlink_condition(&self, impair: Option<LinkCondition>) -> Result<()> {
+    pub async fn set_downlink_condition(&self, impair: Option<LinkCondition>) -> Result<()> {
+        let op = self.lab.with_router(self.id, |r| Arc::clone(&r.op));
+        let _guard = op.lock().await;
         debug!(router = ?self.id, impair = ?impair, "router: set_downlink_condition");
-        let (ns, bridge, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let r = inner.router(self.id).context("unknown router id")?;
-            (
-                r.ns.clone(),
-                r.downlink_bridge.clone(),
-                Arc::clone(&inner.netns),
-            )
-        };
-        apply_or_remove_impair(&netns, &ns, &bridge, impair);
+        let (ns, bridge) = self
+            .lab
+            .with_router(self.id, |r| (r.ns.clone(), r.downlink_bridge.clone()));
+        apply_or_remove_impair(&self.lab.netns, &ns, &bridge, impair).await;
         Ok(())
     }
-
 
     /// Sets (or removes) the firewall on this router at runtime.
     ///
     /// Pass [`Firewall::None`] to remove all firewall rules.
-    pub fn set_firewall(&self, fw: Firewall) -> Result<()> {
-        let (ns, netns) = {
-            let mut inner = self.lab.lock().unwrap();
+    pub async fn set_firewall(&self, fw: Firewall) -> Result<()> {
+        let op = self.lab.with_router(self.id, |r| Arc::clone(&r.op));
+        let _guard = op.lock().await;
+        let ns = {
+            let mut inner = self.lab.core.lock().unwrap();
             let r = inner.router_mut(self.id).context("unknown router id")?;
             r.cfg.firewall = fw.clone();
-            (r.ns.clone(), Arc::clone(&inner.netns))
+            r.ns.clone()
         };
         // Always remove existing rules first, then apply new ones.
-        core::remove_firewall(&netns, &ns)?;
-        core::apply_firewall(&netns, &ns, &fw)
+        core::remove_firewall(&self.lab.netns, &ns).await?;
+        core::apply_firewall(&self.lab.netns, &ns, &fw).await
     }
 
     /// Spawns a UDP reflector in this router's network namespace.
     pub fn spawn_reflector(&self, bind: SocketAddr) -> Result<()> {
-        let inner = self.lab.lock().unwrap();
-        let ns = &inner
-            .router(self.id)
-            .ok_or_else(|| anyhow!("unknown router id"))?
-            .ns;
-        inner.spawn_reflector_in(ns, bind)
+        let ns = self.lab.with_router(self.id, |r| r.ns.clone());
+        self.lab.spawn_reflector_in(&ns, bind)
     }
 }
 
@@ -967,7 +876,7 @@ impl Router {
 /// Same pattern as [`Device`] and [`Router`]: holds an `Arc` to the lab
 /// interior. All accessor methods briefly lock the mutex.
 pub struct Ix {
-    lab: Arc<Mutex<NetworkCore>>,
+    lab: Arc<LabInner>,
 }
 
 impl Clone for Ix {
@@ -985,23 +894,23 @@ impl std::fmt::Debug for Ix {
 }
 
 impl Ix {
-    pub(crate) fn new(lab: Arc<Mutex<NetworkCore>>) -> Self {
+    pub(crate) fn new(lab: Arc<LabInner>) -> Self {
         Self { lab }
     }
 
     /// Returns the root namespace name.
     pub fn ns(&self) -> String {
-        self.lab.lock().unwrap().root_ns().to_string()
+        self.lab.core.lock().unwrap().root_ns().to_string()
     }
 
     /// Returns the IX gateway IPv4 address (e.g. 203.0.113.1).
     pub fn gw(&self) -> Ipv4Addr {
-        self.lab.lock().unwrap().ix_gw()
+        self.lab.core.lock().unwrap().ix_gw()
     }
 
     /// Returns the IX gateway IPv6 address (e.g. 2001:db8::1).
     pub fn gw_v6(&self) -> Ipv6Addr {
-        self.lab.lock().unwrap().cfg.ix_gw_v6
+        self.lab.core.lock().unwrap().cfg.ix_gw_v6
     }
 
     /// Spawns an async task in the IX root namespace.
@@ -1011,10 +920,10 @@ impl Ix {
         Fut: std::future::Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let inner = self.lab.lock().unwrap();
-        let ns = inner.root_ns();
-        let rt = inner
-            .rt_handle_for(ns)
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        let rt = self
+            .lab
+            .rt_handle_for(&ns)
             .expect("root namespace has async worker");
         let handle = self.clone();
         rt.spawn(f(handle))
@@ -1027,11 +936,8 @@ impl Ix {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            (inner.root_ns().to_string(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, f)
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.run_closure_in(&ns, f)
     }
 
     /// Spawns a dedicated OS thread in the IX root namespace.
@@ -1040,20 +946,14 @@ impl Ix {
         F: FnOnce() -> Result<R> + Send + 'static,
         R: Send + 'static,
     {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            (inner.root_ns().to_string(), Arc::clone(&inner.netns))
-        };
-        netns.spawn_thread_in(&ns, f)
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.spawn_thread_in(&ns, f)
     }
 
     /// Spawns a raw command in the IX root namespace.
     pub fn spawn_command(&self, mut cmd: Command) -> Result<std::process::Child> {
-        let (ns, netns) = {
-            let inner = self.lab.lock().unwrap();
-            (inner.root_ns().to_string(), Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.run_closure_in(&ns, move || {
             cmd.spawn().context("spawn command in namespace")
         })
     }
@@ -1063,13 +963,9 @@ impl Ix {
         &self,
         mut cmd: tokio::process::Command,
     ) -> Result<tokio::process::Child> {
-        let (ns, rt, netns) = {
-            let inner = self.lab.lock().unwrap();
-            let ns = inner.root_ns().to_string();
-            let rt = inner.rt_handle_for(&ns)?;
-            (ns, rt, Arc::clone(&inner.netns))
-        };
-        netns.run_closure_in(&ns, move || {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        let rt = self.lab.rt_handle_for(&ns)?;
+        self.lab.netns.run_closure_in(&ns, move || {
             let _guard = rt.enter();
             cmd.spawn().context("spawn async command in namespace")
         })
@@ -1077,16 +973,14 @@ impl Ix {
 
     /// Spawns a UDP reflector in the IX root namespace.
     pub fn spawn_reflector(&self, bind: SocketAddr) -> Result<()> {
-        let inner = self.lab.lock().unwrap();
-        let ns = inner.root_ns();
-        inner.spawn_reflector_in(ns, bind)
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.spawn_reflector_in(&ns, bind)
     }
 }
 
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-
 
 /// Normalise a device/interface name for use in an environment variable name.
 pub(crate) fn normalize_env_name(s: &str) -> String {

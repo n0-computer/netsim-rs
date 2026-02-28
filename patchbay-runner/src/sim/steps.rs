@@ -374,7 +374,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 Some(n) => n.to_string(),
                 None => dev.default_iface().name().to_string(),
             };
-            dev.set_link_condition(&ifname, condition)?;
+            dev.set_link_condition(&ifname, condition).await?;
         }
 
         // ── switch-route / set-default-route ──────────────────────────────

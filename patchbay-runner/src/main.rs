@@ -335,7 +335,10 @@ fn load_patchbay_config(config_path: &std::path::Path) -> Result<PatchbayProject
     Ok(cfg)
 }
 
-fn run_spec_from_config(cfg: &PatchbayProjectConfig, sim_root: &std::path::Path) -> Result<RunSpec> {
+fn run_spec_from_config(
+    cfg: &PatchbayProjectConfig,
+    sim_root: &std::path::Path,
+) -> Result<RunSpec> {
     let sims = expand_sim_glob(sim_root, &cfg.simulations)?;
     if sims.is_empty() {
         bail!(

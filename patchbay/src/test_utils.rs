@@ -103,7 +103,11 @@ pub fn udp_rtt(reflector: SocketAddr) -> Result<Duration> {
 /// Use inside `handle.spawn(|_| async move { udp_rtt_async(r).await })`.
 pub async fn udp_rtt_async(reflector: SocketAddr) -> Result<Duration> {
     let bind = SocketAddr::new(
-        if reflector.is_ipv4() { IpAddr::V4(Ipv4Addr::UNSPECIFIED) } else { IpAddr::V6(Ipv6Addr::UNSPECIFIED) },
+        if reflector.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        },
         0,
     );
     let sock = tokio::net::UdpSocket::bind(bind).await?;
@@ -129,7 +133,9 @@ pub async fn udp_send_recv_count(
     payload: usize,
     wait: Duration,
 ) -> Result<(usize, usize)> {
-    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.context("udp bind")?;
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        .await
+        .context("udp bind")?;
     let buf = vec![0u8; payload];
     let mut recv_buf = vec![0u8; payload + 64];
 

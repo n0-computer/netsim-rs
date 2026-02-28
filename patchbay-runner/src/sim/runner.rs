@@ -1637,7 +1637,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("patchbay-{prefix}-{ts}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("patchbay-{prefix}-{ts}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use patchbay::{LinkCondition, Lab, Nat};
+use patchbay::{Lab, LinkCondition, Nat};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn main() -> Result<()> {
