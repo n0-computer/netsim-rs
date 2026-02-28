@@ -1,10 +1,8 @@
 # Plans
 
-## In Progress
-
 ## Open
 
-- [real-world-conditions.md](real-world-conditions.md) — priority 5 — NAT presets, region routing, impairment, firewall, API naming, MTU, node removal
+- [real-world-conditions.md](real-world-conditions.md) — priority 5 — firewall presets (phases 1–5 done, phase 6 outstanding)
 - [virtual-time.md](virtual-time.md) — priority 2 — stub; conntrack timeout override + Shadow-style research
 - [testing.md](testing.md) — priority 2
 
@@ -17,6 +15,7 @@
 
 ## Completed
 
+- [region-routing.md](region-routing.md) — priority 5 — per-region router namespaces, 198.18.0.0/15 address space, inter-region veths, break/restore
 - [no-globals-better-spawn.md](no-globals-better-spawn.md) — priority 5 — globals removed, RT handle cloning, Ix handle, namespace-free helpers
 - [ipv6.md](ipv6.md) — priority 5 — dual-stack + v6-only support, DAD consolidation, all 69 tests pass
 - [new-api.md](new-api.md) — priority 5 — Arc\<Mutex\<LabInner\>\>, Device/Router handles, instant construction

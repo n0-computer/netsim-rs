@@ -218,160 +218,8 @@ table ip nat {
 
 ## Part 2: Region Routing
 
-### Current state
-
-Regions are latency labels applied via tc netem on egress. Every namespace can
-reach every other with zero latency by default. `set_region_latency` is one-way
-and manual. No concept of regional links or transit.
-
-### New model: Region objects with links
-
-Regions become first-class objects with explicit links between them. Traffic
-between regions traverses real per-region transit router namespaces with
-configurable latency, jitter, loss, and bandwidth on each link. If a link goes
-down, traffic must route through alternate paths (if any exist).
-
-```rust
-// Define regions
-let us = lab.add_region("us");
-let eu = lab.add_region("eu");
-let asia = lab.add_region("asia");
-
-// Define inter-region links with presets
-lab.link_regions(&us, &eu, RegionLink::good(45));   // 45ms one-way, clean
-lab.link_regions(&us, &asia, RegionLink::good(80));  // 80ms one-way, clean
-lab.link_regions(&eu, &asia, RegionLink::bad(140));   // 140ms, some jitter+loss
-
-// Or fully custom
-lab.link_regions(&us, &eu, RegionLink {
-    latency_ms: 45,
-    jitter_ms: 5,
-    loss_pct: 0.0,
-    rate_mbit: 0,     // 0 = unlimited
-});
-
-// Attach routers to regions
-let dc_us = lab.add_router("dc-us").region(&us).build().await?;
-let home_eu = lab.add_router("home-eu").region(&eu).nat(Nat::Home).build().await?;
-let isp_asia = lab.add_router("isp-asia").region(&asia).nat(Nat::Cgnat).build().await?;
-```
-
-#### RegionLink presets
-
-```rust
-pub struct RegionLink {
-    pub latency_ms: u32,
-    pub jitter_ms: u32,
-    pub loss_pct: f32,
-    pub rate_mbit: u32,  // 0 = unlimited
-}
-
-impl RegionLink {
-    /// Clean link with given one-way latency. No jitter, no loss, unlimited.
-    pub fn good(latency_ms: u32) -> Self {
-        Self { latency_ms, jitter_ms: 0, loss_pct: 0.0, rate_mbit: 0 }
-    }
-
-    /// Degraded link. Adds 10% jitter and 0.1% loss relative to latency.
-    pub fn bad(latency_ms: u32) -> Self {
-        Self {
-            latency_ms,
-            jitter_ms: latency_ms / 10,
-            loss_pct: 0.1,
-            rate_mbit: 0,
-        }
-    }
-}
-```
-
-#### Quick preset: common region topologies
-
-```rust
-// Preset with real-world latencies between US/EU/Asia
-let regions = lab.add_default_regions();  // returns { us, eu, asia }
-// Pre-configured links:
-//   us <> eu:   45ms one-way (transatlantic fiber, ~90ms RTT)
-//   us <> asia: 80ms one-way (transpacific fiber, ~160ms RTT)
-//   eu <> asia: 140ms one-way (overland/subsea, ~280ms RTT)
-
-let dc = lab.add_router("dc").region(&regions.us).build().await?;
-let home = lab.add_router("home").region(&regions.eu).nat(Nat::Home).build().await?;
-```
-
-#### Implementation plan
-
-**Architecture**: Each region gets a transit router namespace connected to the
-IX bridge. Inter-region links are veth pairs between transit namespaces with
-tc netem impairment. Routers in a region route through their region's transit.
-
-**Step-by-step**:
-
-1. **`add_region("name")` creates a Region handle** and allocates a transit
-   namespace (like a regular router namespace). The transit gets an IX IP and
-   connects to the IX bridge. No routing setup yet.
-
-2. **`link_regions(&a, &b, link)` creates a veth pair** between transit-a and
-   transit-b namespaces. Applies tc netem (latency, jitter, loss, rate) on both
-   ends of the veth. Adds routes in each transit for the other region's CIDRs
-   via the veth peer.
-
-3. **`RouterBuilder::region(&r)` tags the router** with a region. During
-   `build()`, the router's IX interface connects to the IX bridge as usual.
-   The key change: instead of a direct default route to the IX gateway, the
-   router gets a default route via its region's transit namespace.
-
-   Implementation: the router's "ix" veth connects not to the IX bridge
-   directly but to a per-region bridge inside the transit namespace. The
-   transit namespace then has the IX bridge connection and inter-region veths.
-
-4. **Per-region CIDR tracking**: When a router is assigned to a region, its
-   downstream CIDRs are registered with that region. Transit routers
-   automatically get routes for all remote-region CIDRs pointing to the
-   appropriate inter-transit veths.
-
-5. **Link failure**: `lab.break_region_link(&us, &asia)` brings down the veth
-   pair between those transits. If `eu <> asia` and `us <> eu` still exist,
-   traffic from US to Asia can route through EU (higher latency:
-   45 + 140 = 185ms instead of 80ms). This requires transit routers to have
-   routes to all other regions' CIDRs.
-
-**Routing approach**:
-
-The simplest correct approach: each transit namespace has explicit routes to
-every other region's CIDRs. For N regions this is O(N^2) routes total, which
-is fine for the expected scale (3-10 regions).
-
-- Transit-US routes: `[eu_cidrs] via transit-eu veth`, `[asia_cidrs] via transit-asia veth`
-- Transit-EU routes: `[us_cidrs] via transit-us veth`, `[asia_cidrs] via transit-asia veth`
-
-For link failure fallback routing, when a direct link is broken, routes to that
-region's CIDRs are updated to point through an intermediate transit. This is a
-simple `ip route replace` operation.
-
-**Symmetric routing**: Traffic from US to EU goes through transit-us -> transit-eu.
-Return traffic goes transit-eu -> transit-us. Both directions have netem applied
-on the respective veth ends, so latency is symmetric by default.
-
-**Complexity assessment**: Medium. The transit namespace creation reuses existing
-router namespace code. The main new work is:
-- Per-region bridge management inside transit namespaces
-- Route table maintenance when regions/links change
-- Fallback route computation on link failure (simple for small N)
-
-No source-based routing or policy routing needed. Standard destination-based
-routing works because each region's routers connect through their region's
-transit, not directly to the IX bridge.
-
-#### Region link reference values
-
-| Route | One-way (ms) | Source |
-|-------|-------------|--------|
-| US East <> US West | 28 | Azure/AWS measurements |
-| US East <> EU West | 45 | Transatlantic fiber (~90ms RTT measured) |
-| US West <> Asia Pacific | 80 | Transpacific fiber (~160ms RTT) |
-| EU West <> Asia Pacific | 140 | Overland + subsea (~280ms RTT) |
-| US East <> South America | 57 | US-Brazil fiber (~114ms RTT) |
-| Intra-region (same metro) | 1 | Datacenter measurements |
+Moved to [region-routing.md](region-routing.md) — per-region router namespaces with
+198.18.0.0/15 address space, inter-region veths with tc netem, break/restore routing.
 
 ---
 
@@ -657,32 +505,34 @@ multiple addresses per interface natively.
 
 ### Phase 2: Enhanced impairment (high value)
 
-- [ ] Add `jitter_ms`, `reorder_pct`, `duplicate_pct`, `corrupt_pct` to `ImpairLimits`
-- [ ] Add `Lan`, `WifiBad`, `Mobile4G`, `Mobile3G`, `Satellite`, `SatelliteGeo` presets
-- [ ] Update `Wifi` / `Mobile` presets (breaking - old `Mobile` removed)
-- [ ] Add `Manual(ImpairLimits)` with `Default` on `ImpairLimits`
-- [ ] Add `downlink_condition` to router builder
+- [x] Add `jitter_ms`, `reorder_pct`, `duplicate_pct`, `corrupt_pct` to `ImpairLimits`
+- [x] Add `Lan`, `WifiBad`, `Mobile4G`, `Mobile3G`, `Satellite`, `SatelliteGeo` presets
+- [x] Update `Wifi` / `Mobile` presets (breaking - old `Mobile` removed)
+- [x] Add `Manual(ImpairLimits)` with `Default` on `ImpairLimits`
+- [x] Add `downlink_condition` to router builder
 
 ### Phase 3: MTU + node removal + IP management (medium value)
 
-- [ ] Add `.mtu()` to router/device builders
-- [ ] Add `.block_icmp_frag_needed()` to router builder
-- [ ] Implement `lab.remove_device()` / `lab.remove_router()`
-- [ ] Add `dev.renew_ip()` for DHCP renewal simulation
-- [ ] Add `dev.add_ip()` for secondary addresses
+- [x] Add `.mtu()` to router/device builders
+- [x] Add `.block_icmp_frag_needed()` to router builder
+- [x] Implement `lab.remove_device()` / `lab.remove_router()`
+- [x] Add `dev.renew_ip()` for DHCP renewal simulation
+- [x] Add `dev.add_ip()` for secondary addresses
 
 ### Phase 4: Hairpinning (medium value)
 
-- [ ] Implement hairpin for EIM+APDF (Home) via LAN-side masquerade rule
-- [ ] Add `.hairpin(bool)` to custom NAT builder
-- [ ] Test: two devices behind same router reaching each other via external IP
+- [x] Implement hairpin for EIM+APDF (Home) via LAN-side masquerade rule
+- [x] Add `.hairpin(bool)` to custom NAT builder
+- [x] Test: two devices behind same router reaching each other via external IP
 
 ### Phase 5: Region routing (medium value, higher risk)
 
-- [ ] Implement region objects with links (`add_region`, `link_regions`)
-- [ ] Add `add_default_regions()` preset
-- [ ] Remove old `set_region_latency` API
-- [ ] Add `break_region_link` / `restore_region_link`
+See [region-routing.md](region-routing.md) for full plan with address space, routing tables, and implementation steps.
+
+- [x] Implement region objects with links (`add_region`, `link_regions`)
+- [x] Add `add_default_regions()` preset
+- [x] Remove old `set_region_latency` API
+- [x] Add `break_region_link` / `restore_region_link`
 
 ### Phase 6: Firewall presets (low priority)
 
