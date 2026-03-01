@@ -11,7 +11,7 @@ use tracing::trace;
 
 /// Wraps an rtnetlink `Handle` for namespace-scoped network operations.
 ///
-/// `Clone` is cheap — `Handle` is an `Arc`-based channel sender.
+/// `Clone` is cheap; `Handle` is an `Arc`-based channel sender.
 #[derive(Clone)]
 pub(crate) struct Netlink {
     handle: Handle,

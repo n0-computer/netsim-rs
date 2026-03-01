@@ -161,7 +161,7 @@ let nat = lab.add_router("nat")
 
 // Wait for timeout, verify mapping expired
 tokio::time::sleep(Duration::from_secs(6)).await;
-router.flush_nat_state();
+router.flush_nat_state().await?;
 // Assert: reflexive address changed (new mapping)
 ```
 
@@ -185,7 +185,7 @@ let device = lab.add_device("phone")
 device.link_down("eth0").await?;
 tokio::time::sleep(Duration::from_millis(500)).await;
 device.replug_iface("eth0", cell_router.id()).await?;
-device.set_link_condition("eth0", Some(LinkCondition::Mobile4G))?;
+device.set_link_condition("eth0", Some(LinkCondition::Mobile4G)).await?;
 device.link_up("eth0").await?;
 
 // Assert: application reconnects within X seconds
@@ -223,14 +223,14 @@ calls, each direction is limited by the sender's upload.
 // 20 Mbps down, 2 Mbps up (10:1 ratio)
 let router = lab.add_router("isp")
     .nat(Nat::Home)
-    .downlink_condition(LinkCondition::Manual(ImpairLimits {
+    .downlink_condition(LinkCondition::Manual(LinkLimits {
         rate_kbit: 20_000,
         ..Default::default()
     }))
     .build().await?;
 
 let device = lab.add_device("client").uplink(router.id()).build().await?;
-device.set_link_condition("eth0", Some(LinkCondition::Manual(ImpairLimits {
+device.set_link_condition("eth0", Some(LinkCondition::Manual(LinkLimits {
     rate_kbit: 2_000,
     ..Default::default()
 })))?;
@@ -310,11 +310,11 @@ Network conditions worsen over time (moving away from WiFi AP, entering tunnel
 on cellular, weather affecting satellite).
 
 ```rust
-device.set_link_condition("eth0", Some(LinkCondition::Wifi))?;
+device.set_link_condition("eth0", Some(LinkCondition::Wifi)).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", Some(LinkCondition::WifiBad))?;
+device.set_link_condition("eth0", Some(LinkCondition::WifiBad)).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", None)?;  // remove impairment
+device.set_link_condition("eth0", None).await?;  // remove impairment
 ```
 
 ### Intermittent connectivity

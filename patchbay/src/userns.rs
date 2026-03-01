@@ -31,7 +31,7 @@ pub fn init_userns() -> anyhow::Result<()> {
 ///
 /// Must only be called from a single-threaded ELF init context (e.g. a
 /// `#[ctor::ctor]` function) before the Rust standard library has been
-/// initialised.  After that point use [`init_userns`] instead.
+/// initialized.  After that point use [`init_userns`] instead.
 pub unsafe fn init_userns_for_ctor() {
     #[cfg(target_os = "linux")]
     userns_bootstrap_libc();

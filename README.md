@@ -8,25 +8,21 @@ scheduling. Each node gets its own namespace with a private network stack,
 so processes running inside see what they would see on a separate machine.
 The whole thing runs unprivileged and cleans up when the `Lab` is dropped.
 
-Each router and device runs in its own Linux network namespace with private
-interfaces, routes, and firewall rules. The library handles veth wiring,
-address allocation, NAT configuration, and cleanup automatically.
-
 ## Quick example
 
 See the [`simple.rs`](patchbay-runner/examples/simple.rs) example for the runnable version.
 
 ```rust
-// We need to enter a user namespace before any threads are spawned.
+// Enter a user namespace before any threads are spawned.
 patchbay::init_userns().expect("failed to enter user namespace");
 
-// Create a lab (async — sets up the root namespace and IX bridge).
+// Create a lab (async - sets up the root namespace and IX bridge).
 let lab = Lab::new().await;
 
-// A "datacenter" router: downstream devices get "public" IPs.
+// A "datacenter" router: downstream devices get public IPs.
 let dc = lab.add_router("dc").region("eu").build().await?;
 
-// A "home" router with a NAT: downstream devices get private IPs.
+// A "home" router with NAT: downstream devices get private IPs.
 let home = lab
     .add_router("home")
     .nat(Nat::Home)
@@ -54,22 +50,22 @@ let mut child = dev.spawn_command({
     cmd
 })?;
 
-// Run async tasks inside a device's network namespace.
-// Runs on a tokio runtime, so you can use all tokio networking primitives
-// and everything that builds on top of it.
+// Run an async task inside a device's network namespace.
+// This runs on a per-namespace tokio runtime, so you can use all
+// tokio networking primitives and everything built on top of them.
 let client_task = dev.spawn(async move |_| {
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
     println!("local addr: {}", stream.local_addr()?);
     stream.write_all(b"hello server").await?;
     anyhow::Ok(())
-});
+})?;
 ```
 
 
 ## Requirements
 
-- Linux (bare-metal, VM, or CI container)
-- `tc` and `nft` in PATH (for link conditions and NAT rules)
+- Linux (bare-metal, VM, or CI container).
+- `tc` and `nft` in PATH (for link conditions and NAT rules).
 - Unprivileged user namespaces enabled (default on most distros):
 
   ```bash
@@ -105,16 +101,17 @@ all top-level routers. Veth pairs connect namespaces across the topology.
 **Worker threads.** Each namespace has a lazy async worker (single-threaded
 tokio runtime) and a lazy sync worker. `device.spawn(...)` runs async tasks
 on the namespace's tokio runtime; `device.run_sync(...)` dispatches closures
-to the sync worker. This means callers never need to worry about `setns` —
-the workers handle namespace entry.
+to the sync worker. Callers never need to worry about `setns`; the workers
+handle namespace entry.
 
-**NAT.** Routers support four IPv4 NAT modes (`None`, `Cgnat`,
-`Home`, `Symmetric`) and three IPv6 modes
-(`None`, `Nptv6`, `Masquerade`), configured via nftables rules.
+**NAT.** Routers support five IPv4 NAT presets (`None`, `Home`, `Corporate`,
+`CloudNat`, `FullCone`, `Cgnat`) and three IPv6 modes (`None`, `Nptv6`,
+`Masquerade`), all configured via nftables rules. You can also build custom
+NAT configs from mapping + filtering + timeout parameters.
 
 **Link conditions.** `tc netem` and `tc tbf` provide packet loss, latency,
-and rate limiting. Apply presets (`LinkCondition::Wifi`, `LinkCondition::Mobile4G`) or
-custom values at build time or dynamically.
+jitter, and rate limiting. Apply presets (`LinkCondition::Wifi`,
+`LinkCondition::Mobile4G`) or custom values at build time or dynamically.
 
 **Cleanup.** Namespace file descriptors are held in-process. When the `Lab`
 is dropped, workers are shut down and namespaces disappear automatically.
@@ -152,34 +149,34 @@ lab.set_region_latency("eu", "us", 80);
 ### Running code in namespaces
 
 ```rust
-// Async task on the device's tokio runtime (closure receives a Device handle)
-dev.spawn(|_dev| async {
+// Async task on the device's tokio runtime
+let jh = dev.spawn(|_dev| async {
     let stream = tokio::net::TcpStream::connect("203.0.113.10:80").await?;
     Ok::<_, anyhow::Error>(())
-});
+})?;
 
 // Blocking closure on the sync worker
 let sock = dev.run_sync(|| {
     Ok(std::net::UdpSocket::bind("0.0.0.0:0")?)
 })?;
 
-// Spawn an OS command (sync)
+// Spawn an OS command (sync - returns std::process::Child)
 let child = dev.spawn_command({
     let mut cmd = std::process::Command::new("curl");
     cmd.arg("http://203.0.113.10");
     cmd
 })?;
 
-// Spawn an OS command (async — returns tokio::process::Child)
+// Spawn an OS command (async - returns tokio::process::Child)
 let child = dev.spawn_command_async({
     let mut cmd = tokio::process::Command::new("curl");
     cmd.arg("http://203.0.113.10");
     cmd
 })?;
 
-// Dedicated OS thread
+// Dedicated OS thread in the namespace
 let handle = dev.spawn_thread(|| {
-    // long-running work in the namespace
+    // long-running work
     Ok(())
 })?;
 ```
@@ -198,26 +195,29 @@ dev.link_down("wlan0").await?;
 dev.link_up("wlan0").await?;
 
 // Change link condition dynamically
-dev.set_link_condition("wlan0", Some(LinkCondition::Manual {
-    rate: 1000,      // kbit/s
-    loss: 5.0,       // percent
-    latency: 100,    // ms one-way
-}))?;
+dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
+    rate_kbit: 1000,
+    loss_pct: 5.0,
+    latency_ms: 100,
+    ..Default::default()
+}))).await?;
 
 // Change NAT mode at runtime
-router.set_nat_mode(Nat::Symmetric)?;
-router.flush_nat_state()?;  // flush conntrack
+router.set_nat_mode(Nat::Corporate).await?;
+router.flush_nat_state().await?;
 ```
 
 ### Handles
 
-`Device`, `Router`, and `Ix` are lightweight cloneable handles. All three
+`Device`, `Router`, and `Ix` are lightweight, cloneable handles. All three
 provide `spawn`, `run_sync`, `spawn_thread`, `spawn_command`,
-`spawn_command_async`, and `spawn_reflector` for running code in their namespace.
+`spawn_command_async`, and `spawn_reflector` for running code in their
+namespace. Handle methods return `Result` or `Option` when the underlying
+node has been removed from the lab.
 
 ## TOML configuration
 
-Labs can also be loaded from TOML files via `Lab::load("lab.toml")`:
+You can also load labs from TOML files via `Lab::load("lab.toml")`:
 
 ```toml
 [[router]]

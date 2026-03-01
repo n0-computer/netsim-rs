@@ -263,8 +263,8 @@ impl NatConfigBuilder {
 impl Nat {
     /// Expands a preset into its full [`NatConfig`].
     ///
-    /// Returns `None` for [`Nat::None`] and [`Nat::Cgnat`] (which use
-    /// different code paths — no NAT and ISP-level masquerade respectively).
+    /// Returns `None` for [`Nat::None`] and [`Nat::Cgnat`], which use
+    /// different code paths (no NAT and ISP-level masquerade respectively).
     pub fn to_config(self) -> Option<NatConfig> {
         match self {
             Nat::None | Nat::Cgnat => None,
@@ -322,12 +322,12 @@ impl Nat {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NatV6Mode {
-    /// No translation — devices use global unicast directly.
+    /// No translation; devices use global unicast directly.
     #[default]
     None,
     /// RFC 6296 stateless prefix translation (1:1 prefix mapping).
     Nptv6,
-    /// Stateful masquerade (useful for testing symmetric behaviour on IPv6).
+    /// Stateful masquerade (useful for testing symmetric behavior on IPv6).
     Masquerade,
 }
 

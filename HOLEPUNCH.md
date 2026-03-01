@@ -210,7 +210,7 @@ IX-facing interface and stacks with the home router's NAT.
   than the peer expects from STUN. In practice this doesn't happen in our
   simulations (few concurrent flows, 64k port space).
 
-- **No hairpin NAT** yet. Internal-to-internal traffic via the public IP
+- **No hairpin NAT yet.** Internal-to-internal traffic via the public IP
   is not handled.
 
 ## Future work

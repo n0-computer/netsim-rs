@@ -22,7 +22,7 @@ pub struct LabConfig {
 /// Per-region latency configuration.
 #[derive(Deserialize, Clone)]
 pub struct RegionConfig {
-    /// Map of target-region name → one-way latency in ms.
+    /// Map of target-region name to one-way latency in ms.
     #[serde(default)]
     pub latencies: HashMap<String, u32>,
 }

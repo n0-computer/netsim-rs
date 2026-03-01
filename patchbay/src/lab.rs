@@ -504,7 +504,7 @@ impl Lab {
     ///
     /// Call [`.nat()`][RouterBuilder::nat], [`.region()`][RouterBuilder::region], and/or
     /// [`.upstream()`][RouterBuilder::upstream] as needed, then
-    /// [`.build()`][RouterBuilder::build] to finalise.
+    /// [`.build()`][RouterBuilder::build] to finalize.
     ///
     /// Default NAT mode is [`Nat::None`] (public DC-style router, IX-connected).
     pub fn add_router(&self, name: &str) -> RouterBuilder {
@@ -1443,7 +1443,7 @@ impl RouterBuilder {
         self
     }
 
-    /// Connects this router as a subscriber behind `parent`'s downstream switch.
+    /// Connects this router as a sub-router behind `parent`'s downstream switch.
     ///
     /// Without this, the router attaches directly to the IX switch.
     pub fn upstream(mut self, parent: NodeId) -> Self {
@@ -1549,7 +1549,7 @@ impl RouterBuilder {
         self
     }
 
-    /// Finalises the router, creates its namespace and links, and returns a [`Router`] handle.
+    /// Finalizes the router, creates its namespace and links, and returns a [`Router`] handle.
     pub async fn build(self) -> Result<Router> {
         self.result?;
 

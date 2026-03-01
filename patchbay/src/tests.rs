@@ -89,7 +89,7 @@ struct DualNatLab {
 
 // ── Test helper functions ────────────────────────────────────────────
 
-/// TCP probe — ns-free async, call inside `handle.spawn(|_| async { probe_tcp(t).await })`.
+/// TCP probe, ns-free async. Call inside `handle.spawn(|_| async { probe_tcp(t).await })`.
 async fn probe_tcp(target: SocketAddr) -> Result<ObservedAddr> {
     use tokio::io::AsyncReadExt;
     let timeout = Duration::from_millis(500);
@@ -140,7 +140,7 @@ async fn probe_reflexive(
     probe_reflexive_addr(dev, proto, bind, ctx.dev_ip, ctx.r_dc).await
 }
 
-/// TCP sink: accept one connection, drain all bytes, exit — ns-free.
+/// TCP sink: accepts one connection, drains all bytes, then exits. Ns-free.
 /// Call via `handle.spawn_thread(move || tcp_sink(addr))`.
 fn tcp_sink(addr: SocketAddr) -> Result<()> {
     use std::io::Read as _;
@@ -158,7 +158,7 @@ fn tcp_sink(addr: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-/// Sends `bytes` bytes over TCP to `server_addr` — ns-free.
+/// Sends `bytes` bytes over TCP to `server_addr`. Ns-free.
 /// Call via `handle.run_sync(move || tcp_measure_throughput(addr, bytes))`.
 /// Returns `(elapsed, kbit/s)`.
 fn tcp_measure_throughput(server_addr: SocketAddr, bytes: usize) -> Result<(Duration, u32)> {
@@ -190,7 +190,7 @@ fn tcp_measure_throughput(server_addr: SocketAddr, bytes: usize) -> Result<(Dura
     Ok((elapsed, kbps))
 }
 
-/// Spawns an async TCP reflector (accept → "OBSERVED {peer}" → close) — ns-free.
+/// Spawns an async TCP reflector (accept -> "OBSERVED {peer}" -> close). Ns-free.
 ///
 /// Returns when the listener is bound. The background task continues on the
 /// current tokio runtime. Call inside `handle.spawn(|_| async { spawn_tcp_reflector(b).await })`.
@@ -361,7 +361,7 @@ async fn build_single_nat_case(
 }
 
 /// Spawns an async TCP echo server that loops accepting connections,
-/// echoes each one's payload, and continues until the runtime shuts down — ns-free.
+/// echoes each one's payload, and continues until the runtime shuts down. Ns-free.
 /// Returns when the listener is bound. Call inside `handle.spawn(|_| async { spawn_tcp_echo_server(b).await })`.
 async fn spawn_tcp_echo_server(bind: SocketAddr) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -390,7 +390,7 @@ async fn spawn_tcp_echo_server(bind: SocketAddr) -> Result<()> {
         .map_err(|_| anyhow!("tcp echo server task dropped before ready"))?
 }
 
-/// TCP roundtrip — ns-free async. Call inside `handle.spawn(|_| async { tcp_roundtrip(t).await })`.
+/// TCP roundtrip, ns-free async. Call inside `handle.spawn(|_| async { tcp_roundtrip(t).await })`.
 async fn tcp_roundtrip(target: SocketAddr) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let timeout = Duration::from_millis(500);

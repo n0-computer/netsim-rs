@@ -1183,7 +1183,7 @@ impl Ix {
 // Helpers
 // ─────────────────────────────────────────────
 
-/// Normalise a device/interface name for use in an environment variable name.
+/// Normalizes a device/interface name for use in an environment variable name.
 pub(crate) fn normalize_env_name(s: &str) -> String {
     s.to_uppercase().replace('-', "_")
 }

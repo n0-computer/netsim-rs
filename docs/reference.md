@@ -219,16 +219,16 @@ Sleeps for a fixed duration.
 
 ---
 
-### `action = "set-impair"`
+### `action = "set-link-condition"`
 
 Applies link impairment (rate limit, loss, latency) to a device interface using
 `tc netem` and `tc tbf`.
 
-| Key         | Type            | Description |
-|-------------|-----------------|-------------|
-| `device`    | string          | Target device. |
-| `interface` | string          | Interface name, e.g. `"eth0"`. |
-| `impair`    | string or table | Preset `"wifi"` (20ms/5ms jitter) or `"mobile"` (50ms/20ms jitter, 1% loss), or a custom table: `{ rate = 10000, loss = 0.5, latency = 40 }`. Rate in kbit/s, loss as percentage, latency in ms. |
+| Key              | Type            | Description |
+|------------------|-----------------|-------------|
+| `device`         | string          | Target device. |
+| `interface`      | string          | Interface name, e.g. `"eth0"`. |
+| `link_condition` | string or table | Preset name (`"wifi"`, `"mobile4g"`, etc.) or a custom table: `{ rate = 10000, loss = 0.5, latency = 40 }`. Rate in kbit/s, loss as percentage, latency in ms. |
 
 ---
 

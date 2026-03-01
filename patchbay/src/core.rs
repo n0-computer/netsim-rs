@@ -20,27 +20,27 @@ use crate::{
 pub(crate) struct CoreConfig {
     /// Process-wide sequential lab identifier (from `LAB_COUNTER`).
     pub lab_id: u64,
-    /// Stores the process-unique lab prefix used for namespacing resources.
+    /// Process-unique lab prefix used for namespacing resources.
     pub prefix: String,
-    /// Stores the dedicated lab root namespace name.
+    /// Dedicated lab root namespace name.
     pub root_ns: String,
     /// Short tag used to generate bridge interface names (e.g. `"p1230"`).
     pub bridge_tag: String,
-    /// Stores the IX bridge interface name inside the lab root namespace.
+    /// IX bridge interface name inside the lab root namespace.
     pub ix_br: String,
-    /// Stores the IX gateway IPv4 address.
+    /// IX gateway IPv4 address.
     pub ix_gw: Ipv4Addr,
-    /// Stores the IX subnet CIDR.
+    /// IX subnet CIDR.
     pub ix_cidr: Ipv4Net,
-    /// Stores the base private downstream address pool.
+    /// Base private downstream address pool.
     pub private_cidr: Ipv4Net,
-    /// Stores the base public downstream address pool.
+    /// Base public downstream address pool.
     pub public_cidr: Ipv4Net,
-    /// Stores the IX gateway IPv6 address.
+    /// IX gateway IPv6 address.
     pub ix_gw_v6: Ipv6Addr,
-    /// Stores the IX IPv6 subnet CIDR.
+    /// IX IPv6 subnet CIDR.
     pub ix_cidr_v6: Ipv6Net,
-    /// Stores the base private downstream IPv6 pool (ULA).
+    /// Base private downstream IPv6 pool (ULA).
     pub private_cidr_v6: Ipv6Net,
     /// Tracing span for this lab; used to parent worker thread spans.
     pub span: tracing::Span,
@@ -95,7 +95,7 @@ impl RouterConfig {
 pub(crate) struct DeviceIfaceData {
     /// Interface name inside the device namespace (e.g. `"eth0"`).
     pub ifname: String,
-    /// Stores the switch this interface is attached to.
+    /// Switch this interface is attached to.
     pub uplink: NodeId,
     /// Assigned IPv4 address.
     pub ip: Option<Ipv4Addr>,
@@ -112,9 +112,9 @@ pub(crate) struct DeviceIfaceData {
 pub(crate) struct DeviceData {
     /// Identifies the device node.
     pub id: NodeId,
-    /// Stores the device name.
+    /// Device name.
     pub name: String,
-    /// Stores the device namespace name.
+    /// Device namespace name.
     pub ns: String,
     /// Interfaces in declaration order.
     pub interfaces: Vec<DeviceIfaceData>,
@@ -153,31 +153,31 @@ impl DeviceData {
 pub(crate) struct RouterData {
     /// Identifies the router.
     pub id: NodeId,
-    /// Stores the router name.
+    /// Router name.
     pub name: String,
-    /// Stores the router namespace name.
+    /// Router namespace name.
     pub ns: String,
-    /// Stores the optional router region label.
+    /// Optional region label.
     pub region: Option<String>,
-    /// Stores static router configuration.
+    /// Static router configuration.
     pub cfg: RouterConfig,
-    /// Stores the bridge name for the downstream LAN side.
+    /// Bridge name for the downstream LAN side.
     pub downlink_bridge: String,
-    /// Stores the uplink switch identifier.
+    /// Uplink switch identifier.
     pub uplink: Option<NodeId>,
-    /// Stores the router uplink IPv4 address.
+    /// Router uplink IPv4 address.
     pub upstream_ip: Option<Ipv4Addr>,
-    /// Stores the router uplink IPv6 address.
+    /// Router uplink IPv6 address.
     pub upstream_ip_v6: Option<Ipv6Addr>,
-    /// Stores the downstream switch identifier.
+    /// Downstream switch identifier.
     pub downlink: Option<NodeId>,
-    /// Stores the downstream subnet CIDR.
+    /// Downstream subnet CIDR.
     pub downstream_cidr: Option<Ipv4Net>,
-    /// Stores the downstream gateway address.
+    /// Downstream gateway address.
     pub downstream_gw: Option<Ipv4Addr>,
-    /// Stores the downstream IPv6 subnet CIDR.
+    /// Downstream IPv6 subnet CIDR.
     pub downstream_cidr_v6: Option<Ipv6Net>,
-    /// Stores the downstream IPv6 gateway address.
+    /// Downstream IPv6 gateway address.
     pub downstream_gw_v6: Option<Ipv6Addr>,
     /// Per-router operation lock — serializes multi-step mutations.
     pub op: Arc<tokio::sync::Mutex<()>>,
@@ -197,19 +197,19 @@ impl RouterData {
 /// Represents an L2 switch/bridge attachment point.
 #[derive(Clone, Debug)]
 pub(crate) struct Switch {
-    /// Stores the switch name.
+    /// Switch name.
     pub name: String,
-    /// Stores the switch IPv4 subnet if assigned.
+    /// IPv4 subnet, if assigned.
     pub cidr: Option<Ipv4Net>,
-    /// Stores the switch IPv4 gateway address if assigned.
+    /// IPv4 gateway address, if assigned.
     pub gw: Option<Ipv4Addr>,
-    /// Stores the switch IPv6 subnet if assigned.
+    /// IPv6 subnet, if assigned.
     pub cidr_v6: Option<Ipv6Net>,
-    /// Stores the switch IPv6 gateway address if assigned.
+    /// IPv6 gateway address, if assigned.
     pub gw_v6: Option<Ipv6Addr>,
-    /// Stores the owning router for managed downstream switches.
+    /// Owning router for managed downstream switches.
     pub owner_router: Option<NodeId>,
-    /// Stores the backing bridge name.
+    /// Backing bridge name.
     pub bridge: Option<String>,
     pub(crate) next_host: u8,
     next_host_v6: u8,
@@ -1660,12 +1660,10 @@ fn add_host(cidr: Ipv4Net, host: u8) -> Result<Ipv4Addr> {
 // Netns + process helpers
 // ─────────────────────────────────────────────
 
-/// Creates a namespace with DAD disabled and optional DNS overlay.
+/// Creates a namespace with optional DNS overlay and disables IPv6 DAD.
 ///
 /// IPv6 DAD is disabled immediately so interfaces moved in will inherit
 /// `dad_transmits=0` and addresses go straight to "valid" state.
-///
-/// Creates a namespace with optional DNS overlay and disables IPv6 DAD.
 pub(crate) fn create_named_netns(
     netns: &netns::NetnsManager,
     name: &str,

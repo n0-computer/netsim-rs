@@ -1,10 +1,30 @@
-//! patchbay — Linux network-namespace lab for NAT/routing experiments.
+//! Linux network-namespace lab for NAT, routing, and link-condition experiments.
 //!
-//! Each router and device lives in its own Linux network namespace with real
-//! kernel networking (veth pairs, nftables NAT, tc netem impairment). The
-//! library handles namespace creation, IP allocation, and teardown.
+//! patchbay builds realistic network topologies from Linux network namespaces.
+//! Each router and device lives in its own namespace with real kernel networking:
+//! veth pairs, nftables NAT, and tc netem link conditions. The library handles
+//! namespace creation, IP allocation, and teardown automatically.
+//!
+//! # How it works
+//!
+//! A [`Lab`] owns a root namespace with an IX (Internet Exchange) bridge.
+//! Routers connect to the IX (or to each other as sub-routers) and devices
+//! connect to routers via downstream bridges. Each namespace gets a dedicated
+//! async worker thread (single-threaded tokio runtime) and a lazy sync worker.
+//! [`Device`], [`Router`], and [`Ix`] are lightweight cloneable handles that
+//! dispatch work to these workers, so callers never call `setns` directly.
+//!
+//! NAT is configured per-router via [`Nat`] presets (`Home`, `Corporate`,
+//! `CloudNat`, `FullCone`, `Cgnat`) or custom [`NatConfig`] values. Link
+//! conditions use [`LinkCondition`] presets (`Wifi`, `Mobile4G`, etc.) or
+//! custom [`LinkLimits`]. Both can be changed at runtime.
+//!
+//! The whole thing runs unprivileged. Call [`init_userns`] before spawning
+//! any threads to bootstrap into a user namespace with full networking
+//! capabilities.
 //!
 //! # Quick start (from TOML)
+//!
 //! ```no_run
 //! # use patchbay::Lab;
 //! # use std::process::Command;
@@ -20,6 +40,7 @@
 //! ```
 //!
 //! # Builder API
+//!
 //! ```no_run
 //! # use patchbay::{Lab, Nat};
 //! # #[tokio::main(flavor = "current_thread")]
@@ -44,12 +65,12 @@
 //! # }
 //! ```
 //!
-//! Namespace transitions are executed inside dedicated worker threads; callers
-//! can use any Tokio runtime flavor.
+//! Namespace transitions are executed inside dedicated worker threads, so
+//! callers can use any Tokio runtime flavor.
 
 use anyhow::{anyhow, bail, Context, Result};
 
-/// Defines TOML configuration structures used by [`Lab::load`].
+/// TOML configuration structures used by [`Lab::load`].
 pub mod config;
 pub(crate) mod core;
 pub(crate) mod firewall;
@@ -64,7 +85,7 @@ pub mod test_utils;
 #[cfg(test)]
 mod tests;
 mod userns;
-/// Shared string sanitizers.
+/// String sanitizers for filenames and environment variable names.
 pub mod util;
 
 pub use lab::{
