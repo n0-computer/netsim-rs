@@ -1,9 +1,12 @@
-# NAT Implementation & Hole-Punching in patchbay
+# NAT Hole-Punching
 
-Lessons learned implementing the `Nat` presets and getting UDP hole-punching
-to work across different NAT types in Linux network namespaces with nftables.
+How patchbay implements NAT traversal using nftables, and what we learned
+getting UDP hole-punching to work across different NAT types in Linux
+network namespaces.
 
-## RFC 4787: mapping × filtering
+---
+
+## Background: RFC 4787 mapping x filtering
 
 Two independent axes define NAT behavior for UDP:
 
@@ -22,7 +25,107 @@ Combined, these give the real-world profiles we simulate:
 | `Nat::CloudNat` | EDM | APDF | Never (need relay) | AWS/Azure/GCP NAT Gateway |
 | `Nat::Cgnat` | — | — | Varies | ISP-level, stacks with home NAT |
 
-## Key findings: what works and what doesn't in nftables
+---
+
+## The fullcone dynamic map
+
+The only reliable way to get endpoint-independent mapping (EIM) in nftables
+is to explicitly track port mappings in a dynamic `@fullcone` map:
+
+```nft
+table ip nat {
+    map fullcone {
+        type inet_service : ipv4_addr . inet_service
+        flags dynamic,timeout
+        timeout 300s
+        size 65536
+    }
+    chain prerouting {
+        type nat hook prerouting priority dstnat; policy accept;
+        iif "ix" meta l4proto udp dnat to udp dport map @fullcone
+    }
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        oif "ix" meta l4proto udp update @fullcone { udp sport timeout 300s : ip saddr . udp sport }
+        oif "ix" snat to <wan_ip>
+    }
+}
+```
+
+How it works:
+
+1. **Postrouting** records the pre-SNAT source port in `@fullcone` before the
+   `snat` rule executes. The map key is the UDP source port, the value is
+   `internal_ip . internal_port`. Even if `snat` later remaps the port, the
+   map holds the correct mapping keyed by the *original* port.
+
+2. **Prerouting** looks up inbound UDP by destination port in `@fullcone` and
+   DNATs to the internal host. This bypasses conntrack reverse-NAT entirely.
+
+3. **Timeout** is 300s. Outbound traffic refreshes the entry.
+
+**Why `update` must come before `snat`**: nftables NAT statements record the
+transformation but the conntrack entry's reply tuple is not yet available
+during the same chain evaluation. By recording `udp sport` / `ip saddr`
+*before* SNAT, we capture the original tuple.
+
+---
+
+## Filtering modes
+
+### EIF (Endpoint-Independent Filtering) — `Nat::FullCone`
+
+No filter chain needed. Prerouting DNAT fires for any inbound packet whose
+destination port is in the map, regardless of source address. Any external
+host can reach the internal endpoint once it has sent one outbound packet.
+
+### APDF (Address-and-Port-Dependent Filtering) — `Nat::Home`
+
+Same fullcone map for EIM, plus a forward filter:
+
+```nft
+table ip filter {
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        iif "ix" ct state established,related accept
+        iif "ix" drop
+    }
+}
+```
+
+Why this works for hole-punching:
+
+1. Device sends to peer -> postrouting SNAT creates conntrack entry + fullcone
+   map records port.
+2. Peer sends to device -> prerouting DNAT via fullcone map changes dst from
+   router WAN IP to device internal IP.
+3. After DNAT, the packet's 5-tuple (`peer:port -> device_internal:port`)
+   matches the **reply direction** of the outbound conntrack entry from step 1.
+4. Conntrack marks the packet `ct state established`.
+5. Forward filter allows it.
+
+An unsolicited packet from an unknown host also gets DNATed (step 2), but
+no outbound conntrack entry exists for that source, so it's `ct state new`
+and dropped by the filter.
+
+### EDM (Endpoint-Dependent Mapping) — `Nat::Corporate` / `Nat::CloudNat`
+
+```nft
+table ip nat {
+    chain postrouting {
+        type nat hook postrouting priority 100;
+        oif "ix" masquerade random
+    }
+}
+```
+
+`masquerade random` randomizes the source port per conntrack entry. No
+fullcone map, no prerouting chain. Hole-punching is impossible because the
+peer can't predict the mapped port from a STUN probe.
+
+---
+
+## nftables pitfalls
 
 ### `snat to <ip>` does NOT preserve ports reliably
 
@@ -62,99 +165,7 @@ inbound packet's 5-tuple matches the reply tuple of an existing conntrack
 entry. If SNAT changed the port (which it does — see above), the peer sends
 to the wrong port and conntrack doesn't match.
 
-## The solution: fullcone dynamic map
-
-The only reliable way to get endpoint-independent mapping in nftables is
-to explicitly track port mappings in a dynamic `@fullcone` map:
-
-```nft
-table ip nat {
-    map fullcone {
-        type inet_service : ipv4_addr . inet_service
-        flags dynamic,timeout
-        timeout 300s
-        size 65536
-    }
-    chain prerouting {
-        type nat hook prerouting priority dstnat; policy accept;
-        iif "ix" meta l4proto udp dnat to udp dport map @fullcone
-    }
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        oif "ix" meta l4proto udp update @fullcone { udp sport timeout 300s : ip saddr . udp sport }
-        oif "ix" snat to <wan_ip>
-    }
-}
-```
-
-How it works:
-
-1. **Postrouting** records the pre-SNAT source port in `@fullcone` before the
-   `snat` rule executes. The map key is the UDP source port, the value is
-   `internal_ip . internal_port`. Even if `snat` later remaps the port, the
-   map holds the correct mapping keyed by the *original* port.
-
-2. **Prerouting** looks up inbound UDP by destination port in `@fullcone` and
-   DNATs to the internal host. This bypasses conntrack reverse-NAT entirely.
-
-3. **Timeout** is 300s. Outbound traffic refreshes the entry.
-
-**Why `update` must come before `snat`**: nftables NAT statements record the
-transformation but the conntrack entry's reply tuple is not yet available
-during the same chain evaluation. By recording `udp sport` / `ip saddr`
-*before* SNAT, we capture the original tuple.
-
-## Implementing filtering on top of the fullcone map
-
-### EIF (Endpoint-Independent Filtering) — `Nat::FullCone`
-
-No filter chain needed. Prerouting DNAT fires for any inbound packet whose
-destination port is in the map, regardless of source address. Any external
-host can reach the internal endpoint once it has sent one outbound packet.
-
-### APDF (Address-and-Port-Dependent Filtering) — `Nat::Home`
-
-Same fullcone map for EIM, plus a forward filter:
-
-```nft
-table ip filter {
-    chain forward {
-        type filter hook forward priority 0; policy accept;
-        iif "ix" ct state established,related accept
-        iif "ix" drop
-    }
-}
-```
-
-Why this works for hole-punching:
-
-1. Device sends to peer → postrouting SNAT creates conntrack entry +
-   fullcone map records port.
-2. Peer sends to device → prerouting DNAT via fullcone map changes dst from
-   router WAN IP to device internal IP.
-3. After DNAT, the packet's 5-tuple (`peer:port → device_internal:port`)
-   matches the **reply direction** of the outbound conntrack entry from step 1.
-4. Conntrack marks the packet `ct state established`.
-5. Forward filter allows it.
-
-An unsolicited packet from an unknown host also gets DNATed (step 2), but
-no outbound conntrack entry exists for that source, so it's `ct state new`
-→ dropped by the filter.
-
-### EDM (Endpoint-Dependent Mapping) — `Nat::Corporate` / `Nat::CloudNat`
-
-```nft
-table ip nat {
-    chain postrouting {
-        type nat hook postrouting priority 100;
-        oif "ix" masquerade random
-    }
-}
-```
-
-`masquerade random` randomizes the source port per conntrack entry. No
-fullcone map, no prerouting chain. Hole-punching is impossible because the
-peer can't predict the mapped port from a STUN probe.
+---
 
 ## Test helper subtlety: `holepunch_send_recv`
 
@@ -164,7 +175,7 @@ UDP probes every 200ms and checks for a response.
 **Critical detail**: when one side receives a probe first, it must send a few
 more packets before returning. Otherwise:
 
-1. Side A receives side B's probe → returns success, stops sending.
+1. Side A receives side B's probe, returns success, stops sending.
 2. Side B's probes to side A may have arrived *before* side A created its
    outbound conntrack entry at side B's NAT.
 3. Those early probes were dropped by APDF filtering at side B's NAT.
@@ -172,6 +183,8 @@ more packets before returning. Otherwise:
 
 Fix: after receiving, send 3 "ack" packets to ensure the peer's NAT has an
 established conntrack entry.
+
+---
 
 ## NatConfig architecture
 
@@ -191,84 +204,52 @@ alone — no match on `Nat` variants, just the mapping/filtering enums. Users
 can either use presets (`router.nat(Nat::Home)`) or build custom configs
 (`router.nat_config(NatConfig::builder()...build())`).
 
-### CGNAT is special
+### CGNAT
 
 `Nat::Cgnat` is applied at the ISP router level via `apply_isp_cgnat()`,
 not through `NatConfig`. It uses plain `masquerade` (not `random`) on the
 IX-facing interface and stacks with the home router's NAT.
 
+---
+
 ## NPTv6 (Network Prefix Translation for IPv6)
 
-NPTv6 translates the source/destination prefix while preserving the host part,
-using nftables `snat prefix to` / `dnat prefix to`. Three bugs were found and
-fixed while implementing the `dual_stack_home_nat_udp` test:
+NPTv6 translates the source/destination prefix while preserving the host
+part, using nftables `snat prefix to` / `dnat prefix to`. Several issues
+were found and fixed during implementation:
 
-### 1. Prefix length mismatch breaks translation
+1. **Prefix length mismatch breaks translation.** NPTv6 requires matching
+   prefix lengths on LAN and WAN sides. Fix: `nptv6_wan_prefix()` derives a
+   unique /64 from the router's IX IP.
 
-NPTv6 requires matching prefix lengths on LAN and WAN sides. The WAN prefix
-was originally derived as `Ipv6Net::new(upstream_ip, ix_cidr_prefix_len)` which
-gave a /32 (the IX CIDR length) against a /64 LAN prefix. The kernel silently
-accepts mismatched prefix lengths but translations fail unpredictably.
+2. **Unrestricted `dnat prefix` breaks NDP.** Without an address match
+   clause, NDP and ICMPv6 packets get translated, making the router
+   unreachable. Fix: restrict rules to `ip6 saddr/daddr` matching the
+   WAN/LAN prefix.
 
-**Fix**: `nptv6_wan_prefix()` helper derives a unique /64 from the router's IX
-IP by placing the host part into segment 3: `2001:db8::11` → `2001:db8:0:11::/64`.
+3. **WAN prefix must be outside the IX on-link range.** The IX CIDR was
+   changed from /32 to /64 so WAN prefixes are off-link and routed via the
+   gateway.
 
-### 2. Unrestricted `dnat prefix` breaks NDP
+4. **Return routes needed for private v6 downstreams.** Added v6 return
+   routes for all IX-level routers regardless of downstream pool.
 
-The original NPTv6 rules translated ALL packets on the WAN interface:
+See [docs/ipv6.md](ipv6.md) for the full IPv6 deployment reference.
 
-```nft
-iif "ix" dnat prefix to fd10:0:0:2::/64
-```
-
-This inadvertently translates NDP Neighbor Solicitations, ICMPv6, and any other
-traffic destined for the router's own IX address. The destination gets rewritten
-to a non-existent ULA address, so NDP resolution fails and the router becomes
-unreachable from the IX bridge.
-
-**Fix**: restrict translation to only packets matching the WAN/LAN prefix:
-
-```nft
-oif "ix" ip6 saddr fd10:0:0:2::/64 snat prefix to 2001:db8:0:11::/64
-iif "ix" ip6 daddr 2001:db8:0:11::/64 dnat prefix to fd10:0:0:2::/64
-```
-
-### 3. WAN prefix must be outside the IX on-link range
-
-The IX CIDR was originally /32 (`2001:db8::/32`). The WAN prefix `2001:db8:0:11::/64`
-falls within this /32, so all routers on the IX bridge consider it on-link and
-try NDP resolution directly — instead of routing through the IX gateway where
-the return route lives.
-
-**Fix**: changed IX CIDR from /32 to /64 (`2001:db8::/64`). IX addresses like
-`2001:db8::10` stay within the /64 on-link range, while WAN prefixes like
-`2001:db8:0:11::/64` are off-link and routed via the default gateway.
-
-### 4. Return routes needed for private v6 downstreams
-
-Unlike IPv4 where return routes are always added for IX-level routers, IPv6
-return routes were only added for `DownstreamPool::Public`. Routers with private
-ULA downstreams (the default) had no root-ns route for their v6 subnet, making
-cross-router v6 traffic unroutable.
-
-**Fix**: add v6 return routes for all IX-level routers regardless of downstream
-pool, matching the v4 behavior.
+---
 
 ## Limitations
 
-- **UDP only in fullcone map**. TCP hole-punching (simultaneous SYN) relies
+- **UDP only in fullcone map.** TCP hole-punching (simultaneous SYN) relies
   on plain conntrack. Matches real-world behavior — TCP hole-punching is
   unreliable everywhere.
 
-- **Port preservation assumption in map**. If `snat to <ip>` remaps the
+- **Port preservation assumption in map.** If `snat to <ip>` remaps the
   source port, the fullcone map key (original port) differs from the actual
-  mapped port. The map-based DNAT still works correctly because both sides
-  record the same key. But the SNAT'd packet goes out on a different port
-  than the peer expects from STUN. In practice this doesn't happen in our
-  simulations (few concurrent flows, 64k port space).
+  mapped port. In practice this doesn't happen in our simulations (few
+  concurrent flows, 64k port space).
 
-- **No hairpin NAT yet.** Internal-to-internal traffic via the public IP
-  is not handled.
+---
 
 ## Future work
 

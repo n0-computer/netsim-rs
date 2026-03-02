@@ -11,9 +11,9 @@ This file is the single entry point for agents. Read it fully before working. Fo
 | [`AGENTS.md`](AGENTS.md) | **You are here.** Architecture, conventions, mandatory workflow. |
 | [`plans/PLAN.md`](plans/PLAN.md) | Plan index with in-progress, open, partial, and completed plans. |
 | [`REVIEW.md`](REVIEW.md) | Open and completed review items. |
-| [`HOLEPUNCH.md`](HOLEPUNCH.md) | NAT implementation findings: fullcone maps, APDF filtering, nftables lessons. |
+| [`docs/holepunching.md`](docs/holepunching.md) | NAT implementation: fullcone maps, APDF filtering, nftables lessons. |
 | [`HISTORY.md`](HISTORY.md) | Chronological changelog (moved from old AGENTS.md). |
-| [`docs/`](docs/) | Additional documentation (network patterns guide, etc). |
+| [`docs/`](docs/) | IPv6 deployments, network patterns, holepunching, TOML reference. |
 
 ---
 
@@ -142,7 +142,7 @@ Each plan file **must start with a `## TODO` checklist**:
 
 ## NAT Implementation (Summary)
 
-Full details in [`HOLEPUNCH.md`](HOLEPUNCH.md).
+Full details in [`docs/holepunching.md`](docs/holepunching.md).
 
 | Preset | Mapping | Filtering | nftables approach |
 |--------|---------|-----------|-------------------|

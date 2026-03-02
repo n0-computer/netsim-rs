@@ -110,6 +110,9 @@ let vpn = lab.add_router("vpn")
 
 ## NAT Traversal
 
+See [docs/holepunching.md](holepunching.md) for the full NAT implementation
+reference (nftables fullcone map, conntrack behavior, and debugging notes).
+
 ### Hole punching (STUN + simultaneous open)
 
 Both peers discover their reflexive address via STUN, exchange it through a
@@ -241,6 +244,9 @@ device.set_link_condition("eth0", Some(LinkCondition::Manual(LinkLimits {
 
 ## IPv6 Transition
 
+See [docs/ipv6.md](ipv6.md) for the full IPv6 deployment reference and
+router preset table.
+
 ### Dual-stack
 
 Device has both v4 and v6 addresses. Applications using Happy Eyeballs
@@ -254,15 +260,26 @@ let router = lab.add_router("dual")
     .build().await?;
 ```
 
-### v6-only
+### v6-only with NAT64
 
-Device has only an IPv6 address. IPv4 destinations are reached via NAT64.
-ICE candidates are v6 only. TURN must be dual-stack.
+Device has only an IPv6 address. IPv4 destinations are reached via NAT64:
+the router translates packets between IPv6 and IPv4 using the well-known
+prefix `64:ff9b::/96`. Applications connect to `[64:ff9b::<ipv4>]:port`
+and the router handles the rest. ICE candidates are v6 only; TURN must
+be dual-stack.
 
 ```rust
-let router = lab.add_router("v6only")
-    .ip_support(IpSupport::V6Only)
+use patchbay::nat64::embed_v4_in_nat64;
+
+// One-liner: MobileV6 preset = V6Only + NAT64 + BlockInbound
+let carrier = lab.add_router("carrier")
+    .preset(RouterPreset::MobileV6)
     .build().await?;
+let phone = lab.add_device("phone").uplink(carrier.id()).build().await?;
+
+// Reach an IPv4 server via NAT64:
+let nat64_addr = embed_v4_in_nat64(server_v4_ip);
+let target = SocketAddr::new(IpAddr::V6(nat64_addr), 443);
 ```
 
 ---
@@ -356,3 +373,6 @@ for _ in 0..3 {
 | PMTU blackhole | `.block_icmp_frag_needed()` on router builder |
 | IPv6 dual-stack | `.ip_support(IpSupport::DualStack)` |
 | IPv6 only | `.ip_support(IpSupport::V6Only)` |
+| IPv6-only + NAT64 | `.preset(RouterPreset::MobileV6)` or `.nat_v6(NatV6Mode::Nat64)` |
+| Mobile carrier (CGNAT) | `.preset(RouterPreset::Mobile)` |
+| Mobile carrier (v6-only) | `.preset(RouterPreset::MobileV6)` |

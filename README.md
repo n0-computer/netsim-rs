@@ -127,16 +127,23 @@ let dc   = lab.add_router("dc").preset(RouterPreset::Datacenter).build().await?;
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;
 ```
 
-Available presets: `Home`, `Datacenter`, `IspV4`, `Mobile`, `Corporate`,
-`Hotel`, `Cloud`. Individual methods called after `preset()` override preset
-values. See `docs/ipv6.md` for the full reference table.
+Available presets: `Home`, `Datacenter`, `IspV4`, `Mobile`, `MobileV6`,
+`Corporate`, `Hotel`, `Cloud`. Individual methods called after `preset()`
+override preset values. See [docs/ipv6.md](docs/ipv6.md) for the full
+reference table.
 
 ### NAT
 
 Routers support six IPv4 NAT presets (`None`, `Home`, `Corporate`,
-`CloudNat`, `FullCone`, `Cgnat`) and three IPv6 modes (`None`, `Nptv6`,
-`Masquerade`), all configured via nftables rules. You can also build custom
-NAT configs from mapping + filtering + timeout parameters.
+`CloudNat`, `FullCone`, `Cgnat`) and four IPv6 modes (`None`, `Nptv6`,
+`Masquerade`, `Nat64`), all configured via nftables rules. You can also
+build custom NAT configs from mapping + filtering + timeout parameters.
+
+**NAT64** provides IPv4 access for IPv6-only devices via the well-known
+prefix `64:ff9b::/96`. A userspace SIIT translator on the router converts
+between IPv6 and IPv4 headers; nftables masquerade handles port mapping.
+Use `RouterPreset::MobileV6` or `.nat_v6(NatV6Mode::Nat64)` directly.
+See [docs/ipv6.md](docs/ipv6.md) for details.
 
 ### Firewalls
 
@@ -303,8 +310,7 @@ patchbay run ./sims/iperf-baseline.toml
 patchbay run
 ```
 
-See [docs/reference.md](docs/reference.md) for the full simulation file
-syntax.
+See [docs/reference.md](docs/reference.md) for the full simulation file syntax.
 
 ## VM mode (macOS)
 
@@ -316,6 +322,15 @@ cargo install --git https://github.com/n0-computer/patchbay patchbay-vm
 patchbay-vm run ./sims/my-sim.toml
 patchbay-vm down
 ```
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/ipv6.md](docs/ipv6.md) | Real-world IPv6 deployments, NAT64, router presets reference table |
+| [docs/patterns.md](docs/patterns.md) | Simulating VPNs, WiFi handoff, captive portals, and other network events |
+| [docs/holepunching.md](docs/holepunching.md) | NAT implementation details, hole-punching mechanics, nftables fullcone map |
+| [docs/reference.md](docs/reference.md) | TOML simulation file syntax |
 
 ## License
 

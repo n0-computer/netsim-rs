@@ -107,15 +107,16 @@ let home = lab.add_router("home")
     .build().await?;
 ```
 
-| Preset | NAT | Firewall | IP | Pool |
-|--------|-----|----------|----|------|
-| `Home` | Home (EIM+APDF) | BlockInbound | DualStack | Private v4, Private v6 |
-| `Datacenter` | None | None | DualStack | Public |
-| `IspV4` | None | None | V4Only | Public |
-| `Mobile` | Cgnat | BlockInbound | DualStack | Public |
-| `Corporate` | Corporate (sym) | Corporate | DualStack | Public |
-| `Hotel` | Corporate (sym) | CaptivePortal | V4Only | Private |
-| `Cloud` | CloudNat | None | DualStack | Public |
+| Preset | NAT | NAT v6 | Firewall | IP | Pool |
+|--------|-----|--------|----------|----|------|
+| `Home` | Home (EIM+APDF) | None | BlockInbound | DualStack | Private |
+| `Datacenter` | None | None | None | DualStack | Public |
+| `IspV4` | None | None | None | V4Only | Public |
+| `Mobile` | Cgnat | None | BlockInbound | DualStack | Public |
+| `MobileV6` | None | **Nat64** | BlockInbound | V6Only | Public |
+| `Corporate` | Corporate (sym) | None | Corporate | DualStack | Public |
+| `Hotel` | Corporate (sym) | None | CaptivePortal | V4Only | Private |
+| `Cloud` | CloudNat | None | None | DualStack | Public |
 
 ### Scenario 1: Residential Dual-Stack (Most Common)
 
@@ -132,20 +133,32 @@ let laptop = lab.add_device("laptop").uplink(home.id()).build().await?;
 ### Scenario 2: IPv6-Only Mobile with NAT64
 
 A carrier network where devices only have IPv6. IPv4 destinations are
-reached via NAT64 (translating IPv6 packets to IPv4).
-
-> **Note:** NAT64 is not yet implemented. See `plans/nat64.md` for the
-> implementation plan. Until then, use `IpSupport::V6Only` which provides
-> IPv6-only connectivity without IPv4 access.
+reached via NAT64 — a userspace SIIT translator on the router converts
+between IPv6 and IPv4 headers using the well-known prefix `64:ff9b::/96`.
 
 ```rust
 let carrier = lab.add_router("carrier")
-    .preset(RouterPreset::Mobile)
-    .ip_support(IpSupport::V6Only)  // override to v6-only
+    .preset(RouterPreset::MobileV6)
     .build().await?;
 let phone = lab.add_device("phone").uplink(carrier.id()).build().await?;
 // phone.ip6() → 2001:db8:1:x::2 (public GUA)
-// phone.ip()  → None (no IPv4)
+// phone.ip()  → None (no IPv4 on the device)
+
+// Reach an IPv4 server via NAT64:
+use patchbay::nat64::embed_v4_in_nat64;
+let nat64_addr = embed_v4_in_nat64(server_v4_ip);
+// Connect to [64:ff9b::<server_v4>]:port — translated to IPv4 by the router
+```
+
+The `MobileV6` preset configures: `IpSupport::V6Only` + `NatV6Mode::Nat64`
+\+ `Firewall::BlockInbound` + public GUA pool. You can also configure NAT64
+manually on any router:
+
+```rust
+let carrier = lab.add_router("carrier")
+    .ip_support(IpSupport::DualStack)  // or V6Only
+    .nat_v6(NatV6Mode::Nat64)
+    .build().await?;
 ```
 
 ### Scenario 3: Corporate Firewall (Restrictive)
@@ -215,7 +228,7 @@ let charlie = lab.add_device("charlie").uplink(corp.id()).build().await?;
 | Corporate FW | `Firewall::Corporate` | Block inbound + TCP 80,443 + UDP 53 |
 | Captive portal FW | `Firewall::CaptivePortal` | Block inbound + block non-web UDP |
 | Custom FW | `Firewall::Custom(cfg)` | Full control via `FirewallConfig` |
-| NAT64 | *planned* | See `plans/nat64.md` |
+| NAT64 | `NatV6Mode::Nat64` | Userspace SIIT + nftables masquerade |
 | DHCPv6-PD | *not planned* | Use static /64 allocation |
 
 ---
