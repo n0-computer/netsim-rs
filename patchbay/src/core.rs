@@ -42,6 +42,8 @@ pub(crate) struct CoreConfig {
     pub ix_cidr_v6: Ipv6Net,
     /// Base private downstream IPv6 pool (ULA).
     pub private_cidr_v6: Ipv6Net,
+    /// Base public downstream IPv6 pool (GUA).
+    pub public_cidr_v6: Ipv6Net,
     /// Tracing span for this lab; used to parent worker thread spans.
     pub span: tracing::Span,
 }
@@ -496,6 +498,7 @@ pub(crate) struct NetworkCore {
     next_ix_low: u8,
     next_ix_low_v6: u16,
     next_private_subnet_v6: u16,
+    next_public_subnet_v6: u16,
     bridge_counter: u32,
     ix_sw: NodeId,
     devices: HashMap<NodeId, DeviceData>,
@@ -534,6 +537,7 @@ impl NetworkCore {
             next_ix_low: 10,
             next_ix_low_v6: 0x10,
             next_private_subnet_v6: 1,
+            next_public_subnet_v6: 1,
             bridge_counter: 2,
             ix_sw: NodeId(0),
             devices: HashMap::new(),
@@ -1095,7 +1099,10 @@ impl NetworkCore {
             if sw_entry.cidr_v6.is_some() {
                 (sw_entry.cidr_v6, sw_entry.gw_v6)
             } else {
-                let c6 = self.alloc_private_cidr_v6()?;
+                let c6 = match pool {
+                    DownstreamPool::Private => self.alloc_private_cidr_v6()?,
+                    DownstreamPool::Public => self.alloc_public_cidr_v6()?,
+                };
                 let seg = c6.addr().segments();
                 let g6 = Ipv6Addr::new(seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6], 1);
                 (Some(c6), Some(g6))
@@ -1212,6 +1219,21 @@ impl NetworkCore {
             64,
         )
         .context("allocate private /64 v6")?;
+        Ok(cidr)
+    }
+
+    /// Allocates the next public GUA /64 from the pool (2001:db8:1:N::/64).
+    fn alloc_public_cidr_v6(&mut self) -> Result<Ipv6Net> {
+        let subnet = self.next_public_subnet_v6;
+        self.next_public_subnet_v6 = subnet
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("public IPv6 subnet pool exhausted"))?;
+        let base = self.cfg.public_cidr_v6.addr().segments();
+        let cidr = Ipv6Net::new(
+            Ipv6Addr::new(base[0], base[1], base[2], subnet, 0, 0, 0, 0),
+            64,
+        )
+        .context("allocate public /64 v6")?;
         Ok(cidr)
     }
 
@@ -2083,7 +2105,12 @@ pub(crate) async fn setup_router_async(
     }
 
     // Apply firewall rules if configured.
-    apply_firewall(netns, &router.ns, &router.cfg.firewall).await?;
+    let fw_wan = if router.uplink == Some(data.ix_sw) {
+        "ix"
+    } else {
+        "wan"
+    };
+    apply_firewall(netns, &router.ns, &router.cfg.firewall, fw_wan).await?;
 
     Ok(())
 }
@@ -2112,7 +2139,7 @@ table ip filter {
 /// NAT filter table (`ip filter` at priority 0).
 fn generate_firewall_rules(cfg: &crate::lab::FirewallConfig) -> String {
     let mut rules = String::new();
-    rules.push_str("table ip fw {\n");
+    rules.push_str("table inet fw {\n");
     rules.push_str("    chain forward {\n");
     rules.push_str("        type filter hook forward priority 10; policy accept;\n");
     rules.push_str("        ct state established,related accept\n");
@@ -2137,12 +2164,12 @@ fn generate_firewall_rules(cfg: &crate::lab::FirewallConfig) -> String {
 
     // Block remaining UDP if configured.
     if cfg.block_udp {
-        rules.push_str("        ip protocol udp drop\n");
+        rules.push_str("        meta l4proto udp drop\n");
     }
 
     // Block remaining TCP if configured.
     if cfg.block_tcp {
-        rules.push_str("        ip protocol tcp drop\n");
+        rules.push_str("        meta l4proto tcp drop\n");
     }
 
     rules.push_str("    }\n");
@@ -2150,12 +2177,32 @@ fn generate_firewall_rules(cfg: &crate::lab::FirewallConfig) -> String {
     rules
 }
 
+/// Generates nftables rules for [`Firewall::BlockInbound`] (RFC 6092 CE router).
+fn generate_block_inbound_rules(wan_if: &str) -> String {
+    format!(
+        r#"table inet fw {{
+    chain forward {{
+        type filter hook forward priority 10; policy accept;
+        iif "{wan}" ct state established,related accept
+        iif "{wan}" drop
+    }}
+}}
+"#,
+        wan = wan_if,
+    )
+}
+
 /// Applies firewall rules for a router. No-op for [`Firewall::None`].
 pub(crate) async fn apply_firewall(
     netns: &netns::NetnsManager,
     ns: &str,
     firewall: &Firewall,
+    wan_if: &str,
 ) -> Result<()> {
+    if let Firewall::BlockInbound = firewall {
+        let rules = generate_block_inbound_rules(wan_if);
+        return run_nft_in(netns, ns, &rules).await;
+    }
     match firewall.to_config() {
         None => Ok(()),
         Some(cfg) => {
@@ -2165,11 +2212,12 @@ pub(crate) async fn apply_firewall(
     }
 }
 
-/// Removes firewall rules by flushing the `ip fw` table.
+/// Removes firewall rules by flushing the `inet fw` table.
 pub(crate) async fn remove_firewall(netns: &netns::NetnsManager, ns: &str) -> Result<()> {
     // Flush and delete; ignore errors (table may not exist).
-    let rules = "delete table ip fw\n";
-    run_nft_in(netns, ns, rules).await.ok();
+    run_nft_in(netns, ns, "delete table inet fw\n").await.ok();
+    // Also clean up legacy `ip fw` table from older configurations.
+    run_nft_in(netns, ns, "delete table ip fw\n").await.ok();
     Ok(())
 }
 

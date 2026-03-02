@@ -1031,15 +1031,19 @@ impl Router {
             .with_router(self.id, |r| Arc::clone(&r.op))
             .ok_or_else(|| anyhow!("router removed"))?;
         let _guard = op.lock().await;
-        self.lab
-            .core
-            .lock()
-            .unwrap()
-            .set_router_firewall(self.id, fw.clone())?;
+        let wan_if: Arc<str> = {
+            let mut inner = self.lab.core.lock().unwrap();
+            inner.set_router_firewall(self.id, fw.clone())?;
+            let ix_sw = inner.ix_sw();
+            inner
+                .router(self.id)
+                .map(|r| Arc::<str>::from(r.wan_ifname(ix_sw)))
+                .ok_or_else(|| anyhow!("router removed"))?
+        };
         let ns = self.ns.to_string();
         // Always remove existing rules first, then apply new ones.
         core::remove_firewall(&self.lab.netns, &ns).await?;
-        core::apply_firewall(&self.lab.netns, &ns, &fw).await
+        core::apply_firewall(&self.lab.netns, &ns, &fw, &wan_if).await
     }
 
     /// Spawns a STUN-like UDP reflector in this router's network namespace.

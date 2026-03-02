@@ -3,13 +3,28 @@
 /// Firewall preset for a router's forward chain.
 ///
 /// Firewall rules restrict which traffic can traverse the router.
-/// They are applied as nftables rules in a separate `ip fw` table
-/// (priority 10, after NAT filter rules at priority 0).
+/// They are applied as nftables rules in a separate `inet fw` table
+/// (priority 10, after NAT filter rules at priority 0). Rules apply
+/// to both IPv4 and IPv6 traffic.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Firewall {
     /// No filtering beyond NAT (default).
     #[default]
     None,
+
+    /// Block unsolicited inbound traffic on the WAN interface (RFC 6092).
+    ///
+    /// Allows all outbound traffic and return traffic for established flows.
+    /// Drops new connections arriving from the WAN side. This is the default
+    /// security posture of every home router and IPv6 CE router.
+    ///
+    /// For IPv4 with NAT, this is redundant (NAT + APDF already blocks
+    /// inbound). For IPv6 without NAT, this is the primary security boundary
+    /// — devices have globally routable addresses but are not reachable from
+    /// the internet.
+    ///
+    /// Observed on: every home router (FritzBox, Unifi, TP-Link, etc.).
+    BlockInbound,
 
     /// Corporate/enterprise firewall.
     ///
@@ -58,7 +73,7 @@ impl Firewall {
     /// Expands a preset to a [`FirewallConfig`], or returns `None` for [`Firewall::None`].
     pub fn to_config(&self) -> Option<FirewallConfig> {
         match self {
-            Firewall::None => None,
+            Firewall::None | Firewall::BlockInbound => None,
             Firewall::Corporate => Some(FirewallConfig {
                 allow_tcp: vec![80, 443],
                 allow_udp: vec![53],

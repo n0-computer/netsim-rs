@@ -298,6 +298,7 @@ impl Lab {
             ix_gw_v6: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
             ix_cidr_v6: net6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 64),
             private_cidr_v6: net6(Ipv6Addr::new(0xfd10, 0, 0, 0, 0, 0, 0, 0), 48),
+            public_cidr_v6: net6(Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0), 48),
             span: lab_span,
         })
         .context("failed to create DNS entries directory")?;
