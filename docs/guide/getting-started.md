@@ -1,38 +1,43 @@
 # Getting Started
 
-This guide walks you through your first patchbay lab: two routers, two
-devices, and a ping across a NAT.
+This chapter walks through building your first patchbay lab: a home
+router with NAT, a datacenter router, and two devices that communicate
+across them. By the end you will have a working topology with a ping
+traversing a NAT and an async TCP exchange between two isolated network
+stacks.
 
-## Requirements
+## System requirements
 
-You need a Linux machine (bare-metal, VM, or CI container) with:
+patchbay needs a Linux environment. A bare-metal machine, a VM, or a CI
+container all work. You need two userspace tools in your PATH:
 
-- **`tc`** and **`nft`** in your PATH (from `iproute2` and `nftables` packages)
-- **Unprivileged user namespaces** enabled (default on most distros)
+- **`tc`** from the `iproute2` package, used for link condition shaping.
+- **`nft`** from the `nftables` package, used for NAT and firewall rules.
 
-Check with:
+You also need unprivileged user namespaces, which are enabled by default
+on most distributions. You can verify this with:
 
 ```bash
-sysctl kernel.unprivileged_userns_clone   # should be 1
+sysctl kernel.unprivileged_userns_clone
 ```
 
-On Ubuntu 24.04+ with AppArmor:
+If the value is 0, enable it with `sudo sysctl -w kernel.unprivileged_userns_clone=1`.
+On Ubuntu 24.04 and later, AppArmor restricts unprivileged user namespaces
+separately:
 
 ```bash
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-No `sudo` is needed at runtime. patchbay bootstraps into an unprivileged
-user namespace where it has full networking capabilities.
+No root access is needed at runtime. patchbay enters an unprivileged user
+namespace at startup that grants it the capabilities needed to create
+network namespaces, veth pairs, and nftables rules.
 
-## Add patchbay to your project
+## Adding patchbay to your project
 
-```bash
-cargo add patchbay
-```
-
-Your `Cargo.toml` should include tokio with the `rt` and `macros` features
-(at minimum) since patchbay uses async internally:
+Add patchbay and its runtime dependencies to your `Cargo.toml`. You need
+tokio with at least the `rt` and `macros` features, since patchbay is async
+internally:
 
 ```toml
 [dependencies]
@@ -41,11 +46,13 @@ tokio = { version = "1", features = ["rt", "macros"] }
 anyhow = "1"
 ```
 
-## Enter the user namespace
+## Entering the user namespace
 
-Before any threads are spawned, call `init_userns()`. This enters an
-unprivileged user namespace that gives patchbay the permissions it needs
-to create network namespaces, veth pairs, and nftables rules.
+Before any threads are spawned, your program must call `init_userns()` to
+enter the unprivileged user namespace. This has to happen before tokio
+starts its thread pool, because `unshare(2)` only works in a
+single-threaded process. The standard pattern splits `main` into a sync
+entry point and an async body:
 
 ```rust
 fn main() -> anyhow::Result<()> {
@@ -55,50 +62,57 @@ fn main() -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn async_main() -> anyhow::Result<()> {
-    // lab code goes here
+    // All lab code goes here.
     Ok(())
 }
 ```
 
-The split between `main()` and `async_main()` is necessary because
-`init_userns()` must run before tokio starts its thread pool.
+If you skip this call, `Lab::new()` will fail because the process lacks
+the network namespace capabilities it needs.
 
-## Create a lab
+## Creating a lab
 
-A `Lab` is the top-level container. It creates a root network namespace
-with an "internet exchange" (IX) bridge that interconnects all routers.
+A `Lab` is the top-level container for a topology. When you create one, it
+sets up a root network namespace with an internet exchange (IX) bridge.
+Every top-level router connects to this bridge, which provides the
+backbone for inter-router connectivity.
 
 ```rust
 let lab = patchbay::Lab::new().await?;
 ```
 
-## Add routers and devices
+## Adding routers and devices
 
-Routers connect to the IX and provide connectivity to downstream devices.
-A plain router gives devices public IPs; adding `.nat(Nat::Home)` puts a
-NAT in front of them, just like a home WiFi router.
+Routers connect to the IX bridge and provide network access to downstream
+devices. A router without any NAT configuration gives its devices public
+IP addresses, like a datacenter. Adding `.nat(Nat::Home)` places a NAT in
+front of the router's downstream, assigning devices private addresses and
+masquerading their traffic, like a typical home WiFi router.
 
 ```rust
 use patchbay::{Nat, LinkCondition};
 
-// Datacenter router: devices get public IPs.
+// A datacenter router whose devices get public IPs.
 let dc = lab.add_router("dc").build().await?;
 
-// Home router: devices get private IPs behind NAT.
+// A home router whose devices sit behind NAT.
 let home = lab.add_router("home").nat(Nat::Home).build().await?;
 ```
 
-Devices attach to routers through named interfaces. You can optionally
-apply link conditions (packet loss, latency, jitter) to simulate
-real-world links.
+Devices attach to routers through named network interfaces. Each interface
+is a veth pair connecting the device's namespace to the router's namespace.
+You can optionally apply a link condition to the interface to simulate
+real-world impairment like packet loss, latency, and jitter.
 
 ```rust
+// A server in the datacenter, with a clean link.
 let server = lab
     .add_device("server")
     .iface("eth0", dc.id(), None)
     .build()
     .await?;
 
+// A laptop behind the home router, over a lossy WiFi link.
 let laptop = lab
     .add_device("laptop")
     .iface("eth0", home.id(), Some(LinkCondition::Wifi))
@@ -106,10 +120,15 @@ let laptop = lab
     .await?;
 ```
 
-## Ping across the NAT
+At this point you have four network namespaces (IX root, dc router, home
+router with NAT, server, laptop) wired together with veth pairs. The
+laptop has a private IP behind the home router's NAT, and the server has a
+public IP on the datacenter router's subnet.
 
-Every device handle can spawn OS commands inside its network namespace.
-Let's ping the server from the laptop:
+## Running a ping across the NAT
+
+Every device handle can spawn OS commands inside its network namespace. To
+verify connectivity, ping the server from the laptop:
 
 ```rust
 let mut child = laptop.spawn_command({
@@ -122,16 +141,20 @@ let status = tokio::task::spawn_blocking(move || child.wait()).await??;
 assert!(status.success());
 ```
 
-The ping packet travels through the laptop's namespace, gets NATed at
-the home router, crosses the IX bridge, and arrives at the server. The
-reply follows the same path in reverse. All of this happens in real
-kernel network stacks, isolated from your host.
+The ICMP echo request travels from the laptop's namespace through the home
+router, where nftables masquerade translates the source address. The
+packet then crosses the IX bridge, enters the datacenter router's
+namespace, and arrives at the server. The reply follows the reverse path.
+All of this happens in real kernel network stacks, fully isolated from
+your host.
 
-## Run async code in a namespace
+## Running async code in a namespace
 
-For anything more interesting than `ping`, you probably want async
-networking. `device.spawn()` runs an async closure on a per-namespace
-tokio runtime:
+For anything beyond shell commands, you will want to run async Rust code
+inside a namespace. The `spawn` method runs an async closure on the
+device's single-threaded tokio runtime, giving you access to the full
+tokio networking stack (TCP, UDP, listeners, timeouts) within that
+namespace's isolated network:
 
 ```rust
 use std::net::SocketAddr;
@@ -149,7 +172,7 @@ let server_task = server.spawn(async move |_dev| {
     anyhow::Ok(())
 })?;
 
-// Connect from the laptop.
+// Connect from the laptop. Traffic is NATed through the home router.
 let client_task = laptop.spawn(async move |_dev| {
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
     stream.write_all(b"hello").await?;
@@ -160,23 +183,30 @@ client_task.await??;
 server_task.await??;
 ```
 
-Both tasks run in separate network namespaces with fully isolated
-stacks. The tokio primitives work exactly as they would in a normal
-application. For more on running code in namespaces, see
-[Running Code in Namespaces](running-code.md).
+Both tasks run in separate network namespaces with completely isolated
+stacks. The tokio primitives behave exactly as they would in a normal
+application, but all traffic flows through the simulated topology. The
+[Running Code in Namespaces](running-code.md) chapter covers all
+execution methods in detail.
 
 ## Cleanup
 
-When the `Lab` goes out of scope (or is dropped), all namespaces,
-workers, and kernel resources are cleaned up automatically. No leftover
-interfaces or namespaces pollute your host.
+When the `Lab` goes out of scope, it shuts down all namespace workers and
+closes the namespace file descriptors. The kernel automatically removes
+veth pairs, routes, and nftables rules when the last reference to a
+namespace disappears. No cleanup code is needed and no leftover state
+pollutes the host.
 
-## What's next
+## What comes next
 
-- [Topology](topology.md) covers routers chains, multi-interface
-  devices, regions, link conditions, and presets.
-- [NAT and Firewalls](nat-and-firewalls.md) dives into NAT modes,
-  IPv6 NAT, firewalls, and custom configurations.
-- [Running Code](running-code.md) explains all the ways to execute
-  code inside namespaces and dynamic operations like replug and link
-  control.
+The following chapters cover patchbay's features in more depth:
+
+- [Building Topologies](topology.md) explains router chains, multi-homed
+  devices, regions with inter-region latency, link condition presets, and
+  router presets.
+- [NAT and Firewalls](nat-and-firewalls.md) covers all NAT modes
+  (including NAT64 for IPv6-only networks), firewall presets, custom
+  configurations, and runtime changes.
+- [Running Code in Namespaces](running-code.md) describes the execution
+  model, all the ways to run code inside a namespace, and dynamic topology
+  operations like interface replug and link control.

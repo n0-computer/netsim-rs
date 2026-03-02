@@ -1,13 +1,21 @@
 # Running Code in Namespaces
 
-Every node in patchbay (devices, routers, the IX) has its own network
-namespace with an async worker and a sync worker. You never call `setns`
-yourself; the workers handle namespace entry transparently.
+Every node in a patchbay topology, whether it is a device, a router, or
+the IX itself, has its own Linux network namespace. Each namespace comes
+with two workers: an async worker backed by a single-threaded tokio
+runtime, and a sync worker backed by a dedicated OS thread. You never
+interact with `setns` directly; the workers enter the correct namespace
+before executing your code.
 
-## Async tasks with `spawn`
+This chapter describes all the execution methods available on node handles,
+when to use each one, and how to modify the topology at runtime.
 
-`spawn` runs an async closure on the node's single-threaded tokio
-runtime. This is the primary way to run network code:
+## Async tasks
+
+The `spawn` method is the primary way to run networking code inside a
+namespace. It takes an async closure, dispatches it to the namespace's
+tokio runtime, and returns a join handle that resolves when the task
+completes:
 
 ```rust
 let handle = dev.spawn(async move |_dev| {
@@ -21,18 +29,23 @@ let bytes_read = handle.await??;
 ```
 
 The closure receives a clone of the device handle, which you can use to
-query addresses or spawn further tasks. The returned handle is a
-`JoinHandle` that resolves when the task completes.
+query addresses or spawn further tasks. All tokio networking primitives
+work inside `spawn`: `TcpStream`, `TcpListener`, `UdpSocket`, timeouts,
+intervals, and anything built on top of them. Because the runtime is
+single-threaded and pinned to the namespace, all socket operations happen
+against the namespace's isolated network stack.
 
-All tokio networking primitives work inside `spawn`: TCP, UDP,
-`TcpListener`, `UdpSocket`, timeouts, intervals, and everything built
-on top of them.
+You should use `spawn` for any work that involves network I/O. The
+alternative, blocking I/O in a sync context, will stall the worker thread
+and can cause kernel-level timeouts for TCP (SYN retransmit takes roughly
+127 seconds to exhaust). Always prefer async networking via `spawn`.
 
-## Sync closures with `run_sync`
+## Sync closures
 
-`run_sync` dispatches a closure to the namespace's sync worker thread
-and blocks until it returns. Use this for quick non-I/O operations like
-reading a sysctl value or spawning a process:
+The `run_sync` method dispatches a closure to the namespace's sync worker
+thread and blocks until it returns. It is intended for quick, non-I/O
+operations: reading a sysctl value, creating a socket to inspect its local
+address, or spawning an OS process.
 
 ```rust
 let local_addr = dev.run_sync(|| {
@@ -41,14 +54,14 @@ let local_addr = dev.run_sync(|| {
 })?;
 ```
 
-Do not do blocking network I/O (TCP connect, HTTP requests) inside
-`run_sync`. The sync worker is a single thread; blocking it stalls all
-other `run_sync` calls for that namespace. Use `spawn` with tokio
-networking instead.
+Because `run_sync` blocks both the calling thread and the sync worker,
+avoid doing anything slow inside it. TCP connects, HTTP requests, and
+other blocking network I/O belong in `spawn`, not in `run_sync`.
 
-## OS commands with `spawn_command`
+## OS commands
 
-`spawn_command` runs an OS process inside the namespace. It returns a
+`spawn_command` runs an OS process inside the namespace. It configures
+the process to execute in the correct namespace and returns a standard
 `std::process::Child` that you manage yourself:
 
 ```rust
@@ -58,91 +71,111 @@ let mut child = dev.spawn_command({
     cmd
 })?;
 
-let output = tokio::task::spawn_blocking(move || child.wait_with_output()).await??;
+let output = tokio::task::spawn_blocking(move || {
+    child.wait_with_output()
+}).await??;
 assert!(output.status.success());
 ```
 
-For async command management, use `spawn_command_async` which takes a
-`tokio::process::Command` and returns a `tokio::process::Child`:
+For async command management, `spawn_command_async` takes a
+`tokio::process::Command` and returns a `tokio::process::Child`. This
+integrates more naturally with async test flows where you want to await
+process completion without blocking a thread:
 
 ```rust
-let child = dev.spawn_command_async({
+let mut child = dev.spawn_command_async({
     let mut cmd = tokio::process::Command::new("iperf3");
     cmd.args(["-c", "203.0.113.10"]);
     cmd
 })?;
+
+let status = child.wait().await?;
 ```
 
-## Dedicated threads with `spawn_thread`
+## Dedicated threads
 
-For long-running blocking work that would starve the sync worker, use
-`spawn_thread` to get a dedicated OS thread in the namespace:
+When you have long-running blocking work that would starve the sync
+worker, `spawn_thread` creates a dedicated OS thread inside the
+namespace. Unlike `run_sync`, this thread does not compete with other
+sync operations on the same namespace:
 
 ```rust
 let handle = dev.spawn_thread(|| {
-    // Long-running blocking work here.
-    // This thread is in the device's network namespace.
+    // This thread runs in the device's namespace.
+    // It can do blocking work for an extended period
+    // without affecting run_sync calls.
     Ok(())
 })?;
 ```
 
 ## UDP reflectors
 
-`spawn_reflector` is a convenience method that starts a UDP echo server
-in the namespace. Useful for connectivity tests:
+`spawn_reflector` starts a UDP echo server in the namespace. It is a
+convenience method for connectivity tests: send a datagram to the
+reflector and measure the round-trip time to verify that the path works.
 
 ```rust
 let bind_addr = SocketAddr::new(IpAddr::V4(server_ip), 9000);
 server.spawn_reflector(bind_addr)?;
 ```
 
-## Dynamic operations
+The reflector runs on the namespace's async worker and echoes every
+received datagram back to its sender.
 
-After building a topology, you can modify it at runtime.
+## Dynamic topology operations
 
-### Replug interfaces
+A patchbay topology is not static. After building the initial layout, you
+can modify interfaces, routes, link conditions, and NAT configuration at
+runtime. These operations are useful for simulating network events during
+a test: a WiFi handoff, a link failure, or a NAT policy change.
 
-Move a device's interface to a different router:
+### Replugging interfaces
+
+Move a device's interface from one router to another. The interface
+receives a new IP address from the new router's pool, and routes are
+updated automatically:
 
 ```rust
 dev.replug_iface("wlan0", other_router.id()).await?;
 ```
 
-The interface gets a new IP from the new router's pool, and routes are
-updated automatically.
+This models scenarios like roaming between WiFi access points or
+switching between ISPs.
 
-### Switch default route
+### Switching the default route
 
-When a device has multiple interfaces, switch which one carries the
-default route:
+For multi-homed devices, change which interface carries the default route.
+This simulates a WiFi-to-cellular handoff or a VPN tunnel activation:
 
 ```rust
 dev.set_default_route("cell0").await?;
 ```
 
-### Link down / up
+### Bringing interfaces down and up
 
-Simulate a cable unplug or WiFi disconnect:
+Simulate link failures by administratively disabling an interface. While
+the interface is down, packets sent to or from it are dropped:
 
 ```rust
 dev.link_down("wlan0").await?;
-// Interface is down, packets are dropped.
+// All traffic over wlan0 is now dropped.
 
 dev.link_up("wlan0").await?;
-// Back online.
+// The interface is back and traffic flows again.
 ```
 
-### Change link conditions
+### Changing link conditions at runtime
 
-Degrade or improve a link at runtime:
+Modify link impairment on the fly to simulate degrading or improving
+network quality:
 
 ```rust
 use patchbay::{LinkCondition, LinkLimits};
 
-// Switch to 3G
+// Switch to a 3G-like link.
 dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G)).await?;
 
-// Custom degradation
+// Apply custom impairment.
 dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
     rate_kbit: 500,
     loss_pct: 15.0,
@@ -150,13 +183,15 @@ dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
     ..Default::default()
 }))).await?;
 
-// Remove all impairment
+// Remove all impairment and return to a clean link.
 dev.set_link_condition("wlan0", None).await?;
 ```
 
-### Change NAT mode
+### Changing NAT at runtime
 
-Switch a router's NAT mode and flush stale conntrack entries:
+Switch a router's NAT mode and flush stale connection tracking state.
+This is covered in more detail in the
+[NAT and Firewalls](nat-and-firewalls.md) chapter:
 
 ```rust
 router.set_nat_mode(Nat::Corporate).await?;
@@ -165,18 +200,20 @@ router.flush_nat_state().await?;
 
 ## Handles
 
-`Device`, `Router`, and `Ix` are lightweight, cloneable handles. All
-three support the same execution methods: `spawn`, `run_sync`,
-`spawn_thread`, `spawn_command`, `spawn_command_async`, and
-`spawn_reflector`.
+`Device`, `Router`, and `Ix` are lightweight, cloneable handles. All three
+types support the same set of execution methods described above: `spawn`,
+`run_sync`, `spawn_thread`, `spawn_command`, `spawn_command_async`, and
+`spawn_reflector`. Cloning a handle is cheap; it does not duplicate the
+underlying namespace or its workers.
 
 Handle methods return `Result` or `Option` when the underlying node has
-been removed from the lab. Cloning a handle is cheap and does not
-duplicate the namespace or workers.
+been removed from the lab. If you hold a handle to a device that no longer
+exists, calls will return an error rather than panicking.
 
 ## Cleanup
 
-When the `Lab` is dropped, all workers are shut down and namespace file
-descriptors are closed. The kernel automatically cleans up veth pairs,
-routes, and nftables rules when the namespace disappears. No manual
-cleanup is needed.
+When the `Lab` is dropped, it shuts down all async and sync workers, then
+closes the namespace file descriptors. The kernel removes veth pairs,
+routes, and nftables rules when the last reference to a namespace
+disappears. No explicit cleanup is needed, and no state leaks onto the
+host between test runs.

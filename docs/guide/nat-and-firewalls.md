@@ -1,12 +1,16 @@
 # NAT and Firewalls
 
 patchbay implements NAT and firewalls using nftables rules injected into
-router namespaces. This gives you kernel-level packet processing that
-behaves identically to real hardware.
+router namespaces. Because these are real kernel-level packet processing
+rules, they behave identically to their counterparts on physical hardware.
+This chapter covers all available NAT modes, firewall presets, custom
+configurations, and runtime mutation.
 
-## IPv4 NAT modes
+## IPv4 NAT
 
-Set the NAT mode on a router with `.nat()`:
+NAT controls how a router translates addresses for traffic flowing between
+its downstream (private) and upstream (public) interfaces. You configure it
+on the router builder with `.nat()`:
 
 ```rust
 use patchbay::Nat;
@@ -14,32 +18,39 @@ use patchbay::Nat;
 let home = lab.add_router("home").nat(Nat::Home).build().await?;
 ```
 
-Available modes:
+Each NAT preset models a real-world device class by combining two
+independent axes from RFC 4787: **mapping** (how external ports are
+assigned) and **filtering** (which inbound packets are forwarded to a
+mapped port).
 
-| Mode | Mapping | Filtering | Typical use |
-|------|---------|-----------|-------------|
-| `None` | (no NAT) | (no NAT) | Datacenter, public IPs |
+| Mode | Mapping | Filtering | Real-world model |
+|------|---------|-----------|------------------|
+| `None` | n/a | n/a | Datacenter, public IPs |
 | `Home` | Endpoint-independent | Endpoint-dependent | Home WiFi router |
 | `Corporate` | Endpoint-independent | Endpoint-dependent | Enterprise gateway |
-| `FullCone` | Endpoint-independent | Endpoint-independent | Gaming, fullcone VPN |
+| `FullCone` | Endpoint-independent | Endpoint-independent | Gaming router, fullcone VPN |
 | `CloudNat` | Endpoint-dependent | Endpoint-dependent | AWS/GCP cloud NAT |
-| `Cgnat` | Endpoint-dependent | Endpoint-dependent | Carrier-grade NAT (ISP) |
+| `Cgnat` | Endpoint-dependent | Endpoint-dependent | Carrier-grade NAT at the ISP |
 
-**Mapping** controls how external ports are assigned. Endpoint-independent
-mapping reuses the same external port for all destinations, which is what
-makes UDP hole-punching work.
+Endpoint-independent mapping means the router reuses the same external
+port for all destinations. This is what makes UDP hole-punching possible:
+a peer can learn the mapped address via STUN and share it with another
+peer, and the mapping holds regardless of who sends to it.
+Endpoint-dependent mapping assigns a different external port per
+destination, which defeats naive hole-punching.
 
-**Filtering** controls which inbound packets get forwarded.
-Endpoint-independent filtering (fullcone) lets any host send to a mapped
-port. Endpoint-dependent filtering only forwards replies from hosts you
-already contacted.
+Filtering is the inbound side. Endpoint-independent filtering (fullcone)
+forwards packets from any external host to a mapped port.
+Endpoint-dependent filtering only forwards replies from hosts the internal
+client has already contacted. For a deep dive into how these modes are
+implemented in nftables and how hole-punching works across them, see the
+[NAT Hole-Punching](../reference/holepunching.md) reference.
 
-For a deep dive into the nftables implementation and hole-punching
-mechanics, see [NAT Hole-Punching](../reference/holepunching.md).
+### Custom NAT configurations
 
-### Custom NAT
-
-For fine-grained control, build a `NatConfig` directly:
+When the presets do not match your scenario, you can build a `NatConfig`
+directly and choose the mapping, filtering, and timeout behavior
+independently:
 
 ```rust
 use patchbay::nat::{NatConfig, NatMapping, NatFiltering};
@@ -50,23 +61,29 @@ let custom = Nat::Custom(NatConfig {
     ..Default::default()
 });
 
-let router = lab.add_router("custom")
-    .nat(custom)
-    .build().await?;
+let router = lab.add_router("custom").nat(custom).build().await?;
 ```
 
 ### Changing NAT at runtime
 
-Switch NAT mode and flush connection tracking state:
+You can switch a router's NAT mode after the topology is built. This is
+useful for testing how your application reacts when the NAT environment
+changes mid-session, for example simulating a network migration. Call
+`flush_nat_state()` afterward to clear stale conntrack entries so that
+new connections use the updated rules:
 
 ```rust
 router.set_nat_mode(Nat::Corporate).await?;
 router.flush_nat_state().await?;
 ```
 
-## IPv6 NAT modes
+## IPv6 NAT
 
-IPv6 NAT is configured separately from IPv4 NAT using `.nat_v6()`:
+IPv6 NAT is configured separately from IPv4 using `.nat_v6()`. In most
+real-world deployments, IPv6 does not use NAT at all: devices receive
+globally routable addresses and a stateful firewall handles inbound
+filtering. patchbay defaults to this behavior. For the scenarios where
+IPv6 NAT does exist in practice, four modes are available:
 
 ```rust
 use patchbay::NatV6Mode;
@@ -77,23 +94,31 @@ let router = lab.add_router("r")
     .build().await?;
 ```
 
-| Mode | What it does |
+| Mode | Description |
 |------|-------------|
-| `None` | No IPv6 NAT (default). Devices get globally routable addresses. |
-| `Nptv6` | NPTv6 prefix translation (RFC 6296). 1:1 stateless mapping. |
-| `Masquerade` | IPv6 masquerade (like IPv4 NAPT). Rare in practice but useful for testing. |
-| `Nat64` | SIIT translation (RFC 6145). IPv6-only devices reach IPv4 hosts via `64:ff9b::/96`. |
+| `None` | No IPv6 NAT. Devices get globally routable addresses. This is the default and the most common real-world configuration. |
+| `Nptv6` | Network Prefix Translation (RFC 6296). Performs stateless 1:1 prefix mapping at the border, preserving end-to-end connectivity while hiding internal prefixes. |
+| `Masquerade` | IPv6 masquerade, analogous to IPv4 NAPT. Rare in production but useful for testing applications that must handle v6 address rewriting. |
+| `Nat64` | Stateless IP/ICMP Translation (RFC 6145). Allows IPv6-only devices to reach IPv4 hosts through the well-known prefix `64:ff9b::/96`. |
 
 ### NAT64
 
-NAT64 lets IPv6-only devices communicate with IPv4 servers. The router
-runs a userspace SIIT translator that converts between IPv6 and IPv4
-headers. Packets addressed to `64:ff9b::<ipv4-addr>` are translated and
-forwarded to the embedded IPv4 address.
+NAT64 is the mechanism that lets IPv6-only mobile networks (T-Mobile US,
+Jio, NTT Docomo) provide IPv4 connectivity. The router runs a userspace
+SIIT translator that rewrites packet headers between IPv6 and IPv4.
+When an IPv6-only device sends a packet to an address in the `64:ff9b::/96`
+prefix, the translator extracts the embedded IPv4 address, rewrites the
+headers, and forwards the packet as IPv4. Return traffic is translated
+back to IPv6.
+
+You can configure NAT64 explicitly or use the `MobileV6` preset, which
+sets up a V6Only router with NAT64 and an inbound firewall, matching the
+configuration of a typical mobile carrier gateway:
 
 ```rust
-use patchbay::{IpSupport, NatV6Mode, Nat};
+use patchbay::{IpSupport, NatV6Mode, Nat, RouterPreset};
 
+// Explicit configuration:
 let carrier = lab
     .add_router("carrier")
     .ip_support(IpSupport::DualStack)
@@ -102,7 +127,7 @@ let carrier = lab
     .build()
     .await?;
 
-// Or use the MobileV6 preset which sets this up automatically:
+// Or equivalently, using the preset:
 let carrier = lab
     .add_router("carrier")
     .preset(RouterPreset::MobileV6)
@@ -110,24 +135,29 @@ let carrier = lab
     .await?;
 ```
 
-To reach a v4 server from an IPv6-only device, embed the server's IPv4
-address in the NAT64 prefix:
+To reach an IPv4 server from an IPv6-only device, embed the server's IPv4
+address in the NAT64 prefix using the `embed_v4_in_nat64` helper:
 
 ```rust
 use patchbay::nat64::embed_v4_in_nat64;
 
-let server_v4: Ipv4Addr = "203.0.113.10".parse()?;
+let server_v4: Ipv4Addr = dc.uplink_ip().unwrap();
 let nat64_addr = embed_v4_in_nat64(server_v4);
-// nat64_addr = 64:ff9b::cb00:710a
-// Connect to this address and the NAT64 router translates it to 203.0.113.10
+// nat64_addr is 64:ff9b::<v4 octets>, e.g. 64:ff9b::cb00:710a
+
+let target = SocketAddr::new(IpAddr::V6(nat64_addr), 8080);
+// Connecting to this address goes through the NAT64 translator.
 ```
 
-See [IPv6 Deployments](../reference/ipv6.md) for how real carriers
-deploy NAT64 and how to simulate each scenario.
+The [IPv6 Deployments](../reference/ipv6.md) reference covers how real
+carriers deploy NAT64 and how to simulate each scenario in patchbay.
 
 ## Firewalls
 
-Firewall presets control both inbound and outbound traffic on a router:
+Firewall presets control which traffic a router allows in each direction.
+They are independent of NAT: a router can have a firewall without NAT
+(common for datacenter servers behind a stateful firewall), NAT without a
+firewall, or both.
 
 ```rust
 use patchbay::Firewall;
@@ -137,16 +167,25 @@ let corp = lab.add_router("corp")
     .build().await?;
 ```
 
-| Preset | Inbound | Outbound |
-|--------|---------|----------|
-| `None` | All allowed | All allowed |
-| `BlockInbound` | Block unsolicited (RFC 6092 CE) | All allowed |
-| `Corporate` | Block unsolicited | TCP 80, 443 + UDP 53 only |
-| `CaptivePortal` | Block unsolicited | TCP 80, 443 + UDP 53 only (all other UDP blocked) |
+The following presets are available:
 
-### Custom firewalls
+| Preset | Inbound policy | Outbound policy |
+|--------|----------------|-----------------|
+| `None` | All traffic allowed | All traffic allowed |
+| `BlockInbound` | Block unsolicited connections (RFC 6092 CE router behavior) | All traffic allowed |
+| `Corporate` | Block unsolicited connections | Allow only TCP 80, 443 and UDP 53 |
+| `CaptivePortal` | Block unsolicited connections | Allow only TCP 80, 443 and UDP 53; block all other UDP |
 
-Build a `FirewallConfig` for precise control:
+The `Corporate` and `CaptivePortal` presets are particularly useful for
+testing P2P applications: corporate firewalls block STUN and direct UDP,
+forcing applications to fall back to TURN relaying over TLS on port 443.
+Captive portal firewalls additionally kill QUIC by blocking all
+non-DNS UDP.
+
+### Custom firewall rules
+
+When the presets do not match your test scenario, build a `FirewallConfig`
+directly:
 
 ```rust
 use patchbay::firewall::FirewallConfig;
@@ -162,23 +201,25 @@ let router = lab.add_router("strict")
     .build().await?;
 ```
 
-## Combining NAT and firewalls
+## Composing NAT and firewalls
 
-NAT and firewalls are independent. A router can have any combination:
+NAT and firewalls are orthogonal. A router can have any combination of the
+two, and they operate at different points in the nftables pipeline. Some
+typical compositions:
 
 ```rust
-// NAT + firewall (typical home router)
+// Home router: NAT + inbound firewall. The most common residential setup.
 let home = lab.add_router("home")
     .nat(Nat::Home)
     .firewall(Firewall::BlockInbound)
     .build().await?;
 
-// Firewall only, no NAT (datacenter with strict rules)
+// Datacenter with strict outbound rules but no NAT.
 let dc = lab.add_router("dc")
     .firewall(Firewall::Corporate)
     .build().await?;
 
-// Double NAT (ISP CGNAT + home NAT)
+// Double NAT: ISP carrier-grade NAT in front of a home router.
 let isp = lab.add_router("isp").nat(Nat::Cgnat).build().await?;
 let home = lab.add_router("home")
     .upstream(isp.id())
@@ -187,5 +228,6 @@ let home = lab.add_router("home")
 ```
 
 Router presets set both NAT and firewall to sensible defaults for each
-scenario. Call individual methods after `.preset()` to override specific
-settings.
+deployment pattern. Calling individual methods after `.preset()` overrides
+the preset's defaults, so you can start from a known configuration and
+adjust only what your test needs.

@@ -1,27 +1,38 @@
-# Topology: Routers, Devices, and Regions
+# Building Topologies
 
-patchbay topologies are built from three primitives: **routers** that
-provide connectivity, **devices** that run your code, and **regions**
-that add inter-region latency.
+A patchbay topology is built from three kinds of objects: **routers** that
+provide network connectivity, **devices** that run your code, and
+**regions** that introduce latency between groups of routers. This chapter
+explains how to compose them into realistic network layouts.
 
 ## Routers
 
-Every router connects to the lab's IX (internet exchange) bridge and
-gets a public IP on that link. Downstream devices connect to the router
-through veth pairs.
+Every router connects to the lab's internet exchange (IX) bridge and
+receives a public IP address on that link. Downstream devices connect to
+the router through veth pairs and receive addresses from the router's
+address pool.
 
 ```rust
 let dc = lab.add_router("dc").build().await?;
 ```
 
-### Router chains (upstream)
+A router with no additional configuration acts like a datacenter switch:
+devices behind it get public IPs, there is no NAT, and there is no
+firewall. To model different real-world environments, you configure NAT,
+firewalls, IP support, and address pools on the router builder. The
+[NAT and Firewalls](nat-and-firewalls.md) chapter covers those options
+in detail.
 
-Routers can chain behind other routers using `.upstream()`. The
-downstream router gets its public IP from the parent instead of the IX
-directly. This is how you build multi-layer topologies:
+### Chaining routers
+
+Routers can be chained behind other routers using the `.upstream()` method.
+Instead of connecting directly to the IX, the downstream router receives
+its address from the parent router's pool. This is how you build
+multi-layer topologies like ISP + home or corporate gateway + branch
+office:
 
 ```rust
-let isp = lab.add_router("isp").build().await?;
+let isp = lab.add_router("isp").nat(Nat::Cgnat).build().await?;
 let home = lab
     .add_router("home")
     .upstream(isp.id())
@@ -30,13 +41,17 @@ let home = lab
     .await?;
 ```
 
-Here, `home` sits behind `isp`. Devices behind `home` are double-NATed
-(carrier-grade NAT + home NAT) if you add NAT to both routers.
+In this example, the home router sits behind the ISP. Devices behind
+`home` are double-NATed: their traffic passes through home NAT first, then
+through carrier-grade NAT at the ISP. This is a common topology for
+testing P2P connectivity where both peers sit behind multiple layers of
+NAT.
 
 ### Router presets
 
-`RouterPreset` configures NAT, firewall, IP support, and address pool in
-one call:
+For common deployment patterns, `RouterPreset` configures NAT, firewall,
+IP support, and address pool in a single call. This avoids repeating the
+same combinations across tests:
 
 ```rust
 use patchbay::RouterPreset;
@@ -46,9 +61,11 @@ let dc   = lab.add_router("dc").preset(RouterPreset::Datacenter).build().await?;
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;
 ```
 
-Available presets:
+The following table lists all available presets. Each row shows the NAT
+mode, firewall policy, IP address family, and downstream address pool that
+the preset configures:
 
-| Preset | NAT | Firewall | IP Support | Pool |
+| Preset | NAT | Firewall | IP support | Pool |
 |--------|-----|----------|------------|------|
 | `Home` | Home | BlockInbound | DualStack | Private |
 | `Datacenter` | None | None | DualStack | Public |
@@ -59,47 +76,58 @@ Available presets:
 | `Hotel` | Home | CaptivePortal | DualStack | Private |
 | `Cloud` | None | None | DualStack | Public |
 
-Individual methods called after `.preset()` override preset values, so
-you can use a preset as a starting point and tweak specific settings.
+Methods called after `.preset()` override the preset's defaults, so you
+can use a preset as a starting point and customize individual settings.
+For example, `RouterPreset::Home` with `.nat(Nat::FullCone)` gives you a
+home-style topology with fullcone NAT instead of the default
+endpoint-dependent filtering.
 
-### IP support
+### Address families
 
-Control which address families a router provides:
+By default, routers run dual-stack (both IPv4 and IPv6). You can restrict
+a router to a single address family with `.ip_support()`:
 
 ```rust
 use patchbay::IpSupport;
 
-let v4_only = lab.add_router("legacy")
-    .ip_support(IpSupport::V4Only)
-    .build().await?;
-
-let v6_only = lab.add_router("modern")
+let v6_only = lab.add_router("carrier")
     .ip_support(IpSupport::V6Only)
-    .build().await?;
-
-let dual = lab.add_router("both")
-    .ip_support(IpSupport::DualStack)
     .build().await?;
 ```
 
+The three options are `V4Only`, `V6Only`, and `DualStack`. Devices behind
+a V6Only router will only receive IPv6 addresses. If the router also has
+NAT64 enabled, those devices can still reach IPv4 destinations through the
+NAT64 prefix; see the [NAT and Firewalls](nat-and-firewalls.md) chapter
+for details.
+
 ## Devices
 
-Devices are the endpoints where your code runs. Each device gets one or
-more network interfaces, each connected to a router.
+Devices are the endpoints where your code runs. Each device gets its own
+network namespace with one or more interfaces, each connected to a
+router. IP addresses are assigned automatically from the router's pool.
 
 ```rust
-let phone = lab
-    .add_device("phone")
-    .iface("wlan0", home.id(), Some(LinkCondition::Wifi))
+let server = lab
+    .add_device("server")
+    .iface("eth0", dc.id(), None)
     .build()
     .await?;
 ```
 
-### Multi-interface devices
+You can read a device's assigned addresses through the handle:
 
-A device can have multiple interfaces connected to different routers.
-This models dual-homed machines, VPN scenarios, or WiFi + cellular
-devices:
+```rust
+let v4: Option<Ipv4Addr> = server.ip();
+let v6: Option<Ipv6Addr> = server.ip6();
+```
+
+### Multi-homed devices
+
+A device can have multiple interfaces, each connected to a different
+router. This models machines with both WiFi and Ethernet, phones with
+WiFi and cellular, or VPN scenarios where a tunnel interface coexists with
+the physical link:
 
 ```rust
 let phone = lab
@@ -111,74 +139,82 @@ let phone = lab
     .await?;
 ```
 
-`.default_via("wlan0")` sets which interface carries the default route.
-You can switch it at runtime with `phone.set_default_route("cell0")`.
-
-### Device IPs
-
-Devices get IPs assigned automatically from their router's pool. Access
-them through the handle:
+The `.default_via("wlan0")` call sets which interface carries the default
+route. At runtime, you can switch the default route to a different
+interface to simulate a handoff:
 
 ```rust
-let v4 = phone.ip();       // Option<Ipv4Addr>
-let v6 = phone.ip6();      // Option<Ipv6Addr>
+phone.set_default_route("cell0").await?;
 ```
 
 ## Link conditions
 
-Link conditions simulate real-world impairment using `tc netem` and
-`tc tbf`. Apply them at build time or change them dynamically.
+Link conditions simulate real-world network impairment. Under the hood,
+patchbay uses `tc netem` for loss, latency, and jitter, and `tc tbf` for
+rate limiting. You can apply conditions at build time through interface
+presets, through custom parameters, or dynamically at runtime.
 
-### Built-in presets
+### Presets
+
+The built-in presets model common access technologies:
+
+| Preset | Loss | Latency | Jitter | Rate |
+|--------|------|---------|--------|------|
+| `Wifi` | 2% | 5 ms | 1 ms | 54 Mbit/s |
+| `Mobile4G` | 1% | 30 ms | 10 ms | 50 Mbit/s |
+| `Mobile3G` | 3% | 100 ms | 30 ms | 2 Mbit/s |
+| `Satellite` | 0.5% | 600 ms | 50 ms | 10 Mbit/s |
+
+Apply a preset when building the interface:
 
 ```rust
-use patchbay::LinkCondition;
-
-// At build time:
 let dev = lab.add_device("laptop")
     .iface("eth0", home.id(), Some(LinkCondition::Wifi))
     .build().await?;
 ```
 
-Available presets: `Wifi` (2% loss, 5ms latency, 1ms jitter, 54 Mbit),
-`Mobile4G` (1% loss, 30ms latency, 10ms jitter, 50 Mbit),
-`Mobile3G` (3% loss, 100ms latency, 30ms jitter, 2 Mbit),
-`Satellite` (0.5% loss, 600ms latency, 50ms jitter, 10 Mbit).
+### Custom parameters
 
-### Custom link conditions
+When the presets do not match your scenario, build a `LinkLimits` struct
+directly:
 
 ```rust
 use patchbay::{LinkCondition, LinkLimits};
 
-let terrible_wifi = LinkCondition::Manual(LinkLimits {
+let degraded = LinkCondition::Manual(LinkLimits {
     rate_kbit: 1000,    // 1 Mbit/s
     loss_pct: 10.0,     // 10% packet loss
-    latency_ms: 50,     // 50ms delay
-    jitter_ms: 20,      // 20ms jitter
+    latency_ms: 50,     // 50 ms one-way delay
+    jitter_ms: 20,      // 20 ms jitter
     ..Default::default()
 });
 
 let dev = lab.add_device("laptop")
-    .iface("eth0", home.id(), Some(terrible_wifi))
+    .iface("eth0", home.id(), Some(degraded))
     .build().await?;
 ```
 
-### Dynamic link conditions
+### Runtime changes
 
-Change link conditions at runtime to simulate network degradation:
+You can change or remove link conditions at any point after the topology
+is built. This is useful for simulating network degradation during a test,
+for example switching from WiFi to a congested 3G link and verifying that
+your application adapts:
 
 ```rust
-// Degrade the link
 dev.set_link_condition("eth0", Some(LinkCondition::Mobile3G)).await?;
 
-// Remove all impairment
+// Later, restore a clean link.
 dev.set_link_condition("eth0", None).await?;
 ```
 
 ## Regions
 
-Regions add configurable latency between groups of routers, simulating
-cross-continent or cross-datacenter delays.
+Regions model geographic distance between groups of routers. When you
+assign routers to different regions and link those regions, traffic between
+them passes through per-region router namespaces that apply configurable
+latency via `tc netem`. This gives you realistic cross-continent delays on
+top of any per-link conditions.
 
 ```rust
 let eu = lab.add_region("eu").await?;
@@ -187,24 +223,27 @@ lab.link_regions(&eu, &us, RegionLink::good(80)).await?;
 
 let dc_eu = lab.add_router("dc-eu").region(&eu).build().await?;
 let dc_us = lab.add_router("dc-us").region(&us).build().await?;
-// Traffic between dc-eu and dc-us now carries 80ms added latency.
 ```
 
-Under the hood, each region gets a router namespace. Traffic between
-routers in different regions flows through the region routers, which
-apply the configured delay via `tc netem`.
+In this topology, traffic between `dc_eu` and `dc_us` carries 80 ms of
+added round-trip latency. Routers within the same region communicate
+without the region penalty.
 
-### Fault injection
+### Fault injection with region links
 
-Break and restore region links at runtime for partition testing:
+You can break and restore region links at runtime to simulate network
+partitions. This is valuable for testing how your application handles
+split-brain scenarios, failover logic, and reconnection:
 
 ```rust
 lab.break_region_link(&eu, &us).await?;
-// Traffic between EU and US is now blackholed.
+// All traffic between EU and US routers is now blackholed.
+
+// ... run your partition test ...
 
 lab.restore_region_link(&eu, &us).await?;
-// Connectivity restored.
+// Connectivity is restored.
 ```
 
-This is useful for testing how your application handles network
-partitions, failover, and reconnection.
+The break is immediate: packets in flight are dropped, and no new packets
+can cross the link until it is restored.

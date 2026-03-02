@@ -4,8 +4,9 @@
 
 # Guide
 
+- [Motivation and Scope](guide/motivation.md)
 - [Getting Started](guide/getting-started.md)
-- [Topology: Routers, Devices, and Regions](guide/topology.md)
+- [Building Topologies](guide/topology.md)
 - [NAT and Firewalls](guide/nat-and-firewalls.md)
 - [Running Code in Namespaces](guide/running-code.md)
 
