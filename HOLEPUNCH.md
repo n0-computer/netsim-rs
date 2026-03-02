@@ -197,6 +197,63 @@ can either use presets (`router.nat(Nat::Home)`) or build custom configs
 not through `NatConfig`. It uses plain `masquerade` (not `random`) on the
 IX-facing interface and stacks with the home router's NAT.
 
+## NPTv6 (Network Prefix Translation for IPv6)
+
+NPTv6 translates the source/destination prefix while preserving the host part,
+using nftables `snat prefix to` / `dnat prefix to`. Three bugs were found and
+fixed while implementing the `dual_stack_home_nat_udp` test:
+
+### 1. Prefix length mismatch breaks translation
+
+NPTv6 requires matching prefix lengths on LAN and WAN sides. The WAN prefix
+was originally derived as `Ipv6Net::new(upstream_ip, ix_cidr_prefix_len)` which
+gave a /32 (the IX CIDR length) against a /64 LAN prefix. The kernel silently
+accepts mismatched prefix lengths but translations fail unpredictably.
+
+**Fix**: `nptv6_wan_prefix()` helper derives a unique /64 from the router's IX
+IP by placing the host part into segment 3: `2001:db8::11` → `2001:db8:0:11::/64`.
+
+### 2. Unrestricted `dnat prefix` breaks NDP
+
+The original NPTv6 rules translated ALL packets on the WAN interface:
+
+```nft
+iif "ix" dnat prefix to fd10:0:0:2::/64
+```
+
+This inadvertently translates NDP Neighbor Solicitations, ICMPv6, and any other
+traffic destined for the router's own IX address. The destination gets rewritten
+to a non-existent ULA address, so NDP resolution fails and the router becomes
+unreachable from the IX bridge.
+
+**Fix**: restrict translation to only packets matching the WAN/LAN prefix:
+
+```nft
+oif "ix" ip6 saddr fd10:0:0:2::/64 snat prefix to 2001:db8:0:11::/64
+iif "ix" ip6 daddr 2001:db8:0:11::/64 dnat prefix to fd10:0:0:2::/64
+```
+
+### 3. WAN prefix must be outside the IX on-link range
+
+The IX CIDR was originally /32 (`2001:db8::/32`). The WAN prefix `2001:db8:0:11::/64`
+falls within this /32, so all routers on the IX bridge consider it on-link and
+try NDP resolution directly — instead of routing through the IX gateway where
+the return route lives.
+
+**Fix**: changed IX CIDR from /32 to /64 (`2001:db8::/64`). IX addresses like
+`2001:db8::10` stay within the /64 on-link range, while WAN prefixes like
+`2001:db8:0:11::/64` are off-link and routed via the default gateway.
+
+### 4. Return routes needed for private v6 downstreams
+
+Unlike IPv4 where return routes are always added for IX-level routers, IPv6
+return routes were only added for `DownstreamPool::Public`. Routers with private
+ULA downstreams (the default) had no root-ns route for their v6 subnet, making
+cross-router v6 traffic unroutable.
+
+**Fix**: add v6 return routes for all IX-level routers regardless of downstream
+pool, matching the v4 behavior.
+
 ## Limitations
 
 - **UDP only in fullcone map**. TCP hole-punching (simultaneous SYN) relies

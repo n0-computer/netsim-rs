@@ -176,3 +176,67 @@ async fn v6_only_tcp_roundtrip() -> Result<()> {
 
     Ok(())
 }
+
+/// Verify raw UDP connectivity (v4 + v6) through a dual-stack home NAT with NPTv6.
+#[tokio::test]
+#[traced_test]
+async fn dual_stack_home_nat_udp() -> Result<()> {
+    let lab = Lab::new().await?;
+
+    // DC router: dual-stack, no NAT (hosting the reflector server).
+    let dc = lab
+        .add_router("dc")
+        .ip_support(IpSupport::DualStack)
+        .build()
+        .await?;
+
+    // Reflector server device on dc.
+    let server = lab.add_device("server").uplink(dc.id()).build().await?;
+    let server_v4 = server.ip().expect("server has IPv4");
+    let server_v6 = server.ip6().expect("server has IPv6");
+    info!(%server_v4, %server_v6, "reflector server");
+
+    // Spawn reflectors on both address families.
+    let reflector_v4: SocketAddr = (server_v4, 3478).into();
+    let reflector_v6: SocketAddr = (server_v6, 3479).into();
+    server.spawn_reflector(reflector_v4)?;
+    server.spawn_reflector(reflector_v6)?;
+
+    // Home NAT router: dual-stack with NPTv6.
+    let nat = lab
+        .add_router("nat")
+        .nat(Nat::Home)
+        .nat_v6(NatV6Mode::Nptv6)
+        .ip_support(IpSupport::DualStack)
+        .build()
+        .await?;
+
+    // Client device behind NAT.
+    let dev = lab.add_device("dev").uplink(nat.id()).build().await?;
+    let dev_v4 = dev.ip().expect("device has IPv4");
+    let dev_v6 = dev.ip6().expect("device has IPv6");
+    info!(%dev_v4, %dev_v6, "client device");
+
+    // Probe v4: should succeed and show a NATted address.
+    let observed_v4 = dev.probe_udp_mapping(reflector_v4)?;
+    info!(%observed_v4, "observed v4 address");
+    assert!(observed_v4.is_ipv4(), "v4 probe should return IPv4 addr");
+    assert_ne!(
+        observed_v4.ip(),
+        IpAddr::V4(dev_v4),
+        "v4 address should be NATted (differ from device private IP)"
+    );
+
+    // Probe v6: should succeed through NPTv6.
+    let observed_v6 = dev.probe_udp_mapping(reflector_v6)?;
+    info!(%observed_v6, "observed v6 address");
+    assert!(observed_v6.is_ipv6(), "v6 probe should return IPv6 addr");
+    // With NPTv6, the prefix is translated, so the observed address differs from the device's.
+    info!(
+        dev_v6 = %dev_v6,
+        observed_v6 = %observed_v6.ip(),
+        "v6 addresses (should differ with NPTv6 prefix translation)"
+    );
+
+    Ok(())
+}

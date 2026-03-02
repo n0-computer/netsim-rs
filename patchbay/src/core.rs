@@ -659,20 +659,8 @@ impl NetworkCore {
         let lan_prefix = router.downstream_cidr_v6.unwrap_or_else(|| {
             Ipv6Net::new(Ipv6Addr::new(0xfd10, 0, 0, 0, 0, 0, 0, 0), 64).unwrap()
         });
-        let wan_prefix = {
-            let up_ip = router.upstream_ip_v6.unwrap_or(Ipv6Addr::UNSPECIFIED);
-            let up_prefix = if router.uplink == Some(self.ix_sw()) {
-                self.cfg.ix_cidr_v6.prefix_len()
-            } else {
-                router
-                    .uplink
-                    .and_then(|sw| self.switches.get(&sw))
-                    .and_then(|sw| sw.cidr_v6)
-                    .map(|c| c.prefix_len())
-                    .unwrap_or(64)
-            };
-            Ipv6Net::new(up_ip, up_prefix).unwrap_or_else(|_| Ipv6Net::new(up_ip, 128).unwrap())
-        };
+        let up_ip = router.upstream_ip_v6.unwrap_or(Ipv6Addr::UNSPECIFIED);
+        let wan_prefix = nptv6_wan_prefix(up_ip, lan_prefix.prefix_len());
         Ok(RouterNatV6Params {
             ns: router.ns.clone(),
             wan_if,
@@ -1871,16 +1859,13 @@ pub(crate) async fn setup_router_async(
 
         // IPv6 NAT (IX-level router).
         if router.cfg.nat_v6 != NatV6Mode::None {
-            if let (Some(up_v6), Some(up_prefix), Some((dl_gw_v6, dl_prefix))) = (
-                router.upstream_ip_v6,
-                data.ix_cidr_v6_prefix,
-                data.downlink_bridge_v6,
-            ) {
-                let wan_pfx = Ipv6Net::new(up_v6, up_prefix)
-                    .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
+            if let (Some(up_v6), Some((dl_gw_v6, dl_prefix))) =
+                (router.upstream_ip_v6, data.downlink_bridge_v6)
+            {
                 let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
                     .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
-                debug!(nat_v6 = ?router.cfg.nat_v6, "router: apply NAT v6");
+                let wan_pfx = nptv6_wan_prefix(up_v6, lan_pfx.prefix_len());
+                debug!(nat_v6 = ?router.cfg.nat_v6, %wan_pfx, %lan_pfx, "router: apply NAT v6");
                 apply_nat_v6(
                     netns,
                     &router.ns,
@@ -1890,6 +1875,18 @@ pub(crate) async fn setup_router_async(
                     wan_pfx,
                 )
                 .await?;
+
+                // Add return route in root ns for the WAN prefix so translated
+                // traffic can be routed back to this router.
+                let root_ns = data.root_ns.clone();
+                nl_run(netns, &root_ns, move |h: Netlink| async move {
+                    h.add_route_v6(wan_pfx.addr(), wan_pfx.prefix_len(), up_v6)
+                        .await
+                        .ok();
+                    Ok(())
+                })
+                .await
+                .ok();
             }
         }
     } else {
@@ -1982,16 +1979,13 @@ pub(crate) async fn setup_router_async(
 
         // IPv6 NAT (sub-router).
         if router.cfg.nat_v6 != NatV6Mode::None {
-            if let (Some(up_v6), Some(up_prefix), Some((dl_gw_v6, dl_prefix))) = (
-                router.upstream_ip_v6,
-                data.upstream_cidr_prefix_v6,
-                data.downlink_bridge_v6,
-            ) {
-                let wan_pfx = Ipv6Net::new(up_v6, up_prefix)
-                    .unwrap_or_else(|_| Ipv6Net::new(up_v6, 128).unwrap());
+            if let (Some(up_v6), Some((dl_gw_v6, dl_prefix))) =
+                (router.upstream_ip_v6, data.downlink_bridge_v6)
+            {
                 let lan_pfx = Ipv6Net::new(dl_gw_v6, dl_prefix)
                     .unwrap_or_else(|_| Ipv6Net::new(dl_gw_v6, 64).unwrap());
-                debug!(nat_v6 = ?router.cfg.nat_v6, "router: apply NAT v6");
+                let wan_pfx = nptv6_wan_prefix(up_v6, lan_pfx.prefix_len());
+                debug!(nat_v6 = ?router.cfg.nat_v6, %wan_pfx, %lan_pfx, "router: apply NAT v6");
                 apply_nat_v6(
                     netns,
                     &router.ns,
@@ -2528,6 +2522,23 @@ pub(crate) async fn apply_nat_for_router(
     }
 }
 
+/// Derives a unique WAN /64 for NPTv6 from a router's upstream IP.
+///
+/// For an IX-level router with upstream IP `2001:db8::11` on IX CIDR `2001:db8::/64`,
+/// this produces `2001:db8:0:11::/64` — a unique /64 outside the IX on-link range
+/// that matches the LAN-side /64 prefix length required by NPTv6.
+///
+/// For sub-routers where the upstream is already on a /64 parent LAN, we use the host
+/// part of the upstream IP to derive a /64 within the parent's subnet space.
+pub(crate) fn nptv6_wan_prefix(upstream_ip: Ipv6Addr, lan_prefix_len: u8) -> Ipv6Net {
+    // Place the host portion (last segment) of the upstream IP into segment 3,
+    // zeroing segments 4-7 to form a clean /64 network prefix.
+    let seg = upstream_ip.segments();
+    let host = seg[7];
+    let wan_net = Ipv6Addr::new(seg[0], seg[1], seg[2], host, 0, 0, 0, 0);
+    Ipv6Net::new(wan_net, lan_prefix_len).unwrap_or_else(|_| Ipv6Net::new(wan_net, 64).unwrap())
+}
+
 /// Applies IPv6 NAT rules in `ns`.
 pub(crate) async fn apply_nat_v6(
     netns: &netns::NetnsManager,
@@ -2540,16 +2551,19 @@ pub(crate) async fn apply_nat_v6(
     match mode {
         NatV6Mode::None => Ok(()),
         NatV6Mode::Nptv6 => {
+            // Match only packets within the LAN/WAN prefix ranges so that
+            // NDP, ICMPv6, and other traffic to/from the router's own IX
+            // address is not inadvertently translated.
             let rules = format!(
                 r#"
 table ip6 nat {{
     chain postrouting {{
         type nat hook postrouting priority 100; policy accept;
-        oif "{wan}" snat prefix to {wan_pfx}
+        oif "{wan}" ip6 saddr {lan_pfx} snat prefix to {wan_pfx}
     }}
     chain prerouting {{
         type nat hook prerouting priority -100; policy accept;
-        iif "{wan}" dnat prefix to {lan_pfx}
+        iif "{wan}" ip6 daddr {wan_pfx} dnat prefix to {lan_pfx}
     }}
 }}
 "#,

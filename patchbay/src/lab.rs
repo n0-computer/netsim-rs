@@ -296,7 +296,7 @@ impl Lab {
             private_cidr: net4(10, 0, 0, 0, 16),
             public_cidr: net4(198, 18, 1, 0, 24),
             ix_gw_v6: Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
-            ix_cidr_v6: net6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 32),
+            ix_cidr_v6: net6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 64),
             private_cidr_v6: net6(Ipv6Addr::new(0xfd10, 0, 0, 0, 0, 0, 0, 0), 48),
             span: lab_span,
         })
@@ -1468,14 +1468,10 @@ impl RouterBuilder {
             };
             let mut return_route_v6 = if router.uplink == Some(ix_sw) {
                 // IX-level router: return route via this router's IX IP.
-                if router.cfg.downstream_pool == DownstreamPool::Public {
-                    if let (Some(cidr6), Some(via6)) =
-                        (router.downstream_cidr_v6, router.upstream_ip_v6)
-                    {
-                        Some((cidr6.addr(), cidr6.prefix_len(), via6))
-                    } else {
-                        None
-                    }
+                if let (Some(cidr6), Some(via6)) =
+                    (router.downstream_cidr_v6, router.upstream_ip_v6)
+                {
+                    Some((cidr6.addr(), cidr6.prefix_len(), via6))
                 } else {
                     None
                 }
