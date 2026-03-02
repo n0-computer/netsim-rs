@@ -708,6 +708,7 @@ impl Lab {
                 downlink_bridge_v6,
                 parent_route_v6: None,
                 parent_route_v4: None,
+                cancel: self.inner.cancel.clone(),
             };
 
             (id, setup_data, idx)
@@ -1214,9 +1215,17 @@ pub enum RouterPreset {
     ///
     /// - IPv4: CGNAT
     /// - IPv6: No NAT, public GUA
-    /// - Firewall: None (carrier relies on per-device /64 isolation)
+    /// - Firewall: Block inbound
     /// - Dual-stack
     Mobile,
+
+    /// IPv6-only mobile carrier with NAT64 (T-Mobile US, NTT Docomo).
+    ///
+    /// - IPv4: None (NAT64 provides v4 reachability via `64:ff9b::/96`)
+    /// - IPv6: NAT64 (userspace SIIT translator + nftables masquerade)
+    /// - Firewall: Block inbound
+    /// - IPv6-only
+    MobileV6,
 
     /// Enterprise / corporate network (Cisco ASA, Palo Alto, Fortinet).
     ///
@@ -1246,7 +1255,7 @@ impl RouterPreset {
     fn nat(self) -> Nat {
         match self {
             Self::Home => Nat::Home,
-            Self::Datacenter | Self::IspV4 => Nat::None,
+            Self::Datacenter | Self::IspV4 | Self::MobileV6 => Nat::None,
             Self::Mobile => Nat::Cgnat,
             Self::Corporate => Nat::Corporate,
             Self::Hotel => Nat::Corporate,
@@ -1254,9 +1263,16 @@ impl RouterPreset {
         }
     }
 
+    fn nat_v6(self) -> NatV6Mode {
+        match self {
+            Self::MobileV6 => NatV6Mode::Nat64,
+            _ => NatV6Mode::None,
+        }
+    }
+
     fn firewall(self) -> Firewall {
         match self {
-            Self::Home | Self::Mobile => Firewall::BlockInbound,
+            Self::Home | Self::Mobile | Self::MobileV6 => Firewall::BlockInbound,
             Self::Datacenter | Self::IspV4 | Self::Cloud => Firewall::None,
             Self::Corporate => Firewall::Corporate,
             Self::Hotel => Firewall::CaptivePortal,
@@ -1266,6 +1282,7 @@ impl RouterPreset {
     fn ip_support(self) -> IpSupport {
         match self {
             Self::Hotel | Self::IspV4 => IpSupport::V4Only,
+            Self::MobileV6 => IpSupport::V6Only,
             _ => IpSupport::DualStack,
         }
     }
@@ -1367,6 +1384,7 @@ impl RouterBuilder {
     pub fn preset(mut self, p: RouterPreset) -> Self {
         if self.result.is_ok() {
             self.nat = p.nat();
+            self.nat_v6 = p.nat_v6();
             self.firewall = p.firewall();
             self.ip_support = p.ip_support();
             self.downstream_pool = Some(p.downstream_pool());
@@ -1499,6 +1517,9 @@ impl RouterBuilder {
             }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();
+            // NAT64 needs v4 on the uplink even when IpSupport::V6Only,
+            // but downstream devices stay v6-only (no v4 CIDR for them).
+            let uplink_needs_v4 = has_v4 || self.nat_v6 == NatV6Mode::Nat64;
             let sub_switch =
                 inner.add_switch(&format!("{}-sub", self.name), None, None, None, None);
             // For Nat::None sub-routers in a region, allocate downstream /24
@@ -1521,7 +1542,7 @@ impl RouterBuilder {
             inner.connect_router_downlink(id, sub_switch, downstream_cidr)?;
             match self.upstream {
                 None => {
-                    let ix_ip = if has_v4 {
+                    let ix_ip = if uplink_needs_v4 {
                         Some(inner.alloc_ix_ip_low()?)
                     } else {
                         None
@@ -1539,7 +1560,7 @@ impl RouterBuilder {
                         .router(parent_id)
                         .and_then(|r| r.downlink)
                         .ok_or_else(|| anyhow!("parent router missing downlink switch"))?;
-                    let uplink_ip_v4 = if has_v4 {
+                    let uplink_ip_v4 = if uplink_needs_v4 {
                         Some(inner.alloc_from_switch(parent_downlink)?)
                     } else {
                         None
@@ -1708,6 +1729,7 @@ impl RouterBuilder {
                 downlink_bridge_v6,
                 parent_route_v6,
                 parent_route_v4,
+                cancel: self.inner.cancel.clone(),
             };
 
             (id, setup_data)

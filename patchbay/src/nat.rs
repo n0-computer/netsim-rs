@@ -331,6 +331,15 @@ pub enum NatV6Mode {
     Nptv6,
     /// Stateful masquerade (useful for testing symmetric behavior on IPv6).
     Masquerade,
+    /// NAT64: IPv6-only devices reach IPv4 hosts via the well-known prefix
+    /// `64:ff9b::/96`. A userspace SIIT translator on the router converts
+    /// between IPv6 and IPv4 headers; nftables masquerade handles port
+    /// mapping on the v4 side.
+    ///
+    /// This is the dominant IPv6 deployment model for mobile carriers
+    /// (T-Mobile US/DE, NTT Docomo, etc.). Pair with `IpSupport::DualStack`
+    /// (the router still needs a v4 uplink for the translated traffic).
+    Nat64,
 }
 
 /// Selects which IP address families a router supports.

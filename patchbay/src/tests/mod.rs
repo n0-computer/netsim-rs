@@ -44,6 +44,7 @@ mod lifecycle;
 mod link_condition;
 mod mtu;
 mod nat;
+mod nat64;
 mod nat_rebind;
 mod preset;
 mod region;

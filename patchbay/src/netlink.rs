@@ -218,6 +218,28 @@ impl Netlink {
         Ok(())
     }
 
+    /// Adds a route for an IPv4 prefix via a specific output device (no gateway).
+    pub(crate) async fn add_route_v4_dev(
+        &self,
+        dst: Ipv4Addr,
+        prefix: u8,
+        dev: &str,
+    ) -> Result<()> {
+        let idx = self.link_index(dev).await?;
+        trace!(dst = %dst, prefix, dev = %dev, idx, "add route v4 dev");
+        let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(dst, prefix)
+            .output_interface(idx)
+            .build();
+        if let Err(err) = self.handle.route().add(msg).execute().await {
+            if is_eexist(&err) {
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
     // ── IPv6 methods ──
 
     pub(crate) async fn add_addr6(&self, ifname: &str, ip: Ipv6Addr, prefix: u8) -> Result<()> {
@@ -260,6 +282,28 @@ impl Netlink {
         let msg = RouteMessageBuilder::<Ipv6Addr>::new()
             .destination_prefix(dst, prefix)
             .gateway(via)
+            .build();
+        if let Err(err) = self.handle.route().add(msg).execute().await {
+            if is_eexist(&err) {
+                return Ok(());
+            }
+            return Err(err.into());
+        }
+        Ok(())
+    }
+
+    /// Adds a route for an IPv6 prefix via a specific output device (no gateway).
+    pub(crate) async fn add_route_v6_dev(
+        &self,
+        dst: Ipv6Addr,
+        prefix: u8,
+        dev: &str,
+    ) -> Result<()> {
+        let idx = self.link_index(dev).await?;
+        trace!(dst = %dst, prefix, dev = %dev, idx, "add route v6 dev");
+        let msg = RouteMessageBuilder::<Ipv6Addr>::new()
+            .destination_prefix(dst, prefix)
+            .output_interface(idx)
             .build();
         if let Err(err) = self.handle.route().add(msg).execute().await {
             if is_eexist(&err) {

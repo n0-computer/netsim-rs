@@ -1801,6 +1801,8 @@ pub(crate) struct RouterSetupData {
     /// For sub-routers with public downstream in a region: route in the parent
     /// (region) router's ns for this sub-router's downstream /24 via its WAN IP.
     pub parent_route_v4: Option<(Arc<str>, Ipv4Addr, u8, Ipv4Addr)>, // (parent_ns, net, prefix, via)
+    /// Cancellation token for long-running background tasks (NAT64 translator).
+    pub cancel: CancellationToken,
 }
 
 /// Sets up a single router's namespaces, links, and NAT. No lock held.
@@ -2112,6 +2114,86 @@ pub(crate) async fn setup_router_async(
     };
     apply_firewall(netns, &router.ns, &router.cfg.firewall, fw_wan).await?;
 
+    // NAT64: create TUN device, routes, nft masquerade, and start translator.
+    if router.cfg.nat_v6 == NatV6Mode::Nat64 {
+        setup_nat64(netns, &router.ns, fw_wan, &data.cancel).await?;
+    }
+
+    Ok(())
+}
+
+/// Sets up NAT64 in the router namespace:
+/// 1. Creates TUN device `nat64`
+/// 2. Assigns the NAT64 IPv4 pool address
+/// 3. Adds routes for the NAT64 prefix and pool
+/// 4. Adds nftables masquerade for outbound v4 from pool
+/// 5. Spawns the async SIIT translation loop
+async fn setup_nat64(
+    netns: &Arc<netns::NetnsManager>,
+    ns: &str,
+    wan_if: &str,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    use crate::nat64;
+
+    let v4_pool = nat64::NAT64_V4_POOL;
+    let tun_name = "nat64";
+
+    // Create TUN device inside the router namespace.
+    let tun_fd = netns.run_closure_in(ns, || nat64::create_tun(tun_name))?;
+
+    debug!(ns = %ns, "nat64: TUN created, configuring routes");
+
+    // Configure the TUN: bring up, add routes.
+    // We don't assign an IP to the TUN — that would create a "local" route
+    // that prevents return traffic from reaching the TUN. Instead we add
+    // device routes for both the NAT64 prefix (v6→v4) and the pool (v4→v6).
+    nl_run(netns, ns, {
+        let pool = v4_pool;
+        move |h: Netlink| async move {
+            h.set_link_up(tun_name).await?;
+            // Route the NAT64 well-known prefix (64:ff9b::/96) to the TUN device.
+            h.add_route_v6_dev(
+                Ipv6Addr::new(0x0064, 0xff9b, 0, 0, 0, 0, 0, 0),
+                96,
+                tun_name,
+            )
+            .await?;
+            // Route the pool address to the TUN for return traffic (v4→v6).
+            // After conntrack demasquerades, dst=192.0.2.64 needs to go to TUN.
+            h.add_route_v4_dev(pool, 32, tun_name).await?;
+            Ok(())
+        }
+    })
+    .await?;
+
+    // Masquerade outbound IPv4 traffic from the pool address on the WAN interface.
+    // This gives the translated packets a real source IP (the router's WAN IP)
+    // and handles port allocation via conntrack.
+    let rules = format!(
+        r#"
+table ip nat64 {{
+    chain postrouting {{
+        type nat hook postrouting priority 100; policy accept;
+        oif "{wan}" ip saddr {pool} masquerade
+    }}
+}}
+"#,
+        wan = wan_if,
+        pool = v4_pool,
+    );
+    run_nft_in(netns, ns, &rules).await?;
+
+    // Spawn the translation loop on the router namespace's tokio runtime.
+    let rt = netns.rt_handle_for(ns)?;
+    let cancel = cancel.clone();
+    rt.spawn(async move {
+        if let Err(e) = nat64::run_nat64_loop(tun_fd, v4_pool, cancel).await {
+            tracing::error!("nat64: translation loop error: {e:#}");
+        }
+    });
+
+    debug!(ns = %ns, "nat64: setup complete");
     Ok(())
 }
 
@@ -2633,6 +2715,12 @@ table ip6 nat {{
                 wan = wan_if,
             );
             run_nft_in(netns, ns, &rules).await
+        }
+        NatV6Mode::Nat64 => {
+            // NAT64 is handled separately in setup_nat64 — the apply_nat_v6
+            // call is a no-op for this mode (the SIIT translator and nft
+            // masquerade are set up after the router's downlink bridge exists).
+            Ok(())
         }
     }
 }

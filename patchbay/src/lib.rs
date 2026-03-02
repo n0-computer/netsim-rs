@@ -78,6 +78,7 @@ pub(crate) mod firewall;
 pub(crate) mod handles;
 mod lab;
 pub(crate) mod nat;
+pub(crate) mod nat64;
 mod netlink;
 mod netns;
 mod qdisc;

@@ -219,8 +219,9 @@ async fn block_inbound_drops_unsolicited() -> Result<()> {
         let mut buf = [0u8; 64];
         match sock.recv_from(&mut buf) {
             Ok((n, _)) => Ok(n),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 bail!("timed out (firewall blocked)")
             }

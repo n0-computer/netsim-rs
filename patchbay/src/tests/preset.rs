@@ -228,14 +228,8 @@ async fn public_v6_pool_is_gua() -> Result<()> {
     let v6 = dev.ip6().context("no v6 address")?;
     let segs = v6.segments();
     // Public GUA pool is 2001:db8:1::/48.
-    assert_eq!(
-        segs[0], 0x2001,
-        "v6 should be from GUA pool, got {v6}"
-    );
-    assert_eq!(
-        segs[1], 0x0db8,
-        "v6 should be from GUA pool, got {v6}"
-    );
+    assert_eq!(segs[0], 0x2001, "v6 should be from GUA pool, got {v6}");
+    assert_eq!(segs[1], 0x0db8, "v6 should be from GUA pool, got {v6}");
     assert_eq!(
         segs[2], 0x0001,
         "v6 third segment should be 1 (public pool), got {v6}"
@@ -334,6 +328,49 @@ async fn preset_isp_v4() -> Result<()> {
         "IspV4 device should have public IP, got {dev_ip}"
     );
     assert!(dev.ip6().is_none(), "IspV4 should have no v6");
+
+    Ok(())
+}
+
+/// RouterPreset::MobileV6 builds an IPv6-only carrier with NAT64.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn preset_mobile_v6() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+
+    let dc = lab.add_router("dc").build().await?;
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+
+    let carrier = lab
+        .add_router("carrier")
+        .preset(RouterPreset::MobileV6)
+        .build()
+        .await?;
+
+    let phone = lab
+        .add_device("phone")
+        .iface("eth0", carrier.id(), None)
+        .build()
+        .await?;
+
+    // MobileV6: IPv6-only.
+    assert_eq!(carrier.ip_support(), Some(IpSupport::V6Only));
+    assert!(phone.ip6().is_some(), "should have v6");
+
+    // Phone can reach v4 server via NAT64 prefix.
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9350);
+    dc.spawn_reflector(reflector)?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let nat64_addr = crate::nat64::embed_v4_in_nat64(dc_ip);
+    let nat64_target = SocketAddr::new(IpAddr::V6(nat64_addr), 9350);
+
+    let rtt = phone.run_sync(move || test_utils::udp_rtt(nat64_target))?;
+    assert!(
+        rtt < Duration::from_millis(500),
+        "NAT64 should work via preset"
+    );
 
     Ok(())
 }
