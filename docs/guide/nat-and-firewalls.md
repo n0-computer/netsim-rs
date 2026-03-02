@@ -97,9 +97,9 @@ let router = lab.add_router("r")
 | Mode | Description |
 |------|-------------|
 | `None` | No IPv6 NAT. Devices get globally routable addresses. This is the default and the most common real-world configuration. |
+| `Nat64` | Stateless IP/ICMP Translation (RFC 6145). Allows IPv6-only devices to reach IPv4 hosts through the well-known prefix `64:ff9b::/96`. The most important v6 NAT mode in practice; used by major mobile carriers. |
 | `Nptv6` | Network Prefix Translation (RFC 6296). Performs stateless 1:1 prefix mapping at the border, preserving end-to-end connectivity while hiding internal prefixes. |
 | `Masquerade` | IPv6 masquerade, analogous to IPv4 NAPT. Rare in production but useful for testing applications that must handle v6 address rewriting. |
-| `Nat64` | Stateless IP/ICMP Translation (RFC 6145). Allows IPv6-only devices to reach IPv4 hosts through the well-known prefix `64:ff9b::/96`. |
 
 ### NAT64
 

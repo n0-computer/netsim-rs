@@ -70,6 +70,28 @@ async fn async_main() -> anyhow::Result<()> {
 If you skip this call, `Lab::new()` will fail because the process lacks
 the network namespace capabilities it needs.
 
+In integration tests, you can avoid the `main` / `async_main` split by
+using a `#[ctor]` initializer that runs before any test thread is spawned:
+
+```rust
+#[cfg(test)]
+#[ctor::ctor]
+fn init() {
+    patchbay::init_userns().expect("failed to enter user namespace");
+}
+
+#[tokio::test]
+async fn my_test() -> anyhow::Result<()> {
+    let lab = patchbay::Lab::new().await?;
+    // ...
+    Ok(())
+}
+```
+
+The `ctor` crate runs the function at load time, before `main` or the
+test harness starts. This keeps your test functions clean and avoids
+repeating the namespace setup in every binary.
+
 ## Creating a lab
 
 A `Lab` is the top-level container for a topology. When you create one, it

@@ -10,11 +10,12 @@ WiFi-to-cellular handoff without dropping state. Those questions require
 actual network stacks with actual packet processing, and the only way most
 teams answer them today is by deploying to staging and hoping for the best.
 
-Some projects work around this with Docker Compose topologies, Mininet
-graphs, or bespoke iptables scripts. These approaches share a few
-drawbacks: they require root, they leave state behind when something
-crashes, they are difficult to parameterize from a test harness, and they
-tend to drift from the real-world conditions they are meant to represent.
+Tools like Docker Compose, Mininet, and custom iptables scripts can help,
+but each comes with trade-offs around privilege requirements, cleanup
+reliability, and how easily you can parameterize topologies from a test
+harness. patchbay was built to make this kind of testing ergonomic for Rust
+projects: no root, no cleanup, and a builder API that fits naturally into
+`#[tokio::test]` functions.
 
 ## What patchbay does
 
@@ -34,7 +35,7 @@ automatically.
 
 ## Where it fits
 
-patchbay is a testing and development tool. It is designed for two primary
+patchbay is a testing and development tool, designed for three primary
 use cases:
 
 **Integration tests.** Write `#[tokio::test]` functions that build a
@@ -42,26 +43,33 @@ topology, run your networking code inside it, and assert on outcomes. Each
 test gets an isolated lab with its own address space, so tests can run in
 parallel without interfering with each other or with the host.
 
+**Performance and regression testing.** Apply link conditions to simulate
+constrained networks (3G, satellite, lossy WiFi) and measure throughput,
+latency, or reconnection time under controlled impairment. Because tc
+netem operates at the kernel level, the shaping is realistic enough for
+comparative benchmarks, though absolute numbers will differ from hardware
+links due to scheduling overhead and the absence of real radio or cable
+physics.
+
 **Interactive experimentation.** Build a topology in a binary or script,
 attach to device namespaces with shell commands, and observe how traffic
 flows. This is useful for understanding NAT behavior, debugging
 connectivity issues, or validating protocol assumptions before writing
 tests.
 
-patchbay is not a production networking tool, a container orchestrator, or
-a replacement for network simulation frameworks like ns-3. It operates at
-the kernel namespace level with real TCP/IP stacks, not at the packet
-simulation level. This means the fidelity is high (you are testing against
-real Linux networking), but the scale is limited to what a single machine
-can support (typically dozens of namespaces, not thousands).
+patchbay operates at the kernel namespace level with real TCP/IP stacks,
+not at the packet simulation level. This means the fidelity is high (you
+are testing against real Linux networking), but the scale is limited to
+what a single machine can support (typically dozens of namespaces, not
+thousands).
 
 ## Scope of this book
 
 The **Guide** section walks through patchbay's concepts in order: setting
-up a lab, building topologies, configuring NAT and firewalls, and running
-code inside namespaces. Each chapter builds on the previous one and
-includes runnable examples.
+up a lab, building topologies, configuring NAT and firewalls, running code
+inside namespaces, and running labs in a VM on non-Linux hosts. Each
+chapter builds on the previous one and includes runnable examples.
 
 The **Reference** section covers specialized topics in depth: real-world
-IPv6 deployment patterns, NAT traversal and hole-punching mechanics,
-network event simulation recipes, and the TOML simulation file format.
+IPv6 deployment patterns, network event simulation recipes, NAT traversal
+and hole-punching internals, and the TOML simulation file format.
