@@ -106,7 +106,7 @@ async fn probe_tcp(target: SocketAddr) -> Result<ObservedAddr> {
     let addr_str = s
         .strip_prefix("OBSERVED ")
         .ok_or_else(|| anyhow!("unexpected tcp reflector reply: {:?}", s))?;
-    Ok(addr_str.parse().context("parse observed addr")?)
+    addr_str.parse().context("parse observed addr")
 }
 
 async fn probe_reflexive_addr(

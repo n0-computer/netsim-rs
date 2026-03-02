@@ -351,13 +351,6 @@ impl NetnsManager {
         }
     }
 
-    pub fn new_with_span(parent_span: tracing::Span) -> Self {
-        Self {
-            parent_span,
-            workers: Mutex::new(HashMap::new()),
-        }
-    }
-
     // ── Namespace lifecycle ──────────────────────────────────────────
 
     /// Create a new isolated network namespace and register it.

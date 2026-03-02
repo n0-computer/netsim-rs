@@ -1,5 +1,4 @@
 use anyhow::{bail, Context, Result};
-use ipnet::IpNet;
 use tokio::process::Command;
 
 /// Parameters for `tc netem` impairment.
@@ -32,39 +31,6 @@ pub(crate) async fn apply_impair(ifname: &str, limits: LinkLimits) -> Result<()>
     if limits.rate_kbit > 0 {
         qdisc.add_tbf(limits.rate_kbit).await?;
     }
-    Ok(())
-}
-
-/// Applies region latency filters for both v4 and v6 CIDRs.
-///
-/// Each `IpNet` entry maps to either a v4 or v6 tc filter on the same HTB class tree.
-/// Caller must already be in the target ns.
-pub(crate) async fn apply_region_latency_dual(
-    ifname: &str,
-    filters: &[(IpNet, u32)],
-) -> Result<()> {
-    if filters.is_empty() {
-        return Ok(());
-    }
-
-    remove_qdisc(ifname).await;
-    let qdisc = Qdisc::new(ifname);
-    qdisc.add_htb_root().await?;
-    qdisc.add_base_class().await?;
-
-    for (idx, (cidr, latency)) in filters.iter().enumerate() {
-        let class_id = format!("1:{}", 10 + idx as u16);
-        let handle = format!("{}:", 10 + idx as u16);
-        let cidr_str = format!("{}/{}", cidr.addr(), cidr.prefix_len());
-
-        qdisc.add_htb_class(&class_id).await?;
-        qdisc.add_netem_class(&class_id, &handle, *latency).await?;
-        match cidr {
-            IpNet::V4(_) => qdisc.add_filter(&cidr_str, &class_id).await?,
-            IpNet::V6(_) => qdisc.add_filter_v6(&cidr_str, &class_id).await?,
-        }
-    }
-
     Ok(())
 }
 
@@ -155,133 +121,6 @@ impl<'a> Qdisc<'a> {
             "400ms",
         ]);
         ensure_success(cmd, "tc qdisc tbf add").await?;
-        Ok(())
-    }
-
-    async fn add_htb_root(&self) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "qdisc",
-            "add",
-            "dev",
-            self.ifname,
-            "root",
-            "handle",
-            "1:",
-            "htb",
-            "default",
-            "1",
-            "r2q",
-            "1000",
-        ]);
-        ensure_success(cmd, "tc qdisc htb add").await?;
-        Ok(())
-    }
-
-    async fn add_base_class(&self) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "class",
-            "add",
-            "dev",
-            self.ifname,
-            "parent",
-            "1:",
-            "classid",
-            "1:1",
-            "htb",
-            "rate",
-            "1000mbit",
-        ]);
-        ensure_success(cmd, "tc class htb add base").await?;
-        Ok(())
-    }
-
-    async fn add_htb_class(&self, class_id: &str) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "class",
-            "add",
-            "dev",
-            self.ifname,
-            "parent",
-            "1:",
-            "classid",
-            class_id,
-            "htb",
-            "rate",
-            "1000mbit",
-        ]);
-        ensure_success(cmd, "tc class htb add").await?;
-        Ok(())
-    }
-
-    async fn add_netem_class(&self, class_id: &str, handle: &str, latency_ms: u32) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "qdisc",
-            "add",
-            "dev",
-            self.ifname,
-            "parent",
-            class_id,
-            "handle",
-            handle,
-            "netem",
-            "delay",
-            &format!("{}ms", latency_ms),
-        ]);
-        ensure_success(cmd, "tc qdisc netem class add").await?;
-        Ok(())
-    }
-
-    async fn add_filter(&self, cidr: &str, class_id: &str) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "filter",
-            "add",
-            "dev",
-            self.ifname,
-            "protocol",
-            "ip",
-            "parent",
-            "1:",
-            "prio",
-            "1",
-            "u32",
-            "match",
-            "ip",
-            "dst",
-            cidr,
-            "flowid",
-            class_id,
-        ]);
-        ensure_success(cmd, "tc filter add").await?;
-        Ok(())
-    }
-
-    async fn add_filter_v6(&self, cidr: &str, class_id: &str) -> Result<()> {
-        let mut cmd = Command::new("tc");
-        cmd.args([
-            "filter",
-            "add",
-            "dev",
-            self.ifname,
-            "protocol",
-            "ipv6",
-            "parent",
-            "1:",
-            "prio",
-            "2",
-            "u32",
-            "match",
-            "ip6",
-            "dst",
-            cidr,
-            "flowid",
-            class_id,
-        ]);
-        ensure_success(cmd, "tc filter v6 add").await?;
         Ok(())
     }
 }
