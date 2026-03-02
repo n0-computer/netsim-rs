@@ -6,7 +6,7 @@ policies, and link conditions through a Rust builder API, and the library
 wires everything up with veth pairs, nftables rules, and tc qdisc
 scheduling. Each node gets its own namespace with a private network stack,
 so processes running inside see what they would see on a separate machine.
-The whole thing runs unprivileged and cleans up when the `Lab` is dropped.
+Everything runs unprivileged and cleans up when the `Lab` is dropped.
 
 ## Quick example
 
@@ -20,7 +20,7 @@ patchbay::init_userns().expect("failed to enter user namespace");
 let lab = Lab::new().await?;
 
 // A "datacenter" router: downstream devices get public IPs.
-let dc = lab.add_router("dc").region("eu").build().await?;
+let dc = lab.add_router("dc").build().await?;
 
 // A "home" router with NAT: downstream devices get private IPs.
 let home = lab
@@ -53,7 +53,7 @@ let mut child = dev.spawn_command({
 // Run an async task inside a device's network namespace.
 // This runs on a per-namespace tokio runtime, so you can use all
 // tokio networking primitives and everything built on top of them.
-let client_task = dev.spawn(async move |_| {
+let client_task = dev.spawn(|_dev| async move {
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
     println!("local addr: {}", stream.local_addr()?);
     stream.write_all(b"hello server").await?;
@@ -84,37 +84,55 @@ user namespace where it has full networking capabilities.
 
 ## Architecture
 
+Every node (router or device) gets its own network namespace. A lab-scoped
+root namespace hosts the IX bridge that interconnects all top-level routers.
+Veth pairs connect namespaces across the topology.
+
+Each namespace has a lazy async worker (single-threaded tokio runtime) and a
+lazy sync worker. `device.spawn(...)` runs async tasks on the namespace's
+tokio runtime; `device.run_sync(...)` dispatches closures to the sync
+worker. Callers never need to worry about `setns`; the workers handle
+namespace entry.
+
+### Multi-region routing
+
+Routers can be assigned to regions, and regions can be linked with simulated
+latency. When two routers live in different regions, traffic between them
+flows through per-region router namespaces with configurable impairment,
+giving you realistic cross-continent delays on top of the per-link
+conditions.
+
+```rust
+let eu = lab.add_region("eu").await?;
+let us = lab.add_region("us").await?;
+lab.link_regions(&eu, &us, RegionLink::good(80)).await?;
+
+let dc_eu = lab.add_router("dc-eu").region(&eu).build().await?;
+let dc_us = lab.add_router("dc-us").region(&us).build().await?;
+// Traffic between dc-eu and dc-us now carries 80ms of added latency.
 ```
-                        IX bridge (203.0.113.0/24)
-                     ┌──────────┼──────────┐
-                   dc(r2)    home(r4)    isp(r6)
-                     │         │
-                   br-lan    br-lan
-                     │         │
-                  server    laptop
-```
 
-**Namespaces.** Each node (router or device) gets a dedicated network
-namespace. A lab-scoped root namespace hosts the IX bridge that interconnects
-all top-level routers. Veth pairs connect namespaces across the topology.
+You can also tear down and restore region links at runtime with
+`lab.break_region_link()` and `lab.restore_region_link()` for fault
+injection scenarios.
 
-**Worker threads.** Each namespace has a lazy async worker (single-threaded
-tokio runtime) and a lazy sync worker. `device.spawn(...)` runs async tasks
-on the namespace's tokio runtime; `device.run_sync(...)` dispatches closures
-to the sync worker. Callers never need to worry about `setns`; the workers
-handle namespace entry.
+### NAT
 
-**NAT.** Routers support five IPv4 NAT presets (`None`, `Home`, `Corporate`,
+Routers support six IPv4 NAT presets (`None`, `Home`, `Corporate`,
 `CloudNat`, `FullCone`, `Cgnat`) and three IPv6 modes (`None`, `Nptv6`,
 `Masquerade`), all configured via nftables rules. You can also build custom
 NAT configs from mapping + filtering + timeout parameters.
 
-**Link conditions.** `tc netem` and `tc tbf` provide packet loss, latency,
-jitter, and rate limiting. Apply presets (`LinkCondition::Wifi`,
-`LinkCondition::Mobile4G`) or custom values at build time or dynamically.
+### Link conditions
 
-**Cleanup.** Namespace file descriptors are held in-process. When the `Lab`
-is dropped, workers are shut down and namespaces disappear automatically.
+`tc netem` and `tc tbf` provide packet loss, latency, jitter, and rate
+limiting. Apply presets (`LinkCondition::Wifi`, `LinkCondition::Mobile4G`)
+or custom values at build time or dynamically.
+
+### Cleanup
+
+Namespace file descriptors are held in-process. When the `Lab` is dropped,
+workers are shut down and namespaces disappear automatically.
 
 ## API overview
 
@@ -123,9 +141,14 @@ is dropped, workers are shut down and namespaces disappear automatically.
 ```rust
 let lab = Lab::new().await?;
 
+// Regions (optional)
+let eu = lab.add_region("eu").await?;
+let us = lab.add_region("us").await?;
+lab.link_regions(&eu, &us, RegionLink::good(80)).await?;
+
 // Routers
 let dc = lab.add_router("dc")
-    .region("eu")
+    .region(&eu)
     .build().await?;
 
 let home = lab.add_router("home")
@@ -141,33 +164,31 @@ let dev = lab.add_device("phone")
     .iface("eth0", dc.id(), None)
     .default_via("wlan0")
     .build().await?;
-
-// Inter-region latency
-lab.set_region_latency("eu", "us", 80);
 ```
 
 ### Running code in namespaces
 
 ```rust
 // Async task on the device's tokio runtime
-let jh = dev.spawn(|_dev| async {
+let jh = dev.spawn(|_dev| async move {
     let stream = tokio::net::TcpStream::connect("203.0.113.10:80").await?;
     Ok::<_, anyhow::Error>(())
 })?;
 
 // Blocking closure on the sync worker
-let sock = dev.run_sync(|| {
-    Ok(std::net::UdpSocket::bind("0.0.0.0:0")?)
+let local_addr = dev.run_sync(|| {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    Ok(sock.local_addr()?)
 })?;
 
-// Spawn an OS command (sync - returns std::process::Child)
+// Spawn an OS command (sync, returns std::process::Child)
 let child = dev.spawn_command({
     let mut cmd = std::process::Command::new("curl");
     cmd.arg("http://203.0.113.10");
     cmd
 })?;
 
-// Spawn an OS command (async - returns tokio::process::Child)
+// Spawn an OS command (async, returns tokio::process::Child)
 let child = dev.spawn_command_async({
     let mut cmd = tokio::process::Command::new("curl");
     cmd.arg("http://203.0.113.10");
@@ -276,5 +297,17 @@ patchbay-vm down
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+Copyright 2026 N0, INC.
+
+This project is licensed under either of
+
+ * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
+   http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT license ([LICENSE-MIT](LICENSE-MIT) or
+   http://opensource.org/licenses/MIT)
+
+at your option.
+
+## Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
