@@ -25,7 +25,7 @@ async fn add_remove_runtime() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
     dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // Device initially has one interface.
     assert_eq!(dev.interfaces().len(), 1);
@@ -48,7 +48,7 @@ async fn add_remove_runtime() -> Result<()> {
 
     // Switch default route to eth1 and verify connectivity through dc.
     dev.set_default_route("eth1").await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let obs = dev.run_sync(move || test_utils::udp_roundtrip(reflector))?;
     assert_eq!(
         obs.ip(),
@@ -150,7 +150,7 @@ async fn replug_to_different_subnet() -> Result<()> {
 
     // Replug to dc_b.
     dev.replug_iface("eth0", dc_b.id()).await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let new_ip = dev.ip().unwrap();
     assert_eq!(
@@ -164,7 +164,7 @@ async fn replug_to_different_subnet() -> Result<()> {
     let dc_a_ip = dc_a.uplink_ip().context("dc_a uplink")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_a_ip), 20_300);
     dc_a.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     dev.run_sync(move || test_utils::udp_roundtrip(reflector))
         .context("udp roundtrip after replug")?;
 

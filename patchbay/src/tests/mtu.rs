@@ -109,7 +109,7 @@ async fn blackhole_drops_large() -> Result<()> {
             Err(e) => bail!("unexpected error: {e}"),
         }
     })?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     dev.run_sync(move || {
         use std::os::unix::io::AsRawFd;

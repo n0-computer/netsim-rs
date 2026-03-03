@@ -27,11 +27,15 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use n0_tracing_test::traced_test;
+use serial_test::serial;
 use tokio::{net::UdpSocket, sync::oneshot};
 use tracing::{debug, error, error_span, info, Instrument};
 
 use super::*;
 use crate::{check_caps, config};
+
+/// Default reflector startup delay for VM environments.
+const REFLECTOR_STARTUP_MS: u64 = 500;
 
 mod alloc;
 mod devtools;
@@ -354,7 +358,7 @@ async fn build_nat_case(
         .await
         .context("tcp reflector task panicked")??;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let dev_ip = dev.ip().unwrap();
     let expected_ip = match (nat_mode, wiring) {
@@ -399,7 +403,7 @@ async fn build_dual_nat_lab(mode_a: Nat, mode_b: Nat, port_base: u16) -> Result<
         .await
         .context("tcp reflector task panicked")??;
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     Ok(DualNatLab {
         _lab: lab,
         dc,
@@ -441,7 +445,7 @@ async fn build_single_nat_case(
     dc.spawn_reflector(r_dc)?;
     let ix = lab.ix();
     ix.spawn_reflector(r_ix)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let dev_ns = dev.ns();
     let expected_ip = match (nat_mode, wiring) {

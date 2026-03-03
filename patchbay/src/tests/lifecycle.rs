@@ -98,7 +98,7 @@ async fn custom_downstream_cidr() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
     dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     dev.run_sync(move || test_utils::udp_roundtrip(reflector))
         .context("udp roundtrip through custom cidr")?;
 
@@ -208,7 +208,7 @@ async fn add_device_after_build() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 20_600);
     dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // dev1 works.
     dev1.run_sync(move || test_utils::udp_roundtrip(reflector))

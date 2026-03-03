@@ -120,13 +120,13 @@ async fn switch_default_tcp_roundtrip() -> Result<()> {
     dc.spawn(move |_| async move { spawn_tcp_echo_server(r).await })?
         .await
         .context("tcp echo server task panicked")??;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     dev.spawn(move |_| async move { tcp_roundtrip(r).await })?
         .await
         .context("tcp roundtrip task panicked")??;
 
     dev.set_default_route("eth1").await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     dev.spawn(move |_| async move { tcp_roundtrip(r).await })?
         .await
         .context("tcp roundtrip task panicked")??;
@@ -151,7 +151,7 @@ async fn replug_iface_udp() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_100);
     dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // Connectivity through nat_a works.
     dev.run_sync(move || test_utils::udp_roundtrip(reflector))
@@ -159,7 +159,7 @@ async fn replug_iface_udp() -> Result<()> {
 
     // Move eth0 from nat_a → nat_b.
     dev.replug_iface("eth0", nat_b.id()).await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // Connectivity through nat_b works.
     dev.run_sync(move || test_utils::udp_roundtrip(reflector))
@@ -185,7 +185,7 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 17_200);
     dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let wan_a = nat_a.uplink_ip().context("no nat_a uplink ip")?;
     let wan_b = nat_b.uplink_ip().context("no nat_b uplink ip")?;
@@ -198,7 +198,7 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
     );
 
     dev.replug_iface("eth0", nat_b.id()).await?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let after = dev.run_sync(move || test_utils::udp_roundtrip(reflector))?;
     assert_eq!(

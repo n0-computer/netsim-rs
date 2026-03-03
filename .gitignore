@@ -5,3 +5,5 @@
 /.netsim-work
 /resources
 /docs/book
+.zig-cache
+.patchbay-work

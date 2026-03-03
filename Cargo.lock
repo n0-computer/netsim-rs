@@ -1525,12 +1525,14 @@ dependencies = [
  "rtnetlink",
  "serde",
  "serde_json",
+ "serial_test",
  "strum",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

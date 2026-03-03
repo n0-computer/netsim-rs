@@ -5,6 +5,7 @@ use super::*;
 /// Switching default route from clean to impaired path increases RTT.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn route_switch_changes_impairment() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
@@ -21,7 +22,7 @@ async fn route_switch_changes_impairment() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 9200);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let fast_rtt = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
 
@@ -41,6 +42,7 @@ async fn route_switch_changes_impairment() -> Result<()> {
 /// Link down breaks connectivity, link up restores it (UDP and TCP).
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn link_down_up() -> Result<()> {
     use strum::IntoEnumIterator;
     let mut port_base = 16_600u16;
@@ -63,7 +65,7 @@ async fn link_down_up() -> Result<()> {
             match proto {
                 Proto::Udp => {
                     dc.spawn_reflector(r)?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
                     dev.run_sync(move || {
                         test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))
                     })
@@ -78,7 +80,7 @@ async fn link_down_up() -> Result<()> {
                         bail!("probe should fail after link_down");
                     }
                     dev_handle.link_up("eth0").await?;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
                     dev.run_sync(move || {
                         test_utils::probe_udp(r, Duration::from_millis(500), Some(bind))
                     })
@@ -88,7 +90,7 @@ async fn link_down_up() -> Result<()> {
                     dc.spawn(move |_| async move { spawn_tcp_echo_server(r).await })?
                         .await
                         .context("tcp echo server task panicked")??;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
                     dev.spawn(move |_| async move { tcp_roundtrip(r).await })?
                         .await
                         .context("tcp roundtrip panicked")?
@@ -103,7 +105,7 @@ async fn link_down_up() -> Result<()> {
                         bail!("tcp should fail after link_down");
                     }
                     dev_handle.link_up("eth0").await?;
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
                     dev.spawn(move |_| async move { tcp_roundtrip(r).await })?
                         .await
                         .context("tcp roundtrip panicked")?
@@ -151,7 +153,7 @@ async fn rate_tcp_upload() -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
 
     let sink = dc.spawn_thread(move || tcp_sink(addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_elapsed, kbps) = dev.run_sync(move || tcp_measure_throughput(addr, 256 * 1024))?;
     join_sink(sink)?;
 
@@ -184,7 +186,7 @@ async fn rate_tcp_download() -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_400);
 
     let sink = dev_id.spawn_thread(move || tcp_sink(addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_elapsed, kbps) = dc.run_sync(move || tcp_measure_throughput(addr, 256 * 1024))?;
     join_sink(sink)?;
 
@@ -218,7 +220,7 @@ async fn rate_udp_upload() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_500);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // ~300 KB at 2 Mbit/s ≈ 1.2 s.
     let start = Instant::now();
@@ -258,7 +260,7 @@ async fn rate_udp_download() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_600);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let start = Instant::now();
     dev_id
@@ -309,12 +311,12 @@ async fn rate_asymmetric() -> Result<()> {
     let down_addr = SocketAddr::new(IpAddr::V4(dev_ip), 17_710);
 
     let sink_up = dc.spawn_thread(move || tcp_sink(up_addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_up) = dev_id.run_sync(move || tcp_measure_throughput(up_addr, 128 * 1024))?;
     join_sink(sink_up)?;
 
     let sink_down = dev_id.spawn_thread(move || tcp_sink(down_addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_down) = dc.run_sync(move || tcp_measure_throughput(down_addr, 128 * 1024))?;
     join_sink(sink_down)?;
 
@@ -364,7 +366,7 @@ async fn rate_multihop_bottleneck() -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_800);
 
     let sink = dc.spawn_thread(move || tcp_sink(addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps) = dev.run_sync(move || tcp_measure_throughput(addr, 128 * 1024))?;
     join_sink(sink)?;
 
@@ -408,7 +410,7 @@ async fn rate_two_hops_stacked() -> Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_900);
 
     let sink = dc.spawn_thread(move || tcp_sink(addr))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps) = dev.run_sync(move || tcp_measure_throughput(addr, 256 * 1024))?;
     join_sink(sink)?;
 
@@ -421,6 +423,7 @@ async fn rate_two_hops_stacked() -> Result<()> {
 /// 50% egress loss drops roughly half the outbound packets.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn loss_udp_moderate() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
@@ -442,7 +445,7 @@ async fn loss_udp_moderate() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_000);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // tc netem loss is on the device egress, so ~50% of probes reach the
     // reflector and responses come back unlossed. Wide bounds account for
@@ -470,6 +473,7 @@ async fn loss_udp_moderate() -> Result<()> {
 /// VM/timing effects while still confirming loss is being applied.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn loss_udp_high() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
@@ -542,7 +546,7 @@ async fn loss_tcp_integrity() -> Result<()> {
         stream.write_all(&data)?;
         Ok(())
     })?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let n = dev.run_sync(move || {
         use std::io::Read as _;
@@ -563,6 +567,7 @@ async fn loss_tcp_integrity() -> Result<()> {
 /// 30% loss on both upload and download.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn loss_udp_bidirectional() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
@@ -592,7 +597,7 @@ async fn loss_udp_bidirectional() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_300);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // Round-trip delivery ≈ (1-0.3)×(1-0.3) = 49 %; expect < 80.
     let (_, received) = dev
@@ -641,7 +646,7 @@ async fn latency_upload_download() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_500);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
     assert!(
@@ -694,7 +699,7 @@ async fn latency_multihop_chain() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_700);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
     assert!(
@@ -730,7 +735,7 @@ async fn rate_dynamic_decrease() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_800)))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_fast) = dev.run_sync(move || {
         tcp_measure_throughput(SocketAddr::new(IpAddr::V4(dc_ip), 18_800), 256 * 1024)
     })?;
@@ -751,7 +756,7 @@ async fn rate_dynamic_decrease() -> Result<()> {
         .await?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_801)))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_slow) = dev.run_sync(move || {
         tcp_measure_throughput(SocketAddr::new(IpAddr::V4(dc_ip), 18_801), 64 * 1024)
     })?;
@@ -796,7 +801,7 @@ async fn rate_dynamic_remove() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_900)))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_throttled) = dev.run_sync(move || {
         tcp_measure_throughput(SocketAddr::new(IpAddr::V4(dc_ip), 18_900), 128 * 1024)
     })?;
@@ -807,7 +812,7 @@ async fn rate_dynamic_remove() -> Result<()> {
     dev_handle.set_link_condition(&default_if, None).await?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_901)))?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let (_e, kbps_free) = dev.run_sync(move || {
         tcp_measure_throughput(SocketAddr::new(IpAddr::V4(dc_ip), 18_901), 256 * 1024)
     })?;
@@ -835,7 +840,7 @@ async fn latency_dynamic_add_remove() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_000);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let baseline = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
 
@@ -897,7 +902,7 @@ async fn presets_rtt_and_loss() -> Result<()> {
             let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
             let r = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
             dc.spawn_reflector(r)?;
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
             let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
             if rtt < Duration::from_millis(min_latency_ms) {
@@ -994,7 +999,7 @@ async fn downlink_builder_latency() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_200);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
     assert!(
@@ -1040,6 +1045,7 @@ impair = { rate_kbit = 5000, loss_pct = 1.5, latency_ms = 40 }
 /// arrive), add 90% loss (most dropped), then remove (all arrive again).
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+#[serial]
 async fn loss_dynamic_change() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
@@ -1052,7 +1058,7 @@ async fn loss_dynamic_change() -> Result<()> {
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 20_500);
     dc.spawn_reflector(r)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     // Baseline: no loss, all 50 packets should arrive.
     let (_, recv_baseline) = dev

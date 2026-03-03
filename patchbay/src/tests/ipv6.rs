@@ -98,7 +98,7 @@ async fn v6_only_no_v4_routes() -> Result<()> {
     let dc_ip_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
     let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3491);
     dc.spawn_reflector(r_v6)?;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     let o = dev.run_sync(move || test_utils::udp_roundtrip(r_v6))?;
     assert!(o.ip().is_ipv6(), "reflexive should be v6");
 
@@ -136,7 +136,7 @@ async fn dual_stack_public_addrs() -> Result<()> {
     let r_v6 = SocketAddr::new(IpAddr::V6(dc_ip_v6), 3493);
     dc.spawn_reflector(r_v6)?;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
 
     let o_v4 = dev.run_sync(move || test_utils::udp_roundtrip(r_v4))?;
     assert!(o_v4.ip().is_ipv4(), "v4 reflexive should be v4");
@@ -169,7 +169,7 @@ async fn v6_only_tcp_roundtrip() -> Result<()> {
     dc.spawn(move |_| async move { spawn_tcp_echo_server(bind).await })?
         .await
         .context("tcp echo server task panicked")??;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(REFLECTOR_STARTUP_MS)).await;
     dev.spawn(move |_| async move { tcp_roundtrip(bind).await })?
         .await
         .context("tcp roundtrip task panicked")??;
