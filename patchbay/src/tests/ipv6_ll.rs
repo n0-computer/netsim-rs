@@ -430,6 +430,20 @@ async fn host_learns_default_router_from_ra_link_local() -> Result<()> {
         "expected RA-driven default on eth0, got: {route:?}"
     );
 
+    let dev_events = dev
+        .filepath("events.jsonl")
+        .context("missing device events path")?;
+    let has_rs = wait_for_file_contains(
+        &dev_events,
+        "\"kind\":\"RouterSolicitation\"",
+        Duration::from_secs(3),
+    )
+    .await?;
+    assert!(
+        has_rs,
+        "expected RouterSolicitation event in device events log"
+    );
+
     Ok(())
 }
 

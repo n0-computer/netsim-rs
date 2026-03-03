@@ -38,30 +38,41 @@ use crate::{
     netlink::Netlink,
 };
 
-fn emit_router_solicitation(ns: &str, device: &str, iface: &str, router_ll: Option<Ipv6Addr>) {
-    match router_ll {
-        Some(router_ll) => {
-            tracing::info!(
-                target: "patchbay::_events::RouterSolicitation",
-                ns = %ns,
-                device = %device,
-                iface = %iface,
-                dst = "ff02::2",
-                router_ll = %router_ll,
-                "router solicitation"
-            );
+async fn emit_router_solicitation(
+    netns: &Arc<crate::netns::NetnsManager>,
+    ns: String,
+    device: String,
+    iface: String,
+    router_ll: Option<Ipv6Addr>,
+) -> Result<()> {
+    let ns_for_log = ns.clone();
+    core::nl_run(netns, &ns, move |_h: Netlink| async move {
+        match router_ll {
+            Some(router_ll) => {
+                tracing::info!(
+                    target: "patchbay::_events::RouterSolicitation",
+                    ns = %ns_for_log,
+                    device = %device,
+                    iface = %iface,
+                    dst = "ff02::2",
+                    router_ll = %router_ll,
+                    "router solicitation"
+                );
+            }
+            None => {
+                tracing::info!(
+                    target: "patchbay::_events::RouterSolicitation",
+                    ns = %ns_for_log,
+                    device = %device,
+                    iface = %iface,
+                    dst = "ff02::2",
+                    "router solicitation"
+                );
+            }
         }
-        None => {
-            tracing::info!(
-                target: "patchbay::_events::RouterSolicitation",
-                ns = %ns,
-                device = %device,
-                iface = %iface,
-                dst = "ff02::2",
-                "router solicitation"
-            );
-        }
-    }
+        Ok(())
+    })
+    .await
 }
 
 // ─────────────────────────────────────────────
@@ -377,7 +388,14 @@ impl Device {
             .await?;
             if provisioning == Ipv6ProvisioningMode::RaDriven {
                 let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
-                emit_router_solicitation(&ns, &self.name, ifname, rs_router_ll);
+                emit_router_solicitation(
+                    &self.lab.netns,
+                    ns.to_string(),
+                    self.name.to_string(),
+                    ifname.to_string(),
+                    rs_router_ll,
+                )
+                .await?;
             }
         }
         self.lab.emit(LabEventKind::LinkUp {
@@ -447,7 +465,14 @@ impl Device {
         .await?;
         if provisioning == Ipv6ProvisioningMode::RaDriven {
             let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
-            emit_router_solicitation(&ns, &self.name, to, rs_router_ll);
+            emit_router_solicitation(
+                &self.lab.netns,
+                ns.to_string(),
+                self.name.to_string(),
+                to.to_string(),
+                rs_router_ll,
+            )
+            .await?;
         }
         apply_or_remove_impair(&self.lab.netns, &ns, to, impair).await;
         self.lab

@@ -2511,29 +2511,37 @@ pub(crate) async fn setup_device_async(
     }
 
     for (ifname, router_ll) in rs_ifaces {
-        match router_ll {
-            Some(router_ll) => {
-                tracing::info!(
-                    target: "patchbay::_events::RouterSolicitation",
-                    ns = %dev.ns,
-                    device = %dev.name,
-                    iface = %ifname,
-                    dst = "ff02::2",
-                    router_ll = %router_ll,
-                    "router solicitation"
-                );
+        let ns = dev.ns.clone();
+        let ns_for_log = ns.clone();
+        let dev_name = dev.name.to_string();
+        let iface = ifname.to_string();
+        nl_run(netns, &ns, move |_h: Netlink| async move {
+            match router_ll {
+                Some(router_ll) => {
+                    tracing::info!(
+                        target: "patchbay::_events::RouterSolicitation",
+                        ns = %ns_for_log,
+                        device = %dev_name,
+                        iface = %iface,
+                        dst = "ff02::2",
+                        router_ll = %router_ll,
+                        "router solicitation"
+                    );
+                }
+                None => {
+                    tracing::info!(
+                        target: "patchbay::_events::RouterSolicitation",
+                        ns = %ns_for_log,
+                        device = %dev_name,
+                        iface = %iface,
+                        dst = "ff02::2",
+                        "router solicitation"
+                    );
+                }
             }
-            None => {
-                tracing::info!(
-                    target: "patchbay::_events::RouterSolicitation",
-                    ns = %dev.ns,
-                    device = %dev.name,
-                    iface = %ifname,
-                    dst = "ff02::2",
-                    "router solicitation"
-                );
-            }
-        }
+            Ok(())
+        })
+        .await?;
     }
 
     // Apply MTU on all device interfaces if configured.
