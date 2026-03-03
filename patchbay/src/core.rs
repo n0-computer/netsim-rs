@@ -2492,12 +2492,48 @@ pub(crate) async fn setup_device_async(
     match provisioning_mode {
         Ipv6ProvisioningMode::Static | Ipv6ProvisioningMode::RaDriven => {}
     }
+    let rs_ifaces: Vec<(Arc<str>, Option<Ipv6Addr>)> =
+        if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+            ifaces
+                .iter()
+                .filter(|iface| iface.is_default && iface.dev_ip_v6.is_some())
+                .map(|iface| (iface.ifname.clone(), iface.gw_ll_v6))
+                .collect()
+        } else {
+            Vec::new()
+        };
     debug!(name = %dev.name, ns = %dev.ns, "device: setup");
     let log_prefix = format!("{}.{}", crate::consts::KIND_DEVICE, dev.name);
     create_named_netns(netns, &dev.ns, dns_overlay, Some(log_prefix), dad_mode)?;
 
     for iface in ifaces {
         wire_iface_async(netns, prefix, root_ns, iface).await?;
+    }
+
+    for (ifname, router_ll) in rs_ifaces {
+        match router_ll {
+            Some(router_ll) => {
+                tracing::info!(
+                    target: "patchbay::_events::RouterSolicitation",
+                    ns = %dev.ns,
+                    device = %dev.name,
+                    iface = %ifname,
+                    dst = "ff02::2",
+                    router_ll = %router_ll,
+                    "router solicitation"
+                );
+            }
+            None => {
+                tracing::info!(
+                    target: "patchbay::_events::RouterSolicitation",
+                    ns = %dev.ns,
+                    device = %dev.name,
+                    iface = %ifname,
+                    dst = "ff02::2",
+                    "router solicitation"
+                );
+            }
+        }
     }
 
     // Apply MTU on all device interfaces if configured.

@@ -386,8 +386,18 @@ async fn ra_source_is_link_local() -> Result<()> {
 async fn host_learns_default_router_from_ra_link_local() -> Result<()> {
     check_caps()?;
 
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let outdir = std::env::temp_dir().join(format!("patchbay-rs-learn-{unique}"));
+    fs::create_dir_all(&outdir)?;
+    std::env::set_var("PATCHBAY_LOG", "trace");
+
     let lab = Lab::with_opts(
         LabOpts::default()
+            .outdir(&outdir)
+            .label("rs-learn")
             .ipv6_dad_mode(Ipv6DadMode::Disabled)
             .ipv6_provisioning_mode(Ipv6ProvisioningMode::RaDriven),
     )
@@ -419,6 +429,7 @@ async fn host_learns_default_router_from_ra_link_local() -> Result<()> {
         route.contains("dev eth0"),
         "expected RA-driven default on eth0, got: {route:?}"
     );
+
     Ok(())
 }
 

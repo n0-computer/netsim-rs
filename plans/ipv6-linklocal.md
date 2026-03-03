@@ -408,6 +408,7 @@ Implemented control-plane scaffolding so far:
 - TOML support for router RA controls: `ra_enabled`, `ra_interval_secs`, `ra_lifetime_secs`.
 - RA worker now honors per-router enable flag and configured interval.
 - RA worker emits `RouterAdvertisement` events with `src`, `interval_secs`, and `lifetime_secs`.
+- RA-driven host control path emits `RouterSolicitation` tracing events on initial default-iface setup, link-up restore, and explicit default-route switches.
 
 Validation commands before completion:
 

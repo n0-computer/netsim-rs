@@ -38,6 +38,32 @@ use crate::{
     netlink::Netlink,
 };
 
+fn emit_router_solicitation(ns: &str, device: &str, iface: &str, router_ll: Option<Ipv6Addr>) {
+    match router_ll {
+        Some(router_ll) => {
+            tracing::info!(
+                target: "patchbay::_events::RouterSolicitation",
+                ns = %ns,
+                device = %device,
+                iface = %iface,
+                dst = "ff02::2",
+                router_ll = %router_ll,
+                "router solicitation"
+            );
+        }
+        None => {
+            tracing::info!(
+                target: "patchbay::_events::RouterSolicitation",
+                ns = %ns,
+                device = %device,
+                iface = %iface,
+                dst = "ff02::2",
+                "router solicitation"
+            );
+        }
+    }
+}
+
 // ─────────────────────────────────────────────
 // Device / Router / DeviceIface handles
 // ─────────────────────────────────────────────
@@ -349,6 +375,10 @@ impl Device {
                 Ok(())
             })
             .await?;
+            if provisioning == Ipv6ProvisioningMode::RaDriven {
+                let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
+                emit_router_solicitation(&ns, &self.name, ifname, rs_router_ll);
+            }
         }
         self.lab.emit(LabEventKind::LinkUp {
             device: self.name.to_string(),
@@ -415,6 +445,10 @@ impl Device {
             Ok(())
         })
         .await?;
+        if provisioning == Ipv6ProvisioningMode::RaDriven {
+            let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
+            emit_router_solicitation(&ns, &self.name, to, rs_router_ll);
+        }
         apply_or_remove_impair(&self.lab.netns, &ns, to, impair).await;
         self.lab
             .core
