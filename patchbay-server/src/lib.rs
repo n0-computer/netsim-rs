@@ -75,15 +75,21 @@ impl ServerHandle {
 
 // ── Log entry type ─────────────────────────────────────────────────
 
-/// Kind of per-node log file.
+/// Kind of log file exposed by the devtools API.
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 enum LogKind {
-    /// Full JSON tracing output (`*.tracing.jsonl`).
-    Tracing,
-    /// Extracted `_events` NDJSON (`*.events.jsonl`).
-    Events,
-    /// Plain text (stdout/stderr from runner).
+    /// JSON lines tracing output (`*.tracing.jsonl`).
+    TracingJsonl,
+    /// Generic JSON lines file (`*.jsonl`).
+    Jsonl,
+    /// Single JSON document (`*.json`).
+    Json,
+    /// qlog JSON sequence stream (`*.qlog`).
+    Qlog,
+    /// Text containing ANSI escape sequences.
+    AnsiText,
+    /// Plain UTF-8 text.
     Text,
 }
 
@@ -445,39 +451,116 @@ async fn serve_file(path: &Path) -> (StatusCode, String) {
     }
 }
 
-/// Per-node log file suffixes we scan for.
-const LOG_SUFFIXES: &[(&str, LogKind)] = &[
-    (consts::TRACING_JSONL_EXT, LogKind::Tracing),
-    (consts::EVENTS_JSONL_EXT, LogKind::Events),
-    (consts::STDOUT_LOG_EXT, LogKind::Text),
-    (consts::STDERR_LOG_EXT, LogKind::Text),
-];
-
-/// Parse a filename like `device.client.tracing.jsonl` into `(node, kind, path)`.
+/// Parse the node name from `{kind}.{name}.<rest>`.
 ///
-/// The format is `{node_kind}.{node_name}.{ext}` where ext matches one of [`LOG_SUFFIXES`].
-fn parse_log_filename(filename: &str) -> Option<LogEntry> {
-    for &(ext, kind) in LOG_SUFFIXES {
-        if let Some(prefix) = filename.strip_suffix(&format!(".{ext}")) {
-            // prefix is like "device.client" — extract just the node name (after first dot).
-            let node = prefix
-                .split_once('.')
-                .map(|(_, name)| name)
-                .unwrap_or(prefix);
-            return Some(LogEntry {
-                node: node.to_string(),
-                kind,
-                path: filename.to_string(),
-            });
-        }
+/// If no node prefix is present, returns `_run` for run-level files.
+fn parse_node_name(filename: &str) -> String {
+    let mut parts = filename.splitn(3, '.');
+    let kind = parts.next();
+    let name = parts.next();
+    match (kind, name) {
+        (Some("device" | "router"), Some(name)) if !name.is_empty() => name.to_string(),
+        _ => "_run".to_string(),
     }
-    None
+}
+
+fn looks_like_json(text: &str) -> bool {
+    let t = text.trim();
+    if !(t.starts_with('{') || t.starts_with('[')) {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(t).is_ok()
+}
+
+fn looks_like_jsonl(text: &str) -> bool {
+    let mut saw = false;
+    for line in text.lines() {
+        let line = line.trim().trim_start_matches('\u{1e}');
+        if line.is_empty() {
+            continue;
+        }
+        if serde_json::from_str::<serde_json::Value>(line).is_err() {
+            return false;
+        }
+        saw = true;
+    }
+    saw
+}
+
+fn looks_like_qlog_json_seq(text: &str) -> bool {
+    let mut lines = text.lines();
+    let Some(first_line) = lines.next() else {
+        return false;
+    };
+    let first_line = first_line.trim().trim_start_matches('\u{1e}');
+    if first_line.is_empty() {
+        return false;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line) else {
+        return false;
+    };
+    let Some(obj) = v.as_object() else {
+        return false;
+    };
+    let schema_ok = obj
+        .get("file_schema")
+        .and_then(|x| x.as_str())
+        .map(|s| s.contains("qlog:file"))
+        .unwrap_or(false);
+    let format_ok = obj
+        .get("serialization_format")
+        .and_then(|x| x.as_str())
+        .map(|s| s.eq_ignore_ascii_case("JSON-SEQ"))
+        .unwrap_or(false);
+    schema_ok && format_ok
+}
+
+fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
+    if filename.ends_with(&format!(".{}", consts::TRACING_JSONL_EXT)) {
+        return Some(LogKind::TracingJsonl);
+    }
+
+    let text = std::str::from_utf8(sample).ok()?;
+    let text = text.trim_start_matches('\u{feff}');
+    if filename.ends_with(".qlog")
+        || filename.contains(".qlog-")
+        || looks_like_qlog_json_seq(text)
+    {
+        return Some(LogKind::Qlog);
+    }
+
+    if filename.ends_with(".jsonl") || looks_like_jsonl(text) {
+        return Some(LogKind::Jsonl);
+    }
+    if filename.ends_with(".json") || looks_like_json(text) {
+        return Some(LogKind::Json);
+    }
+    if text.contains("\u{1b}[") {
+        return Some(LogKind::AnsiText);
+    }
+    if filename.ends_with(".log") || filename.ends_with(".txt") {
+        return Some(LogKind::Text);
+    }
+
+    // For unknown extensions, include UTF-8 files as plain text.
+    Some(LogKind::Text)
+}
+
+async fn read_sample(path: &Path, max_bytes: usize) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let mut buf = vec![0u8; max_bytes];
+    let n = file.read(&mut buf).await.ok()?;
+    buf.truncate(n);
+    Some(buf)
 }
 
 /// Scan a run directory for log files and return structured entries.
 ///
 /// All per-node files follow the flat `{kind}.{name}.{ext}` pattern.
 async fn scan_log_files(run_dir: &Path) -> Vec<LogEntry> {
+    const SAMPLE_BYTES: usize = 16 * 1024;
     let mut logs = Vec::new();
 
     let Ok(mut entries) = tokio::fs::read_dir(run_dir).await else {
@@ -485,13 +568,36 @@ async fn scan_log_files(run_dir: &Path) -> Vec<LogEntry> {
     };
 
     while let Ok(Some(entry)) = entries.next_entry().await {
+        let Ok(file_type) = entry.file_type().await else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if let Some(log) = parse_log_filename(&name_str) {
-            logs.push(log);
+        let path = entry.path();
+        let Some(sample) = read_sample(&path, SAMPLE_BYTES).await else {
+            continue;
+        };
+        if sample.is_empty() {
+            continue;
         }
+        let Some(kind) = detect_log_kind(&name_str, &sample) else {
+            continue;
+        };
+        logs.push(LogEntry {
+            node: parse_node_name(&name_str),
+            kind,
+            path: name_str.to_string(),
+        });
     }
 
-    logs.sort_by(|a, b| a.node.cmp(&b.node).then(a.kind.cmp(&b.kind)));
+    logs.sort_by(|a, b| {
+        a.node
+            .cmp(&b.node)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.path.cmp(&b.path))
+    });
     logs
 }

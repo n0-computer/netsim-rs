@@ -10,7 +10,13 @@ export interface SimResults {
   steps: StepResult[]
 }
 
-export type LogKind = 'transfer' | 'text' | 'qlog'
+export type LogKind =
+  | 'tracing_jsonl'
+  | 'jsonl'
+  | 'json'
+  | 'qlog'
+  | 'ansi_text'
+  | 'text'
 
 export interface SimLogEntry {
   node: string

@@ -13,7 +13,7 @@ export interface RunInfo {
 /** A log file within a run directory. */
 export interface LogEntry {
   node: string
-  kind: string // 'tracing' | 'events' | 'text' | 'transfer' | 'qlog'
+  kind: string // 'tracing_jsonl' | 'jsonl' | 'json' | 'qlog' | 'ansi_text' | 'text'
   path: string
 }
 

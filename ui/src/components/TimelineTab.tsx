@@ -141,11 +141,8 @@ export default function TimelineTab({ base, logs, labEvents, onJumpToLog }: Prop
     () =>
       logs.filter(
         (l) =>
-          l.kind === 'events' ||
-          l.kind === 'transfer' ||
-          l.path.endsWith('/stdout.log') ||
-          l.path.endsWith('/stderr.log') ||
-          l.path.endsWith('/out.log'),
+          l.node !== '_run' &&
+          (l.kind === 'jsonl' || l.kind === 'ansi_text' || l.kind === 'text'),
       ),
     [logs],
   )

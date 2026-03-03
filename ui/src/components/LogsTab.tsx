@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SimLogEntry } from '../types'
+import KvPairs from './KvPairs'
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 const TRACING_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+(.+)$/
@@ -12,14 +13,11 @@ type ParsedLine =
   | { type: 'event'; kind: string; raw: string }
   | { type: 'raw'; raw: string }
 
-type TransferPreviewEvent = {
-  kind: string
-  fields: string[]
-}
-
 type QlogEvent = {
   time?: number
   name?: string
+  filterName: string
+  fieldPairs: Array<{ key: string; value: string }>
 }
 
 type RenderMode = 'rendered' | 'raw'
@@ -33,11 +31,6 @@ interface Props {
   jumpTarget?: { node: string; path: string; timeLabel: string; nonce: number } | null
 }
 
-function shortenRemoteId(value: unknown): unknown {
-  if (typeof value !== 'string') return value
-  return value.length > 5 ? value.slice(0, 5) : value
-}
-
 function valueString(v: unknown): string {
   if (typeof v === 'string') return v
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
@@ -47,6 +40,25 @@ function valueString(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+function formatObjectFields(
+  obj: Record<string, unknown>,
+  exclude: Set<string> = new Set(),
+): string {
+  return Object.entries(obj)
+    .filter(([k]) => !exclude.has(k))
+    .map(([k, val]) => `${k}=${valueString(val)}`)
+    .join(' ')
+}
+
+function objectPairs(
+  obj: Record<string, unknown>,
+  exclude: Set<string> = new Set(),
+): Array<{ key: string; value: string }> {
+  return Object.entries(obj)
+    .filter(([k]) => !exclude.has(k))
+    .map(([k, val]) => ({ key: k, value: valueString(val) }))
 }
 
 /** Format a spans array as "span1{k=v}:span2{k=v}" like tracing fmt subscriber. */
@@ -89,12 +101,7 @@ function parseLine(raw: string): ParsedLine {
       const msg = fieldsObj?.message != null ? String(fieldsObj.message) : ''
 
       // Extra fields (everything in fields except message)
-      const extras = fieldsObj
-        ? Object.entries(fieldsObj)
-          .filter(([k]) => k !== 'message')
-          .map(([k, val]) => `${k}=${valueString(val)}`)
-          .join(' ')
-        : ''
+      const extras = fieldsObj ? formatObjectFields(fieldsObj, new Set(['message'])) : ''
 
       // Spans chain: tracing-subscriber includes "spans" array
       const spans = formatSpans(v.spans)
@@ -142,26 +149,6 @@ function parseLine(raw: string): ParsedLine {
   return { type: 'raw', raw: stripped }
 }
 
-function parseTransferPreview(text: string): TransferPreviewEvent[] {
-  const events: TransferPreviewEvent[] = []
-  for (const line of text.split('\n')) {
-    const s = line.trim()
-    if (!s) continue
-    try {
-      const v = JSON.parse(s) as Record<string, unknown>
-      if (typeof v.kind !== 'string') continue
-      const fields = Object.entries(v)
-        .filter(([k]) => k !== 'kind')
-        .map(([k, val]) => {
-          const next = k === 'remote_id' ? shortenRemoteId(val) : val
-          return `${k}=${valueString(next)}`
-        })
-      events.push({ kind: v.kind, fields })
-    } catch { }
-  }
-  return events
-}
-
 function parseQlogEvents(text: string): QlogEvent[] {
   const out: QlogEvent[] = []
   for (const line of text.split('\n')) {
@@ -169,9 +156,21 @@ function parseQlogEvents(text: string): QlogEvent[] {
     if (!s) continue
     try {
       const v = JSON.parse(s) as Record<string, unknown>
+      const name = typeof v.name === 'string' ? v.name : undefined
+      const dataObj =
+        typeof v.data === 'object' && v.data != null && !Array.isArray(v.data)
+          ? (v.data as Record<string, unknown>)
+          : {}
+      const topLevel = objectPairs(v, new Set(['time', 'name', 'data']))
+      const dataDetails = objectPairs(dataObj).map((p) => ({
+        key: `data.${p.key}`,
+        value: p.value,
+      }))
       out.push({
         time: typeof v.time === 'number' ? v.time : undefined,
-        name: typeof v.name === 'string' ? v.name : undefined,
+        name,
+        filterName: name ?? 'meta',
+        fieldPairs: [...topLevel, ...dataDetails],
       })
     } catch { }
   }
@@ -208,6 +207,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const [showSpans, setShowSpans] = useState(true)
   const [showTarget, setShowTarget] = useState(true)
   const [timeMode, setTimeMode] = useState<TimeMode>('absolute')
+  const [qlogNameFilter, setQlogNameFilter] = useState('all')
 
   // Auto-select first log
   useEffect(() => {
@@ -224,7 +224,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     setLoaded(false)
     setText('')
     setError(null)
-    setRenderMode('raw')
+    setRenderMode(active.kind === 'qlog' ? 'rendered' : 'raw')
     if (!jumpingRef.current) {
       setJumpNeedle(null)
       setJumpLine(null)
@@ -233,6 +233,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     setSearchQuery('')
     setSearchMatches([])
     setSearchIdx(0)
+    setQlogNameFilter('all')
   }, [active, base])
 
   // Handle jump target from timeline
@@ -240,8 +241,8 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     if (!jumpTarget || logs.length === 0) return
     if (jumpHandledNonce === jumpTarget.nonce) return
     const direct = logs.find((l) => l.path === jumpTarget.path)
-    // Prefer tracing log for the target node.
-    const tracingLog = logs.find((l) => l.node === jumpTarget.node && l.kind === 'tracing')
+    // Prefer tracing jsonl log for the target node.
+    const tracingLog = logs.find((l) => l.node === jumpTarget.node && l.kind === 'tracing_jsonl')
     const fallback = logs.find((l) => l.node === jumpTarget.node) ?? logs[0] ?? null
     jumpingRef.current = true
     setActive(tracingLog ?? direct ?? fallback)
@@ -283,10 +284,15 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     loadContent()
   }, [active, jumpNeedle, loaded, loading])
 
-  // Auto-load tracing/events logs immediately (they're typically small)
+  // Auto-load structured logs immediately (they're typically small)
   useEffect(() => {
     if (!active || loaded || loading) return
-    if (active.kind === 'tracing' || active.kind === 'events') {
+    if (
+      active.kind === 'tracing_jsonl' ||
+      active.kind === 'jsonl' ||
+      active.kind === 'json' ||
+      active.kind === 'qlog'
+    ) {
       loadContent()
     }
   }, [active, loaded, loading])
@@ -301,10 +307,17 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   }, [logs])
 
   const parsed = useMemo(() => text.split('\n').filter(Boolean).map(parseLine), [text])
-  const transferEvents = useMemo(() => parseTransferPreview(text), [text])
   const qlogEvents = useMemo(() => parseQlogEvents(text), [text])
-  const supportsRendered = (active?.kind === 'transfer' && transferEvents.length > 0) || active?.kind === 'qlog'
-  const isTracingLog = active?.kind === 'tracing'
+  const supportsRendered = active?.kind === 'qlog'
+  const isTracingLog = active?.kind === 'tracing_jsonl'
+  const qlogNames = useMemo(
+    () => [...new Set(qlogEvents.map((ev) => ev.filterName))].sort(),
+    [qlogEvents],
+  )
+  const filteredQlogEvents = useMemo(() => {
+    if (qlogNameFilter === 'all') return qlogEvents
+    return qlogEvents.filter((ev) => ev.filterName === qlogNameFilter)
+  }, [qlogEvents, qlogNameFilter])
   const traceStartMs = useMemo(() => {
     for (const line of parsed) {
       if (line.type !== 'tracing') continue
@@ -528,31 +541,33 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
                 )}
               </div>
             )}
+            {active.kind === 'qlog' && loaded && renderMode === 'rendered' && (
+              <div className="logs-toolbar">
+                <span>qlog event</span>
+                <button
+                  className={`btn${qlogNameFilter === 'all' ? ' active' : ''}`}
+                  onClick={() => setQlogNameFilter('all')}
+                >
+                  all
+                </button>
+                {qlogNames.map((name) => (
+                  <button
+                    key={name}
+                    className={`btn${qlogNameFilter === name ? ' active' : ''}`}
+                    onClick={() => setQlogNameFilter(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+                <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                  {filteredQlogEvents.length}/{qlogEvents.length} shown
+                </span>
+              </div>
+            )}
 
             {!loaded && !loading && (
               <div className="empty">
                 load log to view this file
-              </div>
-            )}
-
-            {loaded && renderMode === 'rendered' && active.kind === 'transfer' && (
-              <div className="tbl-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>kind</th>
-                      <th>fields</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {transferEvents.map((ev, i) => (
-                      <tr key={i}>
-                        <td>{ev.kind}</td>
-                        <td>{ev.fields.join(' ') || '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
               </div>
             )}
 
@@ -563,13 +578,15 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
                     <tr>
                       <th>time</th>
                       <th>name</th>
+                      <th>details</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {qlogEvents.map((ev, i) => (
+                    {filteredQlogEvents.map((ev, i) => (
                       <tr key={i}>
                         <td>{ev.time ?? '—'}</td>
-                        <td>{ev.name ?? '—'}</td>
+                        <td>{ev.filterName}</td>
+                        <td><KvPairs pairs={ev.fieldPairs} /></td>
                       </tr>
                     ))}
                   </tbody>
