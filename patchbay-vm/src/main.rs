@@ -1,11 +1,11 @@
 mod util;
 mod vm;
 
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use patchbay_server::{start_server, DEFAULT_UI_BIND};
+use patchbay_server::DEFAULT_UI_BIND;
 
 #[derive(Parser)]
 #[command(name = "patchbay-vm", about = "Standalone VM runner for patchbay")]
@@ -75,7 +75,8 @@ enum Command {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     patchbay_utils::init_tracing();
     let cli = Cli::parse();
     match cli.command {
@@ -94,14 +95,17 @@ fn main() -> Result<()> {
             open,
             bind,
         } => {
-            let _server = if open {
-                let srv = start_server(work_dir.clone(), &bind)?;
-                println!("patchbay UI: {}", srv.url());
-                srv.open_browser()?;
-                Some(srv)
-            } else {
-                None
-            };
+            if open {
+                let url = format!("http://{bind}");
+                println!("patchbay UI: {url}");
+                let _ = open::that(&url);
+                let work = work_dir.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = patchbay_server::serve(work, &bind).await {
+                        tracing::error!("server error: {e}");
+                    }
+                });
+            }
             let res = vm::run_sims_in_vm(vm::RunVmArgs {
                 sim_inputs: sims,
                 work_dir,
@@ -111,9 +115,9 @@ fn main() -> Result<()> {
                 patchbay_version,
             });
             if open && res.is_ok() {
-                println!("run finished; UI server still running (Ctrl-C to exit)");
+                println!("run finished; server still running (Ctrl-C to exit)");
                 loop {
-                    std::thread::sleep(Duration::from_secs(60));
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 }
             }
             res
@@ -123,14 +127,12 @@ fn main() -> Result<()> {
             bind,
             open,
         } => {
-            let _server = start_server(work_dir, &bind)?;
-            println!("patchbay UI: {}", _server.url());
             if open {
-                _server.open_browser()?;
+                let url = format!("http://{bind}");
+                println!("patchbay UI: {url}");
+                let _ = open::that(&url);
             }
-            loop {
-                std::thread::sleep(Duration::from_secs(60));
-            }
+            patchbay_server::serve(work_dir, &bind).await
         }
         Command::Test {
             target,

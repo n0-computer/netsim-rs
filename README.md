@@ -285,12 +285,65 @@ gateway = "home"
 latencies = { us = 80 }
 ```
 
+## Devtools UI
+
+patchbay includes a built-in web UI for inspecting lab runs. Set
+`PATCHBAY_OUTDIR` to write structured output (topology events, per-namespace
+tracing logs, extracted events) to disk, then serve it in the browser:
+
+```bash
+# From a cargo test
+PATCHBAY_OUTDIR=/tmp/pb cargo test my_test
+patchbay serve /tmp/pb --open
+
+# From the TOML runner (auto-serves with --open)
+patchbay run ./sims/my-sim.toml --open
+```
+
+The UI provides five tabs:
+
+- **Topology** — interactive graph of routers, devices, and links with a
+  detail sidebar showing NAT, firewall, IPs, and counters.
+- **Events** — table of lab lifecycle events (router added, device added,
+  NAT changed, etc.) with relative/absolute timestamps.
+- **Logs** — per-namespace tracing log viewer with JSON parsing, level
+  badges, and target filtering. Supports jump-to-log from the timeline.
+- **Timeline** — grid of extracted `_events` per node over time, with
+  detail pane and jump-to-log.
+- **Perf** — throughput results table (only for TOML runner sims).
+
+Each `Lab` instance writes to a timestamped subdirectory under the outdir.
+Multiple runs accumulate in the same outdir and appear in the run selector.
+
+### Output from Rust tests
+
+To enable devtools output from `cargo test`, pass the outdir via the
+`PATCHBAY_OUTDIR` environment variable:
+
+```rust
+let lab = Lab::with_opts(LabOpts::default().label("my-test")).await?;
+// ... run your test ...
+// Lab writes events.jsonl, state.json, *.tracing.jsonl, *.events.jsonl
+// to $PATCHBAY_OUTDIR/{timestamp}-my-test/
+```
+
+You can also emit custom events to the timeline by using tracing targets
+with the `_events::` convention:
+
+```rust
+tracing::info!(target: "myapp::_events::ConnectionEstablished", peer = %addr);
+```
+
+These appear as timeline events in the UI, extracted automatically by the
+per-namespace tracing subscriber.
+
 ## Workspace crates
 
 | Crate | Description |
 |-------|-------------|
 | `patchbay` | Core library: topology builder, namespace management, NAT, link conditions |
 | `patchbay-runner` | CLI runner for TOML-defined simulations with step sequencing |
+| `patchbay-server` | Embedded devtools HTTP server with run discovery and SSE |
 | `patchbay-vm` | QEMU VM wrapper for running simulations on macOS |
 | `patchbay-utils` | Shared utilities |
 
@@ -308,6 +361,9 @@ patchbay run ./sims/iperf-baseline.toml
 
 # Run all sims discovered from patchbay.toml
 patchbay run
+
+# Serve a completed run directory in the browser
+patchbay serve /path/to/outdir --open
 ```
 
 See [docs/reference/toml-reference.md](docs/reference/toml-reference.md) for the full simulation file syntax.

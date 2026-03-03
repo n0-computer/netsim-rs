@@ -219,6 +219,44 @@ veth pairs, routes, and nftables rules when the last reference to a
 namespace disappears. No cleanup code is needed and no leftover state
 pollutes the host.
 
+## Viewing results in the browser
+
+patchbay can write structured output to disk — topology events,
+per-namespace tracing logs, and extracted custom events — and serve them
+in an interactive web UI. Set the `PATCHBAY_OUTDIR` environment variable
+to enable this:
+
+```bash
+PATCHBAY_OUTDIR=/tmp/pb cargo test my_test
+```
+
+Each `Lab` creates a timestamped subdirectory under the outdir. You can
+optionally label it for easier identification:
+
+```rust
+let lab = Lab::with_opts(LabOpts::default().label("my-test")).await?;
+```
+
+After the test completes, serve the output directory:
+
+```bash
+patchbay serve /tmp/pb --open
+```
+
+This opens the devtools UI in your browser with tabs for topology, events,
+logs, timeline, and performance results. Multiple runs accumulate in the
+same outdir and appear in the run selector dropdown.
+
+You can also emit custom events to the timeline using the `_events::`
+tracing target convention:
+
+```rust
+tracing::info!(target: "myapp::_events::PeerConnected", addr = %peer_addr);
+```
+
+The per-namespace tracing subscriber extracts these into `.events.jsonl`
+files, which the timeline tab renders automatically.
+
 ## What comes next
 
 The following chapters cover patchbay's features in more depth:

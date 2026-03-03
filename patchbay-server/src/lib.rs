@@ -155,11 +155,13 @@ fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Spawns the background run scanner task.
+/// Creates an axum [`Router`] and a [`ServerHandle`] for registering live labs.
 ///
-/// Must be called from within a tokio runtime context.
-fn spawn_run_scanner(state: AppState) {
-    let scan_state = state;
+/// Must be called from within an async (tokio) context.
+pub fn router(base: PathBuf) -> (Router, ServerHandle) {
+    let (state, handle) = build_state(base);
+    // Spawn background run scanner.
+    let scan_state = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(RUN_SCAN_INTERVAL);
         let mut last_count = 0usize;
@@ -173,28 +175,7 @@ fn spawn_run_scanner(state: AppState) {
             }
         }
     });
-}
-
-/// Creates an axum [`Router`] and a [`ServerHandle`] for registering live labs.
-///
-/// The background run scanner is started lazily on first request, so
-/// the router can be constructed from a sync context (e.g. [`start_server`]).
-pub fn router(base: PathBuf) -> (Router, ServerHandle) {
-    let (state, handle) = build_state(base);
-    let router = build_router(state.clone());
-    // Wrap in a middleware that starts the scanner on first request.
-    let scanner_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let router = router.layer(axum::middleware::from_fn(move |req, next: axum::middleware::Next| {
-        let state = state.clone();
-        let started = scanner_started.clone();
-        async move {
-            if !started.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                spawn_run_scanner(state);
-            }
-            next.run(req).await
-        }
-    }));
-    (router, handle)
+    (build_router(state), handle)
 }
 
 /// Creates an axum [`Router`] for static mode (no live labs).
@@ -225,79 +206,6 @@ pub async fn serve_live(lab: &Lab, base: PathBuf, bind: &str) -> anyhow::Result<
     tracing::info!("devtools server listening on {bind}");
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-/// Handle returned by [`start_server`].
-///
-/// The server runs on a background thread and is shut down when this handle
-/// is dropped.
-pub struct RunningServer {
-    addr: std::net::SocketAddr,
-    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-    join: Option<std::thread::JoinHandle<()>>,
-}
-
-impl RunningServer {
-    /// Base HTTP URL of the running server.
-    pub fn url(&self) -> String {
-        format!("http://{}", self.addr)
-    }
-
-    /// Open the server URL in the default browser.
-    pub fn open_browser(&self) -> anyhow::Result<()> {
-        open::that(self.url())?;
-        Ok(())
-    }
-}
-
-impl Drop for RunningServer {
-    fn drop(&mut self) {
-        // Signal the server to shut down.
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
-        // Wait for the thread to finish.
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
-    }
-}
-
-/// Start the devtools server on a background thread (sync-friendly).
-///
-/// Returns a handle that keeps the server alive. The server stops when
-/// the handle is dropped.
-pub fn start_server(base: PathBuf, bind: &str) -> anyhow::Result<RunningServer> {
-    let listener = std::net::TcpListener::bind(bind)?;
-    let addr = listener.local_addr()?;
-    listener.set_nonblocking(true)?;
-    let app = router_static(base);
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let join = std::thread::Builder::new()
-        .name("patchbay-server".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build tokio runtime for server");
-            rt.block_on(async move {
-                let listener = tokio::net::TcpListener::from_std(listener.try_clone().unwrap())
-                    .expect("convert TcpListener");
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(async {
-                        let _ = shutdown_rx.await;
-                    })
-                    .await
-                    .ok();
-            });
-        })?;
-
-    Ok(RunningServer {
-        addr,
-        shutdown: Some(shutdown_tx),
-        join: Some(join),
-    })
 }
 
 // ── Route handlers ─────────────────────────────────────────────────

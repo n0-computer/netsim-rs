@@ -24,3 +24,9 @@ real-world IPv6 deployment patterns and how to simulate them, recipes for
 common network scenarios like WiFi handoff and VPN tunnels, the internals
 of NAT traversal and hole-punching as implemented in nftables, and the
 TOML simulation file format used by the patchbay runner.
+
+A built-in devtools server (`patchbay serve`) provides an interactive web
+UI for inspecting lab runs: topology graphs, event timelines,
+per-namespace structured logs, and performance results. Set
+`PATCHBAY_OUTDIR` when running tests or simulations to capture output,
+then serve it in the browser.

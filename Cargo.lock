@@ -1605,12 +1605,15 @@ dependencies = [
  "dirs",
  "flate2",
  "nix",
+ "open",
  "patchbay-server",
  "patchbay-utils",
  "serde",
  "serde_json",
  "tar",
+ "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]
