@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SimLogEntry } from '../types'
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g
-const TRACING_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+(.+?):\s*(.*)/
+const TRACING_RE = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+(.+)$/
+const TARGET_WITH_SPAN_RE = /^(.+?):\s+([a-zA-Z_][a-zA-Z0-9_:]*)\s*(.*)$/
+const TARGET_AND_MSG_RE = /^(.+?):\s*(.*)$/
 const PREVIEW_BYTES = 256 * 1024
 
 type ParsedLine =
@@ -21,6 +23,7 @@ type QlogEvent = {
 }
 
 type RenderMode = 'rendered' | 'raw'
+type TimeMode = 'absolute' | 'relative'
 
 const ALL_LEVELS = ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'] as const
 
@@ -100,9 +103,41 @@ function parseLine(raw: string): ParsedLine {
     }
   } catch { }
 
-  // ANSI tracing format: 2026-03-03T14:30:01.200Z INFO target: message
+  // ANSI tracing format:
+  // - timestamp LEVEL target: message
+  // - timestamp LEVEL span_chain: target message
+  //   (emitted by patchbay fmt-log output)
   const m = stripped.match(TRACING_RE)
-  if (m) return { type: 'tracing', ts: m[1], level: m[2], target: m[3], spans: '', msg: m[4], fields: '' }
+  if (m) {
+    const ts = m[1]
+    const level = m[2]
+    const rest = m[3]
+    const withSpan = rest.match(TARGET_WITH_SPAN_RE)
+    if (withSpan && withSpan[2].includes('::')) {
+      return {
+        type: 'tracing',
+        ts,
+        level,
+        spans: withSpan[1],
+        target: withSpan[2],
+        msg: withSpan[3]?.trim() ?? '',
+        fields: '',
+      }
+    }
+    const basic = rest.match(TARGET_AND_MSG_RE)
+    if (basic) {
+      return {
+        type: 'tracing',
+        ts,
+        level,
+        spans: '',
+        target: basic[1],
+        msg: basic[2],
+        fields: '',
+      }
+    }
+    return { type: 'tracing', ts, level, target: rest, spans: '', msg: '', fields: '' }
+  }
 
   return { type: 'raw', raw: stripped }
 }
@@ -170,6 +205,9 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const [searchMatches, setSearchMatches] = useState<number[]>([])
   const [searchIdx, setSearchIdx] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
+  const [showSpans, setShowSpans] = useState(true)
+  const [showTarget, setShowTarget] = useState(true)
+  const [timeMode, setTimeMode] = useState<TimeMode>('absolute')
 
   // Auto-select first log
   useEffect(() => {
@@ -201,9 +239,9 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   useEffect(() => {
     if (!jumpTarget || logs.length === 0) return
     if (jumpHandledNonce === jumpTarget.nonce) return
-    // Prefer tracing log for the target node
-    const tracingLog = logs.find((l) => l.node === jumpTarget.node && l.kind === 'tracing')
     const direct = logs.find((l) => l.path === jumpTarget.path)
+    // Prefer tracing log for the target node.
+    const tracingLog = logs.find((l) => l.node === jumpTarget.node && l.kind === 'tracing')
     const fallback = logs.find((l) => l.node === jumpTarget.node) ?? logs[0] ?? null
     jumpingRef.current = true
     setActive(tracingLog ?? direct ?? fallback)
@@ -267,6 +305,14 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const qlogEvents = useMemo(() => parseQlogEvents(text), [text])
   const supportsRendered = (active?.kind === 'transfer' && transferEvents.length > 0) || active?.kind === 'qlog'
   const isTracingLog = active?.kind === 'tracing'
+  const traceStartMs = useMemo(() => {
+    for (const line of parsed) {
+      if (line.type !== 'tracing') continue
+      const ms = Date.parse(line.ts)
+      if (!Number.isNaN(ms)) return ms
+    }
+    return null
+  }, [parsed])
 
   // Apply level filter to parsed lines
   const filteredLines = useMemo(() => {
@@ -304,6 +350,26 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     if (!jumpNeedle) {
       setJumpLine(null)
       return
+    }
+    const needleMs = Date.parse(jumpNeedle)
+    let nearestIdx = -1
+    let nearestDelta = Number.POSITIVE_INFINITY
+    if (!Number.isNaN(needleMs)) {
+      filteredLines.forEach(({ line }, idx) => {
+        if (line.type !== 'tracing') return
+        const tsMs = Date.parse(line.ts)
+        if (Number.isNaN(tsMs)) return
+        const delta = Math.abs(tsMs - needleMs)
+        if (delta < nearestDelta) {
+          nearestDelta = delta
+          nearestIdx = idx
+        }
+      })
+      // Accept nearest timestamp match within 2 seconds to handle format/source drift.
+      if (nearestIdx >= 0 && nearestDelta <= 2000) {
+        setJumpLine(nearestIdx)
+        return
+      }
     }
     const idx = filteredLines.findIndex(({ line }) => {
       if (line.type === 'tracing') return line.ts === jumpNeedle || line.ts.includes(jumpNeedle)
@@ -343,6 +409,16 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   }
 
   const fileSize = text.length
+  const displayTs = (ts: string): string => {
+    if (timeMode === 'relative') {
+      const ms = Date.parse(ts)
+      if (!Number.isNaN(ms) && traceStartMs != null) {
+        const delta = Math.max(0, ms - traceStartMs)
+        return `+${(delta / 1000).toFixed(3)}s`
+      }
+    }
+    return ts.split('T')[1]?.replace('Z', '') ?? ts
+  }
 
   return (
     <div className="logs-layout">
@@ -412,6 +488,15 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
             {/* Level filter + search toolbar (for tracing logs) */}
             {isTracingLog && loaded && (
               <div className="logs-toolbar">
+                <button className={`btn${showSpans ? ' active' : ''}`} onClick={() => setShowSpans((v) => !v)}>
+                  {showSpans ? 'hide spans' : 'show spans'}
+                </button>
+                <button className={`btn${showTarget ? ' active' : ''}`} onClick={() => setShowTarget((v) => !v)}>
+                  {showTarget ? 'hide target' : 'show target'}
+                </button>
+                <button className="btn" onClick={() => setTimeMode((v) => (v === 'absolute' ? 'relative' : 'absolute'))}>
+                  time: {timeMode}
+                </button>
                 {ALL_LEVELS.map((level) => (
                   <span
                     key={level}
@@ -503,10 +588,10 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
                   if (line.type === 'tracing') {
                     return (
                       <div key={origIdx} data-log-line={i} className={`log-entry${highlight}`}>
-                        <span className="log-ts">{line.ts.split('T')[1]?.replace('Z', '')}</span>
+                        <span className="log-ts">{displayTs(line.ts)}</span>
                         <span className={`level-${line.level}`}>{line.level.padStart(5)}</span>
-                        {line.spans && <span className="log-spans"> {line.spans}</span>}
-                        <span className="log-target">{line.spans ? ': ' : ' '}{line.target}:</span>
+                        {showSpans && line.spans && <span className="log-spans"> {line.spans}</span>}
+                        {showTarget && <span className="log-target">{showSpans && line.spans ? ': ' : ' '}{line.target}:</span>}
                         {line.msg && <span className="log-msg"> {line.msg}</span>}
                         {line.fields && <span className="log-fields"> {line.fields}</span>}
                       </div>

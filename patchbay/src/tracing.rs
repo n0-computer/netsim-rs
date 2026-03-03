@@ -14,6 +14,7 @@
 //! - `{prefix}.events.jsonl` — only `_events::` targets as simple NDJSON
 
 use std::{
+    collections::HashMap,
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -117,6 +118,19 @@ impl tracing::field::Visit for JsonFieldVisitor {
     }
 }
 
+#[derive(Clone)]
+struct SpanInfo {
+    name: String,
+    fields: serde_json::Map<String, serde_json::Value>,
+    parent: Option<u64>,
+}
+
+#[derive(Default)]
+struct SpanState {
+    spans: HashMap<u64, SpanInfo>,
+    stacks: HashMap<std::thread::ThreadId, Vec<u64>>,
+}
+
 /// A subscriber wrapper that delegates **all span tracking** to the global
 /// subscriber and adds file writing for events.
 ///
@@ -132,12 +146,133 @@ struct NsWriterSubscriber {
     events_writer: Mutex<LazyFile>,
     /// Minimum level for the tracing file (from PATCHBAY_LOG / RUST_LOG).
     file_level: tracing::level_filters::LevelFilter,
+    /// Local span metadata storage to emit tracing-subscriber-compatible
+    /// `span` and `spans` fields in JSON logs.
+    span_state: Mutex<SpanState>,
 }
 
 impl NsWriterSubscriber {
+    fn thread_id() -> std::thread::ThreadId {
+        std::thread::current().id()
+    }
+
+    fn current_span_id(&self, state: &SpanState) -> Option<u64> {
+        state
+            .stacks
+            .get(&Self::thread_id())
+            .and_then(|s| s.last().copied())
+            .or_else(|| self.inner.current_span().id().map(|id| id.into_u64()))
+    }
+
+    fn on_new_span(&self, id: &tracing::span::Id, attrs: &tracing::span::Attributes<'_>) {
+        let mut visitor = JsonFieldVisitor::new();
+        attrs.record(&mut visitor);
+        let mut state = match self.span_state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let parent = if let Some(parent) = attrs.parent() {
+            Some(parent.into_u64())
+        } else if attrs.is_root() {
+            None
+        } else if attrs.is_contextual() {
+            self.current_span_id(&state)
+        } else {
+            None
+        };
+        state.spans.insert(
+            id.into_u64(),
+            SpanInfo {
+                name: attrs.metadata().name().to_string(),
+                fields: visitor.fields,
+                parent,
+            },
+        );
+    }
+
+    fn on_record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+        let mut visitor = JsonFieldVisitor::new();
+        values.record(&mut visitor);
+        let mut state = match self.span_state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if let Some(info) = state.spans.get_mut(&span.into_u64()) {
+            for (k, v) in visitor.fields {
+                info.fields.insert(k, v);
+            }
+        }
+    }
+
+    fn on_enter(&self, span: &tracing::span::Id) {
+        let mut state = match self.span_state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        state
+            .stacks
+            .entry(Self::thread_id())
+            .or_default()
+            .push(span.into_u64());
+    }
+
+    fn on_exit(&self, span: &tracing::span::Id) {
+        let mut state = match self.span_state.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if let Some(stack) = state.stacks.get_mut(&Self::thread_id()) {
+            if let Some(pos) = stack.iter().rposition(|sid| *sid == span.into_u64()) {
+                stack.remove(pos);
+            }
+            if stack.is_empty() {
+                state.stacks.remove(&Self::thread_id());
+            }
+        }
+    }
+
+    fn span_chain_for_event(
+        &self,
+        event: &tracing::Event<'_>,
+    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        let state = match self.span_state.lock() {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let mut chain = Vec::new();
+        let mut current = if let Some(parent) = event.parent() {
+            Some(parent.into_u64())
+        } else if event.is_root() {
+            None
+        } else if event.is_contextual() {
+            self.current_span_id(&state)
+        } else {
+            None
+        };
+        while let Some(id) = current {
+            let Some(info) = state.spans.get(&id) else {
+                break;
+            };
+            let mut span_obj = serde_json::Map::new();
+            span_obj.insert(
+                "name".to_string(),
+                serde_json::Value::String(info.name.clone()),
+            );
+            for (k, v) in &info.fields {
+                span_obj.insert(k.clone(), v.clone());
+            }
+            chain.push(span_obj);
+            current = info.parent;
+        }
+        chain.reverse();
+        chain
+    }
+
     fn write_event_to_files(&self, event: &tracing::Event<'_>) {
         let meta = event.metadata();
         let target = meta.target();
+        let timestamp =
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
         // Write to .events.jsonl — only _events:: targets.
         if let Some(kind) = target.split_once("_events::").map(|(_, k)| k) {
@@ -150,9 +285,7 @@ impl NsWriterSubscriber {
             );
             visitor.fields.insert(
                 "timestamp".to_string(),
-                serde_json::Value::String(
-                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                ),
+                serde_json::Value::String(timestamp.clone()),
             );
             if let Ok(mut w) = self.events_writer.lock() {
                 let _ = serde_json::to_writer(&mut *w, &visitor.fields);
@@ -163,15 +296,13 @@ impl NsWriterSubscriber {
 
         // Write to .tracing.jsonl — matching tracing-subscriber's JSON format:
         // {"timestamp":"...","level":"INFO","fields":{"message":"...","key":"val"},"target":"mod::path"}
-        if *meta.level() <= self.file_level {
+        if *meta.level() <= self.file_level || target.contains("_events::") {
             let mut visitor = JsonFieldVisitor::new();
             event.record(&mut visitor);
             let mut obj = serde_json::Map::new();
             obj.insert(
                 "timestamp".to_string(),
-                serde_json::Value::String(
-                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                ),
+                serde_json::Value::String(timestamp),
             );
             obj.insert(
                 "level".to_string(),
@@ -187,6 +318,23 @@ impl NsWriterSubscriber {
                 "target".to_string(),
                 serde_json::Value::String(target.to_string()),
             );
+            let span_chain = self.span_chain_for_event(event);
+            if !span_chain.is_empty() {
+                let current = span_chain[span_chain.len() - 1].clone();
+                obj.insert(
+                    "span".to_string(),
+                    serde_json::Value::Object(current),
+                );
+                obj.insert(
+                    "spans".to_string(),
+                    serde_json::Value::Array(
+                        span_chain
+                            .into_iter()
+                            .map(serde_json::Value::Object)
+                            .collect(),
+                    ),
+                );
+            }
             if let Ok(mut w) = self.tracing_writer.lock() {
                 let _ = serde_json::to_writer(&mut *w, &obj);
                 let _ = w.write_all(b"\n");
@@ -204,11 +352,14 @@ impl tracing::Subscriber for NsWriterSubscriber {
     }
 
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        self.inner.new_span(span)
+        let id = self.inner.new_span(span);
+        self.on_new_span(&id, span);
+        id
     }
 
     fn record(&self, span: &tracing::span::Id, values: &tracing::span::Record<'_>) {
         self.inner.record(span, values);
+        self.on_record(span, values);
     }
 
     fn record_follows_from(&self, span: &tracing::span::Id, follows: &tracing::span::Id) {
@@ -222,10 +373,12 @@ impl tracing::Subscriber for NsWriterSubscriber {
 
     fn enter(&self, span: &tracing::span::Id) {
         self.inner.enter(span);
+        self.on_enter(span);
     }
 
     fn exit(&self, span: &tracing::span::Id) {
         self.inner.exit(span);
+        self.on_exit(span);
     }
 
     fn clone_span(&self, id: &tracing::span::Id) -> tracing::span::Id {
@@ -233,7 +386,17 @@ impl tracing::Subscriber for NsWriterSubscriber {
     }
 
     fn try_close(&self, id: tracing::span::Id) -> bool {
-        self.inner.try_close(id)
+        let raw = id.into_u64();
+        let closed = self.inner.try_close(id);
+        if closed {
+            if let Ok(mut state) = self.span_state.lock() {
+                state.spans.remove(&raw);
+                for stack in state.stacks.values_mut() {
+                    stack.retain(|sid| *sid != raw);
+                }
+            }
+        }
+        closed
     }
 
     fn current_span(&self) -> tracing_core::span::Current {
@@ -278,6 +441,7 @@ pub(crate) fn install_namespace_subscriber(
         tracing_writer: Mutex::new(LazyFile::new(tracing_path)),
         events_writer: Mutex::new(LazyFile::new(events_path)),
         file_level,
+        span_state: Mutex::new(SpanState::default()),
     };
 
     Some(tracing::subscriber::set_default(subscriber))

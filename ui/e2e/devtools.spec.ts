@@ -81,14 +81,19 @@ test('devtools ui shows all views', async ({ page }) => {
     // Should see tracing files in the sidebar (flat naming: device.client.tracing.jsonl).
     await expect(page.getByText('device.client.tracing.jsonl').first()).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('device.server.tracing.jsonl').first()).toBeVisible()
+    await page.getByText('device.client.tracing.jsonl').first().click()
 
     // Verify rendered tracing log lines have all expected parts:
-    // timestamp, level, target, and message — matching tracing fmt output.
+    // timestamp, level, target, and message, plus nested parent spans.
     const logEntry = page.locator('.log-entry').first()
     await expect(logEntry).toBeVisible({ timeout: 5_000 })
     await expect(logEntry.locator('.log-ts')).toBeVisible()        // timestamp
     await expect(logEntry.locator('[class*="level-"]')).toBeVisible() // level badge
     await expect(logEntry.locator('.log-target')).toBeVisible()    // target
+    const nestedSpanEntry = page.locator('.log-entry', {
+      hasText: 's1{z=3}:s2{y=2}: foo: x=1',
+    })
+    await expect(nestedSpanEntry).toBeVisible({ timeout: 10_000 })
 
     // Step 7: Switch to the timeline tab and verify events.
     await page.getByRole('button', { name: 'timeline' }).click()

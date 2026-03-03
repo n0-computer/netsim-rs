@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::consts;
+use tracing::{info_span, Instrument};
 
 /// Creates a minimal lab with a DC server, home-NAT router, and client device.
 /// Runs a TCP echo roundtrip and writes all events + state to `PATCHBAY_OUTDIR`.
@@ -62,6 +63,14 @@ async fn simple_lab_for_e2e() -> Result<()> {
     info!("starting TCP echo roundtrip");
     client
         .spawn(move |_| async move {
+            let s1 = info_span!("s1", z = 3);
+            let s2 = info_span!(parent: &s1, "s2", y = 2);
+            async {
+                tracing::info!(target: "foo", x = 1);
+            }
+            .instrument(s2)
+            .await;
+
             let result = tcp_roundtrip(echo_addr).await;
             tracing::info!(target: "patchbay::_events::TcpRoundtripComplete", bytes = 5);
             result

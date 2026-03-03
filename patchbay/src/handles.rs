@@ -15,6 +15,7 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::PathBuf,
     process::Command,
     sync::Arc,
     thread,
@@ -32,7 +33,7 @@ use crate::{
     },
     event::{IfaceSnapshot, LabEventKind},
     firewall::Firewall,
-    lab::{LinkCondition, ObservedAddr},
+    lab::{Lab, LinkCondition, ObservedAddr},
     nat::{IpSupport, Nat, NatV6Mode},
     netlink::Netlink,
 };
@@ -129,6 +130,24 @@ impl Device {
     /// Returns the network namespace name for this device.
     pub fn ns(&self) -> &str {
         &self.ns
+    }
+
+    /// Returns a clone of the owning [`Lab`].
+    pub fn lab(&self) -> Lab {
+        Lab {
+            inner: Arc::clone(&self.lab),
+        }
+    }
+
+    /// Builds a path in the lab run directory for this device.
+    ///
+    /// Returns `None` when the lab was created without an output directory.
+    /// The resulting filename is `device.{name}.{suffix}`.
+    pub fn filepath(&self, suffix: &str) -> Option<PathBuf> {
+        let run_dir = self.lab.run_dir.as_ref()?;
+        let suffix = suffix.trim_start_matches('.');
+        let filename = crate::consts::node_file(crate::consts::KIND_DEVICE, &self.name, suffix);
+        Some(run_dir.join(filename))
     }
 
     /// Returns the IPv4 address of the default interface, if assigned.
@@ -808,6 +827,24 @@ impl Router {
     /// Returns the network namespace name for this router.
     pub fn ns(&self) -> &str {
         &self.ns
+    }
+
+    /// Returns a clone of the owning [`Lab`].
+    pub fn lab(&self) -> Lab {
+        Lab {
+            inner: Arc::clone(&self.lab),
+        }
+    }
+
+    /// Builds a path in the lab run directory for this router.
+    ///
+    /// Returns `None` when the lab was created without an output directory.
+    /// The resulting filename is `router.{name}.{suffix}`.
+    pub fn filepath(&self, suffix: &str) -> Option<PathBuf> {
+        let run_dir = self.lab.run_dir.as_ref()?;
+        let suffix = suffix.trim_start_matches('.');
+        let filename = crate::consts::node_file(crate::consts::KIND_ROUTER, &self.name, suffix);
+        Some(run_dir.join(filename))
     }
 
     /// Returns the region label, if set.
