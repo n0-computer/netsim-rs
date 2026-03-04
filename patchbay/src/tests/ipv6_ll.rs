@@ -118,6 +118,72 @@ async fn dad_disabled_deterministic_mode() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+async fn ipv6_profiles_switch_static_vs_radriven_default_route_behavior() -> Result<()> {
+    check_caps()?;
+
+    {
+        let lab =
+            Lab::with_opts(LabOpts::default().ipv6_profile(Ipv6Profile::LabDeterministic)).await?;
+        let r = lab
+            .add_router("r-static")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dev = lab.add_device("d-static").uplink(r.id()).build().await?;
+
+        let route = dev.run_sync(|| {
+            let out = std::process::Command::new("ip")
+                .args(["-6", "route", "show", "default"])
+                .output()?;
+            if !out.status.success() {
+                anyhow::bail!("ip -6 route failed with status {}", out.status);
+            }
+            Ok::<_, anyhow::Error>(String::from_utf8_lossy(&out.stdout).to_string())
+        })?;
+        assert!(
+            route.contains("via 2001:db8:"),
+            "static profile should install global-v6 default route, got: {route:?}"
+        );
+        assert!(
+            !route.contains("via fe80:"),
+            "static profile should not use link-local default route, got: {route:?}"
+        );
+    }
+
+    {
+        let lab = Lab::with_opts(
+            LabOpts::default()
+                .ipv6_profile(Ipv6Profile::ProductionLike)
+                .ipv6_dad_mode(Ipv6DadMode::Disabled),
+        )
+        .await?;
+        let r = lab
+            .add_router("r-ra")
+            .ip_support(IpSupport::DualStack)
+            .build()
+            .await?;
+        let dev = lab.add_device("d-ra").uplink(r.id()).build().await?;
+
+        let route = dev.run_sync(|| {
+            let out = std::process::Command::new("ip")
+                .args(["-6", "route", "show", "default"])
+                .output()?;
+            if !out.status.success() {
+                anyhow::bail!("ip -6 route failed with status {}", out.status);
+            }
+            Ok::<_, anyhow::Error>(String::from_utf8_lossy(&out.stdout).to_string())
+        })?;
+        assert!(
+            route.contains("via fe80:"),
+            "production-like profile should use link-local default route, got: {route:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
 async fn radriven_default_route_uses_scoped_ll_and_switches_iface() -> Result<()> {
     check_caps()?;
 

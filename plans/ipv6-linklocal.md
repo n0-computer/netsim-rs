@@ -8,7 +8,12 @@
 - [ ] Phase 2: Router Advertisement and Router Solicitation behavior
 - [x] Phase 3: Public API support for link-local and scope handling
 - [ ] Phase 4: Real-world presets for consumer and production-like IPv6
+- [x] Phase 4.1: Add lab IPv6 deployment profiles that map to DAD and provisioning defaults
+- [ ] Phase 4.2: Wire router preset defaults and docs to profile recommendations
 - [ ] Phase 5: Tests and validation matrix
+- [x] Phase 5.1: Add RA worker lifecycle coverage for router namespace removal
+- [x] Phase 5.2: Add profile-behavior test for static vs RA-driven default-route semantics
+- [ ] Phase 5.3: Close remaining matrix gaps from this plan
 - [ ] Final review
 
 ## Goal

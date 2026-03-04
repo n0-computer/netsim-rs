@@ -316,6 +316,33 @@ pub enum Ipv6ProvisioningMode {
     RaDriven,
 }
 
+/// Deployment-oriented IPv6 behavior profile for a lab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ipv6Profile {
+    /// Deterministic test profile: DAD off and static v6 route wiring.
+    LabDeterministic,
+    /// Production-like baseline: DAD on and RA/RS-driven route learning.
+    ProductionLike,
+    /// Consumer home baseline: DAD on and RA/RS-driven route learning.
+    ConsumerHome,
+    /// Mobile carrier baseline: DAD on and RA/RS-driven route learning.
+    MobileCarrier,
+    /// Enterprise baseline: DAD on and RA/RS-driven route learning.
+    Enterprise,
+}
+
+impl Ipv6Profile {
+    fn modes(self) -> (Ipv6DadMode, Ipv6ProvisioningMode) {
+        match self {
+            Self::LabDeterministic => (Ipv6DadMode::Disabled, Ipv6ProvisioningMode::Static),
+            Self::ProductionLike | Self::ConsumerHome | Self::MobileCarrier | Self::Enterprise => {
+                (Ipv6DadMode::Enabled, Ipv6ProvisioningMode::RaDriven)
+            }
+        }
+    }
+}
+
 impl LabOpts {
     /// Sets the output directory for event log and state files.
     pub fn outdir(mut self, path: impl Into<PathBuf>) -> Self {
@@ -347,6 +374,14 @@ impl LabOpts {
     /// Sets IPv6 provisioning behavior.
     pub fn ipv6_provisioning_mode(mut self, mode: Ipv6ProvisioningMode) -> Self {
         self.ipv6_provisioning_mode = mode;
+        self
+    }
+
+    /// Applies a deployment profile that sets both DAD and v6 provisioning mode.
+    pub fn ipv6_profile(mut self, profile: Ipv6Profile) -> Self {
+        let (dad, provisioning) = profile.modes();
+        self.ipv6_dad_mode = dad;
+        self.ipv6_provisioning_mode = provisioning;
         self
     }
 }
