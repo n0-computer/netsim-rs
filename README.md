@@ -169,6 +169,13 @@ let lab = Lab::with_opts(
 `Ipv6ProvisioningMode::RaDriven` enables patchbay's RA/RS-driven path.  
 `Ipv6DadMode::Disabled` is the current default for deterministic test setup.
 
+In `RaDriven` mode, patchbay models Router Advertisement and Router
+Solicitation behavior through structured events and route updates. It does
+not emit raw ICMPv6 RA or RS packets on the virtual links.
+
+For full scope and known gaps, see [Book limitations](docs/limitations.md)
+and [IPv6 reference](docs/reference/ipv6.md).
+
 ### Firewalls
 
 Firewall presets control both inbound and outbound traffic:

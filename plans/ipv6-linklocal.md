@@ -33,6 +33,7 @@ Make patchbay's IPv6 link-local behavior match production and consumer deploymen
 - Core link-local, scoped routing, RA runtime controls, profile wiring, and per-device provisioning overrides are implemented.
 - Dedicated `ipv6_ll.rs` was retired after review feedback; coverage was folded back into stable test modules (`ipv6.rs`, `preset.rs`, `route.rs`, `lifecycle.rs`) to avoid fragile file-polling tracing tests.
 - Preset-to-profile behavior is documented in user-facing docs (`README.md`, `docs/reference/ipv6.md`).
+- IPv6 fidelity boundaries are now documented explicitly in API docs, README, book reference docs, and a new book limitations page (`docs/limitations.md`), including current gaps around packet-level RA/RS, full SLAAC state machines, and ND timing.
 
 ## Real-World Deployment Baselines
 

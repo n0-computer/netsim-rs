@@ -1184,6 +1184,8 @@ impl Router {
     ///
     /// This affects subsequent RA-driven route refresh operations and any
     /// future device wiring. Existing RA worker task lifecycle is not changed.
+    /// RA behavior in patchbay is currently modeled through structured events
+    /// and route updates, not raw ICMPv6 control packets.
     pub async fn set_ra_enabled(&self, enabled: bool) -> Result<()> {
         let op = self
             .lab
@@ -1217,6 +1219,7 @@ impl Router {
     ///
     /// Value is clamped to at least one second.
     /// Existing RA worker task lifecycle is not changed.
+    /// This interval controls modeled RA event cadence.
     pub async fn set_ra_interval_secs(&self, secs: u64) -> Result<()> {
         let op = self
             .lab
@@ -1236,6 +1239,7 @@ impl Router {
     ///
     /// A value of `0` represents default-router withdrawal semantics.
     /// Existing RA worker task lifecycle is not changed.
+    /// This affects modeled route withdrawal in RA-driven mode.
     pub async fn set_ra_lifetime_secs(&self, secs: u64) -> Result<()> {
         let op = self
             .lab

@@ -25,6 +25,10 @@ common network scenarios like WiFi handoff and VPN tunnels, the internals
 of NAT traversal and hole-punching as implemented in nftables, and the
 TOML simulation file format used by the patchbay runner.
 
+The **Limitations** page documents known boundaries of the current model.
+Read it before relying on packet-level control-plane behavior, operating
+system specific network-stack quirks, or low-level timing fidelity.
+
 A built-in devtools server (`patchbay serve`) provides an interactive web
 UI for inspecting lab runs: topology graphs, event timelines,
 per-namespace structured logs, and performance results. Set

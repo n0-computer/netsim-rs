@@ -4,6 +4,23 @@ How IPv6 works in practice and how to simulate each scenario in patchbay.
 
 ---
 
+## IPv6 Terms Used Here
+
+This page uses a few IPv6 terms that often appear as acronyms:
+
+- **GUA** means Global Unicast Address, an address that is globally routable.
+- **ULA** means Unique Local Address, usually in `fd00::/8`, for local use.
+- **Link-local address** means an address in `fe80::/10`, valid only on one link.
+- **SLAAC** means Stateless Address Autoconfiguration, host-side address setup from router announcements.
+- **RA** means Router Advertisement, a router message that tells hosts about prefixes and default routers.
+- **RS** means Router Solicitation, a host message that asks routers for an advertisement.
+- **DAD** means Duplicate Address Detection, kernel checks for address collisions before an address becomes preferred.
+
+When this document introduces a concept with an acronym, it also explains
+what the concept does for routing and application behavior.
+
+---
+
 ## How ISPs Actually Deploy IPv6
 
 ### Residential (FTTH, Cable, DSL)
@@ -263,6 +280,22 @@ let lab = Lab::with_opts(
 In `RaDriven` mode, patchbay emits structured RA/RS events and installs
 link-local scoped default routes for default interfaces. This models host
 routing behavior while keeping tests deterministic and introspectable.
+
+### Fidelity and Current Limitations
+
+Patchbay currently models RA and RS behavior at the control-plane level:
+
+- It updates routes and emits structured RA and RS events in tracing logs.
+- It does not currently emit raw ICMPv6 RA or RS packets on virtual links.
+
+This means most application-level route and connectivity behavior is covered,
+but some protocol-observer behavior is not yet modeled:
+
+- Full SLAAC state-machine behavior across all timers and transitions.
+- Neighbor Discovery timing details, including exact probe/retransmit timing.
+- Host temporary address rotation and privacy-address lifecycles.
+
+For the complete project-wide list, see [Limitations](../limitations.md).
 
 ### Scoped default route behavior
 

@@ -2736,7 +2736,7 @@ pub(crate) async fn wire_iface_async(
     })
     .await?;
 
-    // DAD already disabled by create_named_netns.
+    // DAD mode was configured by create_named_netns before interfaces were created.
     nl_run(netns, &dev.dev_ns, {
         let d = dev.clone();
         let root_dev = root_dev.clone();
@@ -2827,10 +2827,10 @@ fn link_local_from_seed(seed: u64) -> Ipv6Addr {
 // Netns + process helpers
 // ─────────────────────────────────────────────
 
-/// Creates a namespace with optional DNS overlay and disables IPv6 DAD.
+/// Creates a namespace with optional DNS overlay and applies IPv6 DAD mode.
 ///
-/// IPv6 DAD is disabled immediately so interfaces moved in will inherit
-/// `dad_transmits=0` and addresses go straight to "valid" state.
+/// When `dad_mode` is disabled, this sets `accept_dad=0` and
+/// `dad_transmits=0` before interfaces are moved in.
 pub(crate) fn create_named_netns(
     netns: &netns::NetnsManager,
     name: &str,

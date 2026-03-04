@@ -313,7 +313,10 @@ pub enum Ipv6ProvisioningMode {
     /// Install routes directly from patchbay wiring logic.
     #[default]
     Static,
-    /// RA/RS-driven provisioning path.
+    ///
+    /// This mode follows RA and RS semantics for route installation and
+    /// emits structured RA and RS events into patchbay logs. It does not
+    /// emit raw ICMPv6 Router Advertisement or Router Solicitation packets.
     RaDriven,
 }
 
@@ -1781,6 +1784,9 @@ impl RouterBuilder {
     }
 
     /// Enables or disables router advertisement emission in RA-driven mode.
+    ///
+    /// In the current implementation, this controls structured RA events and
+    /// default-route behavior, not raw ICMPv6 packet emission.
     pub fn ra_enabled(mut self, enabled: bool) -> Self {
         if self.result.is_ok() {
             self.ra_enabled = enabled;
@@ -1789,6 +1795,8 @@ impl RouterBuilder {
     }
 
     /// Sets the RA interval in seconds, clamped to at least 1 second.
+    ///
+    /// This interval drives patchbay's RA event cadence in RA-driven mode.
     pub fn ra_interval_secs(mut self, secs: u64) -> Self {
         if self.result.is_ok() {
             self.ra_interval_secs = secs.max(1);
@@ -1798,7 +1806,8 @@ impl RouterBuilder {
 
     /// Sets Router Advertisement lifetime in seconds.
     ///
-    /// A value of `0` advertises default-router withdrawal semantics.
+    /// A value of `0` advertises default-router withdrawal semantics in
+    /// patchbay's RA-driven route model.
     pub fn ra_lifetime_secs(mut self, secs: u64) -> Self {
         if self.result.is_ok() {
             self.ra_lifetime_secs = secs;
