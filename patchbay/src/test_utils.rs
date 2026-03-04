@@ -147,17 +147,18 @@ pub async fn udp_send_recv_count(
         .context("udp bind")?;
 
     // Warmup: confirm the reflector is live before starting the measured burst.
-    // Probes may traverse a lossy link, so we retry aggressively (50ms apart)
-    // for up to 5 seconds to handle both reflector startup delay and packet loss.
+    // Probes may traverse a lossy link (up to 90%), so we retry aggressively
+    // (50ms apart) for up to 15 seconds to handle both reflector startup delay
+    // and packet loss on high-loss links.
     let mut warmup_buf = [0u8; 64];
-    let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         let _ = sock.send_to(b"WARMUP", target).await;
         match tokio::time::timeout(Duration::from_millis(50), sock.recv_from(&mut warmup_buf)).await
         {
             Ok(Ok(_)) => break,
             _ if tokio::time::Instant::now() >= warmup_deadline => {
-                anyhow::bail!("reflector at {target} did not respond within 5s warmup");
+                anyhow::bail!("reflector at {target} did not respond within 15s warmup");
             }
             _ => continue,
         }

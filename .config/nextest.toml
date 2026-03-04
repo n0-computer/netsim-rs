@@ -7,7 +7,7 @@
 test-threads = 8
 
 # CI runners (2 vCPU) hit EAGAIN under thread pressure from parallel
-# namespace-heavy tests. Reduce parallelism and isolate heavy loop tests.
+# namespace-heavy tests. Reduce parallelism and isolate timing-sensitive tests.
 [profile.ci]
 test-threads = 4
 
@@ -15,9 +15,9 @@ test-threads = 4
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'test(presets_rtt_and_loss) | test(link_down_up)'
+filter = 'test(presets_rtt_and_loss) | test(link_down_up) | test(loss_udp_high) | test(loss_udp_moderate)'
 test-group = 'serial-heavy'
 
 [[profile.ci.overrides]]
-filter = 'test(presets_rtt_and_loss) | test(link_down_up)'
+filter = 'test(presets_rtt_and_loss) | test(link_down_up) | test(loss_udp_high) | test(loss_udp_moderate)'
 test-group = 'serial-heavy'
