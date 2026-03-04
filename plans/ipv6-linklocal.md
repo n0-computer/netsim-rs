@@ -6,6 +6,7 @@
 - [ ] Phase 0: Define target behavior and compatibility boundaries
 - [x] Phase 1: Kernel behavior parity for link-local addresses and routes
 - [ ] Phase 2: Router Advertisement and Router Solicitation behavior
+- [x] Phase 2.3a: Add per-device IPv6 provisioning override for gradual migration
 - [x] Phase 3: Public API support for link-local and scope handling
 - [ ] Phase 4: Real-world presets for consumer and production-like IPv6
 - [x] Phase 4.1: Add lab IPv6 deployment profiles that map to DAD and provisioning defaults

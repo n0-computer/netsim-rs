@@ -184,6 +184,66 @@ async fn ipv6_profiles_switch_static_vs_radriven_default_route_behavior() -> Res
 
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
+async fn per_device_provisioning_override_mixes_static_and_radriven() -> Result<()> {
+    check_caps()?;
+
+    let lab = Lab::with_opts(
+        LabOpts::default()
+            .ipv6_provisioning_mode(Ipv6ProvisioningMode::RaDriven)
+            .ipv6_dad_mode(Ipv6DadMode::Disabled),
+    )
+    .await?;
+    let r = lab
+        .add_router("r")
+        .ip_support(IpSupport::DualStack)
+        .build()
+        .await?;
+
+    let dev_static = lab
+        .add_device("d-static")
+        .uplink(r.id())
+        .ipv6_provisioning_mode(Ipv6ProvisioningMode::Static)
+        .build()
+        .await?;
+    let dev_ra = lab.add_device("d-ra").uplink(r.id()).build().await?;
+
+    let route_static = dev_static.run_sync(|| {
+        let out = std::process::Command::new("ip")
+            .args(["-6", "route", "show", "default"])
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("ip -6 route failed with status {}", out.status);
+        }
+        Ok::<_, anyhow::Error>(String::from_utf8_lossy(&out.stdout).to_string())
+    })?;
+    assert!(
+        route_static.contains("via 2001:db8:"),
+        "static override should use global-v6 default route, got: {route_static:?}"
+    );
+    assert!(
+        !route_static.contains("via fe80:"),
+        "static override should not use link-local default route, got: {route_static:?}"
+    );
+
+    let route_ra = dev_ra.run_sync(|| {
+        let out = std::process::Command::new("ip")
+            .args(["-6", "route", "show", "default"])
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!("ip -6 route failed with status {}", out.status);
+        }
+        Ok::<_, anyhow::Error>(String::from_utf8_lossy(&out.stdout).to_string())
+    })?;
+    assert!(
+        route_ra.contains("via fe80:"),
+        "RA-driven device should use link-local default route, got: {route_ra:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
 async fn radriven_default_route_uses_scoped_ll_and_switches_iface() -> Result<()> {
     check_caps()?;
 

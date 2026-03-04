@@ -82,7 +82,7 @@ async fn reconcile_radriven_default_v6_routes(
 ) -> Result<()> {
     let targets = {
         let inner = lab.core.lock().unwrap();
-        inner.router_default_v6_targets(router)?
+        inner.router_default_v6_targets(router, lab.ipv6_provisioning_mode)?
     };
     for t in targets {
         let ifname = t.ifname.to_string();
@@ -326,6 +326,16 @@ impl Device {
             .collect()
     }
 
+    fn provisioning_mode(&self) -> Result<Ipv6ProvisioningMode> {
+        let inner = self.lab.core.lock().unwrap();
+        let dev = inner
+            .device(self.id)
+            .ok_or_else(|| anyhow!("device removed"))?;
+        Ok(dev
+            .provisioning_mode
+            .unwrap_or(self.lab.ipv6_provisioning_mode))
+    }
+
     // ── Dynamic operations ──────────────────────────────────────────────
 
     /// Brings an interface administratively down.
@@ -384,7 +394,7 @@ impl Device {
                     gw_ip,
                     gw_v6,
                     gw_ll_v6,
-                    self.lab.ipv6_provisioning_mode,
+                    self.provisioning_mode()?,
                     ra_default_enabled,
                 )
             };
@@ -461,7 +471,7 @@ impl Device {
                 gw_ip,
                 gw_v6,
                 gw_ll_v6,
-                self.lab.ipv6_provisioning_mode,
+                self.provisioning_mode()?,
                 ra_default_enabled,
             )
         };
@@ -712,7 +722,7 @@ impl Device {
             .lock()
             .unwrap()
             .prepare_add_iface(self.id, ifname, router, impair)?;
-        if self.lab.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+        if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
             setup.iface_build.gw_ip_v6 = None;
         }
 
@@ -821,7 +831,7 @@ impl Device {
             .lock()
             .unwrap()
             .prepare_replug_iface(self.id, ifname, to_router)?;
-        if self.lab.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+        if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
             setup.iface_build.gw_ip_v6 = None;
         }
 

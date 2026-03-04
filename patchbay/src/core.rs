@@ -172,6 +172,8 @@ pub(crate) struct DeviceData {
     pub default_via: Arc<str>,
     /// Optional MTU for all interfaces.
     pub mtu: Option<u32>,
+    /// Optional per-device IPv6 provisioning override.
+    pub provisioning_mode: Option<Ipv6ProvisioningMode>,
     /// Per-device operation lock — serializes multi-step mutations.
     pub op: Arc<tokio::sync::Mutex<()>>,
 }
@@ -849,6 +851,7 @@ impl NetworkCore {
                 interfaces: vec![],
                 default_via: "".into(),
                 mtu: None,
+                provisioning_mode: None,
                 op: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
@@ -1127,6 +1130,7 @@ impl NetworkCore {
     pub(crate) fn router_default_v6_targets(
         &self,
         router: NodeId,
+        default_mode: Ipv6ProvisioningMode,
     ) -> Result<Vec<DeviceDefaultV6RouteTarget>> {
         let downlink = self
             .router(router)
@@ -1139,6 +1143,10 @@ impl NetworkCore {
             let Some(iface) = dev.iface(&dev.default_via) else {
                 continue;
             };
+            let mode = dev.provisioning_mode.unwrap_or(default_mode);
+            if mode != Ipv6ProvisioningMode::RaDriven {
+                continue;
+            }
             if iface.uplink == downlink && iface.ip_v6.is_some() {
                 out.push(DeviceDefaultV6RouteTarget {
                     ns: dev.ns.clone(),

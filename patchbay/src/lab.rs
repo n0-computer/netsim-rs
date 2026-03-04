@@ -771,6 +771,7 @@ impl Lab {
                 lab_span,
                 id: NodeId(u64::MAX),
                 mtu: None,
+                provisioning_mode: None,
                 result: Err(anyhow!("device '{}' already exists", name)),
             };
         }
@@ -780,6 +781,7 @@ impl Lab {
             lab_span,
             id,
             mtu: None,
+            provisioning_mode: None,
             result: Ok(()),
         }
     }
@@ -2139,6 +2141,7 @@ pub struct DeviceBuilder {
     lab_span: tracing::Span,
     id: NodeId,
     mtu: Option<u32>,
+    provisioning_mode: Option<Ipv6ProvisioningMode>,
     result: Result<()>,
 }
 
@@ -2147,6 +2150,14 @@ impl DeviceBuilder {
     pub fn mtu(mut self, mtu: u32) -> Self {
         if self.result.is_ok() {
             self.mtu = Some(mtu);
+        }
+        self
+    }
+
+    /// Overrides IPv6 provisioning mode for this device only.
+    pub fn ipv6_provisioning_mode(mut self, mode: Ipv6ProvisioningMode) -> Self {
+        if self.result.is_ok() {
+            self.provisioning_mode = Some(mode);
         }
         self
     }
@@ -2205,16 +2216,20 @@ impl DeviceBuilder {
         self.result?;
 
         // Phase 1: Lock → extract snapshot + DNS overlay → unlock.
-        let (dev, ifaces, prefix, root_ns, dns_overlay) = {
+        let (dev, ifaces, prefix, root_ns, dns_overlay, provisioning_mode) = {
             let mut inner = self.inner.core.lock().unwrap();
             // Apply builder-level config before snapshot.
             if let Some(d) = inner.device_mut(self.id) {
                 d.mtu = self.mtu;
+                d.provisioning_mode = self.provisioning_mode;
             }
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("unknown device id"))?
                 .clone();
+            let provisioning_mode = dev
+                .provisioning_mode
+                .unwrap_or(self.inner.ipv6_provisioning_mode);
 
             let mut iface_data = Vec::new();
             for iface in &dev.interfaces {
@@ -2234,14 +2249,13 @@ impl DeviceBuilder {
                 })?;
                 let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
                 let gw_ns = inner.router(gw_router).unwrap().ns.clone();
-                let gw_ip_v6 =
-                    if self.inner.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven {
-                        None
-                    } else {
-                        sw.gw_v6
-                    };
+                let gw_ip_v6 = if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+                    None
+                } else {
+                    sw.gw_v6
+                };
                 let gw_ll_v6 = inner.router(gw_router).and_then(|r| {
-                    if self.inner.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+                    if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
                         if r.cfg.ra_enabled && r.cfg.ra_lifetime_secs > 0 {
                             r.downstream_ll_v6
                         } else {
@@ -2279,7 +2293,7 @@ impl DeviceBuilder {
 
             let prefix = inner.cfg.prefix.clone();
             let root_ns = inner.cfg.root_ns.clone();
-            (dev, iface_data, prefix, root_ns, overlay)
+            (dev, iface_data, prefix, root_ns, overlay, provisioning_mode)
         }; // lock released
 
         // Phase 2: Async network setup (no lock held).
@@ -2295,7 +2309,7 @@ impl DeviceBuilder {
                 ifaces,
                 Some(dns_overlay),
                 self.inner.ipv6_dad_mode,
-                self.inner.ipv6_provisioning_mode,
+                provisioning_mode,
             )
             .await
         }
