@@ -1,6 +1,9 @@
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
+/// Max retries for transient EAGAIN (os error 11) when spawning `tc` commands.
+const SPAWN_RETRIES: u32 = 3;
+
 /// Parameters for `tc netem` impairment.
 ///
 /// All fields default to zero (no impairment). Set only the fields you need.
@@ -51,8 +54,7 @@ impl<'a> Qdisc<'a> {
     async fn clear_root(&self) {
         let mut cmd = Command::new("tc");
         cmd.args(["qdisc", "del", "dev", self.ifname, "root"]);
-        cmd.stderr(std::process::Stdio::null());
-        let _ = cmd.status().await;
+        let _ = ensure_success(cmd, "tc qdisc del root").await;
     }
 
     async fn add_netem_root(&self, limits: LinkLimits) -> Result<()> {
@@ -126,15 +128,27 @@ impl<'a> Qdisc<'a> {
 }
 
 async fn ensure_success(mut cmd: Command, context: &str) -> Result<()> {
-    let out = cmd
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("{context}: spawn"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!("{context} failed: {stderr}");
+    // Retry on transient EAGAIN (os error 11) which can happen on
+    // resource-constrained CI runners when many namespaces are being
+    // created/torn down in quick succession.
+    cmd.stderr(std::process::Stdio::piped());
+    for attempt in 0..=SPAWN_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+        }
+        match cmd.output().await {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                bail!("{context} failed: {stderr}");
+            }
+            Err(e) if e.raw_os_error() == Some(11) && attempt < SPAWN_RETRIES => {
+                tracing::debug!(%context, attempt, "EAGAIN, retrying");
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("{context}: spawn"));
+            }
+        }
     }
+    bail!("{context}: spawn: EAGAIN after {SPAWN_RETRIES} retries");
 }
