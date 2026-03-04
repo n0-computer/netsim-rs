@@ -1177,6 +1177,7 @@ impl Router {
                 .router_mut(self.id)
                 .ok_or_else(|| anyhow!("router removed"))?;
             router.cfg.ra_enabled = enabled;
+            router.ra_runtime.set_enabled(enabled);
             let ll = router.downstream_ll_v6;
             if self.lab.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven
                 && router.cfg.ra_enabled
@@ -1208,6 +1209,7 @@ impl Router {
             .router_mut(self.id)
             .ok_or_else(|| anyhow!("router removed"))?;
         router.cfg.ra_interval_secs = secs.max(1);
+        router.ra_runtime.set_interval_secs(secs);
         Ok(())
     }
 
@@ -1227,6 +1229,7 @@ impl Router {
                 .router_mut(self.id)
                 .ok_or_else(|| anyhow!("router removed"))?;
             router.cfg.ra_lifetime_secs = secs;
+            router.ra_runtime.set_lifetime_secs(secs);
             let ll = router.downstream_ll_v6;
             if self.lab.ipv6_provisioning_mode == Ipv6ProvisioningMode::RaDriven
                 && router.cfg.ra_enabled

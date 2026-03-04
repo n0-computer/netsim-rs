@@ -823,3 +823,56 @@ async fn radriven_runtime_ra_lifetime_updates_default_route_immediately() -> Res
 
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn radriven_ra_worker_reflects_runtime_interval_and_lifetime() -> Result<()> {
+    check_caps()?;
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let outdir = std::env::temp_dir().join(format!("patchbay-ra-runtime-{unique}"));
+    fs::create_dir_all(&outdir)?;
+    std::env::set_var("PATCHBAY_LOG", "trace");
+
+    let lab = Lab::with_opts(
+        LabOpts::default()
+            .outdir(&outdir)
+            .label("ra-runtime-cfg")
+            .ipv6_dad_mode(Ipv6DadMode::Disabled)
+            .ipv6_provisioning_mode(Ipv6ProvisioningMode::RaDriven),
+    )
+    .await?;
+    let r = lab
+        .add_router("r")
+        .ip_support(IpSupport::DualStack)
+        .ra_enabled(true)
+        .ra_interval_secs(5)
+        .ra_lifetime_secs(120)
+        .build()
+        .await?;
+    let _d = lab.add_device("d").uplink(r.id()).build().await?;
+
+    r.set_ra_interval_secs(1).await?;
+    r.set_ra_lifetime_secs(33).await?;
+
+    let events = r
+        .filepath("events.jsonl")
+        .context("missing router events path")?;
+    let has_interval =
+        wait_for_file_contains(&events, "\"interval_secs\":1", Duration::from_secs(4)).await?;
+    assert!(
+        has_interval,
+        "expected RouterAdvertisement with interval_secs=1"
+    );
+    let has_lifetime =
+        wait_for_file_contains(&events, "\"lifetime_secs\":33", Duration::from_secs(4)).await?;
+    assert!(
+        has_lifetime,
+        "expected RouterAdvertisement with lifetime_secs=33"
+    );
+
+    Ok(())
+}

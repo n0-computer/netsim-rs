@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     path::PathBuf,
-    sync::{atomic::AtomicU64, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -230,8 +233,56 @@ pub(crate) struct RouterData {
     pub downstream_gw_v6: Option<Ipv6Addr>,
     /// Downstream bridge IPv6 link-local address.
     pub downstream_ll_v6: Option<Ipv6Addr>,
+    /// Runtime RA settings consumed by the RA worker.
+    pub ra_runtime: Arc<RaRuntimeCfg>,
     /// Per-router operation lock — serializes multi-step mutations.
     pub op: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RaRuntimeCfg {
+    enabled: AtomicBool,
+    interval_secs: AtomicU64,
+    lifetime_secs: AtomicU64,
+    changed: tokio::sync::Notify,
+}
+
+impl RaRuntimeCfg {
+    pub(crate) fn new(enabled: bool, interval_secs: u64, lifetime_secs: u64) -> Self {
+        Self {
+            enabled: AtomicBool::new(enabled),
+            interval_secs: AtomicU64::new(interval_secs.max(1)),
+            lifetime_secs: AtomicU64::new(lifetime_secs),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub(crate) fn load(&self) -> (bool, u64, u64) {
+        (
+            self.enabled.load(Ordering::Relaxed),
+            self.interval_secs.load(Ordering::Relaxed).max(1),
+            self.lifetime_secs.load(Ordering::Relaxed),
+        )
+    }
+
+    pub(crate) fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn set_interval_secs(&self, secs: u64) {
+        self.interval_secs.store(secs.max(1), Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn set_lifetime_secs(&self, secs: u64) {
+        self.lifetime_secs.store(secs, Ordering::Relaxed);
+        self.changed.notify_waiters();
+    }
+
+    pub(crate) fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.changed.notified()
+    }
 }
 
 impl RouterData {
@@ -772,6 +823,7 @@ impl NetworkCore {
                 downstream_cidr_v6: None,
                 downstream_gw_v6: None,
                 downstream_ll_v6: None,
+                ra_runtime: Arc::new(RaRuntimeCfg::new(true, 30, 1800)),
                 op: Arc::new(tokio::sync::Mutex::new(())),
             },
         );
@@ -2269,11 +2321,12 @@ pub(crate) async fn setup_router_async(
             &router.ns,
             data.cancel.clone(),
             RaWorkerCfg {
+                ra_runtime: Arc::clone(&router.ra_runtime),
                 router_name: router.name.to_string(),
                 iface: router.downlink_bridge.to_string(),
                 src_ll: router.downstream_ll_v6,
-                interval_secs: data.ra_interval_secs.max(1),
-                lifetime_secs: data.ra_lifetime_secs,
+                initial_interval_secs: data.ra_interval_secs.max(1),
+                initial_lifetime_secs: data.ra_lifetime_secs,
             },
         )?;
     }
@@ -2290,8 +2343,9 @@ fn spawn_ra_worker(
     let rt = netns.rt_handle_for(ns)?;
     let ns = ns.to_string();
     rt.spawn(async move {
-        let interval = tokio::time::Duration::from_secs(cfg.interval_secs.max(1));
-        let emit_ra = || {
+        let load_runtime = || cfg.ra_runtime.load();
+
+        let emit_ra = |interval_secs: u64, lifetime_secs: u64| {
             if let Some(src) = cfg.src_ll {
                 tracing::info!(
                     target: "patchbay::_events::RouterAdvertisement",
@@ -2299,21 +2353,45 @@ fn spawn_ra_worker(
                     router = %cfg.router_name,
                     iface = %cfg.iface,
                     src = %src,
-                    lifetime_secs = cfg.lifetime_secs,
-                    interval_secs = cfg.interval_secs,
+                    lifetime_secs,
+                    interval_secs,
                     "router advertisement"
                 );
             } else {
-                tracing::warn!(ns = %ns, router = %cfg.router_name, "ra-worker: missing link-local source address");
+                tracing::warn!(
+                    ns = %ns,
+                    router = %cfg.router_name,
+                    "ra-worker: missing link-local source address"
+                );
             }
         };
-        emit_ra();
+
+        let (enabled, interval_secs, lifetime_secs) = load_runtime();
+        if enabled {
+            emit_ra(interval_secs, lifetime_secs);
+        } else {
+            emit_ra(cfg.initial_interval_secs, cfg.initial_lifetime_secs);
+        }
+
         loop {
+            let (_, interval_secs, _) = load_runtime();
+            let changed = cfg.ra_runtime.notified();
+            tokio::pin!(changed);
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(interval) => {
-                    tracing::trace!(ns = %ns, interval_secs = cfg.interval_secs, "ra-worker: tick");
-                    emit_ra();
+                _ = &mut changed => {
+                    tracing::trace!(ns = %ns, "ra-worker: runtime config changed");
+                    let (enabled, interval_secs, lifetime_secs) = load_runtime();
+                    if enabled {
+                        emit_ra(interval_secs, lifetime_secs);
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs.max(1))) => {
+                    tracing::trace!(ns = %ns, interval_secs, "ra-worker: tick");
+                    let (enabled, interval_secs, lifetime_secs) = load_runtime();
+                    if enabled {
+                        emit_ra(interval_secs, lifetime_secs);
+                    }
                 }
             }
         }
@@ -2323,11 +2401,12 @@ fn spawn_ra_worker(
 }
 
 struct RaWorkerCfg {
+    ra_runtime: Arc<RaRuntimeCfg>,
     router_name: String,
     iface: String,
     src_ll: Option<Ipv6Addr>,
-    interval_secs: u64,
-    lifetime_secs: u64,
+    initial_interval_secs: u64,
+    initial_lifetime_secs: u64,
 }
 
 /// Sets up NAT64 in the router namespace:

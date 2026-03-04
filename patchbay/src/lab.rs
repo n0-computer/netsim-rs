@@ -1801,6 +1801,9 @@ impl RouterBuilder {
                 r.cfg.ra_enabled = self.ra_enabled;
                 r.cfg.ra_interval_secs = self.ra_interval_secs.max(1);
                 r.cfg.ra_lifetime_secs = self.ra_lifetime_secs;
+                r.ra_runtime.set_enabled(self.ra_enabled);
+                r.ra_runtime.set_interval_secs(self.ra_interval_secs);
+                r.ra_runtime.set_lifetime_secs(self.ra_lifetime_secs);
             }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();
