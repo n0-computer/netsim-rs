@@ -95,7 +95,7 @@ mod tests;
 mod userns;
 /// String sanitizers for filenames and environment variable names.
 pub mod util;
-/// Event file writer and run discovery.
+/// Event file writer.
 pub mod writer;
 
 pub use firewall::PortPolicy;
@@ -112,7 +112,6 @@ pub use crate::{
     core::NodeId,
     event::{IfaceCounters, IfaceSnapshot, LabEvent, LabEventKind, LabState},
     userns::{init_userns, init_userns_for_ctor},
-    writer::{discover_runs, RunInfo},
 };
 
 /// Verifies the process has enough privileges to manage namespaces, routes, and raw sockets.

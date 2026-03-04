@@ -21,16 +21,8 @@ async fn fullcone_holepunch() -> Result<()> {
     let dev1 = lab.add_device("dev1").uplink(nat1.id()).build().await?;
     let dev2 = lab.add_device("dev2").uplink(nat2.id()).build().await?;
 
-    let (stun_tx, stun_rx) = oneshot::channel();
-    let _task_relay = stun.spawn({
-        async move |ctx| {
-            let addr = SocketAddr::from((ctx.ip().unwrap(), 9999));
-            ctx.spawn_reflector(addr)?;
-            stun_tx.send(addr).unwrap();
-            anyhow::Ok(())
-        }
-    });
-    let stun_addr = stun_rx.await.unwrap();
+    let stun_addr = SocketAddr::from((stun.ip().unwrap(), 9999));
+    let _r = stun.spawn_reflector(stun_addr).await?;
 
     info!("NOW START");
 
@@ -42,7 +34,9 @@ async fn fullcone_holepunch() -> Result<()> {
     let task1 = dev1.spawn({
         async move |_| {
             span_log_timeout("ep1", timeout, async {
-                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                    .await
+                    .context("holepunch ep1 udp bind")?;
                 let public_addr = get_public_addr(&socket, stun_addr).await?;
                 info!("src {public_addr}");
 
@@ -60,7 +54,9 @@ async fn fullcone_holepunch() -> Result<()> {
     // spawn connector endpoint on dev2
     let task2 = dev2.spawn(async move |_| {
         span_log_timeout("ep2", timeout, async {
-            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+            let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                .await
+                .context("holepunch ep2 udp bind")?;
             let public_addr = get_public_addr(&socket, stun_addr).await?;
             info!("src {public_addr}");
 
@@ -105,16 +101,8 @@ async fn home_nat_holepunch() -> Result<()> {
         let dev1 = lab.add_device("dev1").uplink(nat1.id()).build().await?;
         let dev2 = lab.add_device("dev2").uplink(nat2.id()).build().await?;
 
-        let (stun_tx, stun_rx) = oneshot::channel();
-        let _task_relay = stun.spawn({
-            async move |ctx| {
-                let addr = SocketAddr::from((ctx.ip().unwrap(), 9999));
-                ctx.spawn_reflector(addr)?;
-                stun_tx.send(addr).unwrap();
-                anyhow::Ok(())
-            }
-        });
-        let stun_addr = stun_rx.await.unwrap();
+        let stun_addr = SocketAddr::from((stun.ip().unwrap(), 9999));
+        let _r = stun.spawn_reflector(stun_addr).await?;
 
         let timeout = Duration::from_secs(15);
         let stagger = Duration::from_millis(stagger_ms);
@@ -128,7 +116,9 @@ async fn home_nat_holepunch() -> Result<()> {
         let task1 = dev1.spawn({
             async move |_| {
                 span_log_timeout("ep1", timeout, async {
-                    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                        .await
+                        .context("holepunch home ep1 udp bind")?;
                     let public_addr = get_public_addr(&socket, stun_addr).await?;
                     info!("ep1 public {public_addr}");
                     addr1_tx.send(public_addr).unwrap();
@@ -144,7 +134,9 @@ async fn home_nat_holepunch() -> Result<()> {
 
         let task2 = dev2.spawn(async move |_| {
             span_log_timeout("ep2", timeout, async {
-                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
+                let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+                    .await
+                    .context("holepunch home ep2 udp bind")?;
                 let public_addr = get_public_addr(&socket, stun_addr).await?;
                 info!("ep2 public {public_addr}");
                 addr2_tx.send(public_addr).unwrap();

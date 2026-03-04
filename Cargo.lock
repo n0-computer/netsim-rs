@@ -1570,13 +1570,10 @@ dependencies = [
  "anyhow",
  "async-stream",
  "axum",
- "open",
- "patchbay",
  "serde",
  "serde_json",
  "tokio",
  "tokio-stream",
- "tower-http",
  "tracing",
 ]
 

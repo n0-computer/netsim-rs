@@ -28,7 +28,7 @@ async fn fullcone_allows() -> Result<()> {
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9100);
-    dc.spawn_reflector(reflector)?;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     // A sends outbound to create a fullcone mapping.
     let a_ext = a.probe_udp_mapping(reflector)?;
@@ -37,12 +37,13 @@ async fn fullcone_allows() -> Result<()> {
     let a_local_port = a_ext.port();
     let a_ip = a.ip().unwrap();
     let a_listen = SocketAddr::new(IpAddr::V4(a_ip), a_local_port);
-    a.spawn_reflector(a_listen)?;
+    let _r = a.spawn_reflector(a_listen).await?;
 
     // B sends to A's external address (router's public IP + A's mapped port).
     // With hairpin, the router should DNAT this to A's private IP.
     let reply = b.run_sync(move || {
-        let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let sock =
+            std::net::UdpSocket::bind("0.0.0.0:0").context("hairpin fullcone_allows udp bind")?;
         sock.set_read_timeout(Some(Duration::from_secs(2)))?;
         sock.send_to(b"PROBE", a_ext)?;
         let mut buf = [0u8; 512];
@@ -77,14 +78,15 @@ async fn home_nat_blocks() -> Result<()> {
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9101);
-    dc.spawn_reflector(reflector)?;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     // A creates a mapping.
     let a_ext = a.probe_udp_mapping(reflector)?;
 
     // B tries to reach A via the external addr — should time out.
     let result = b.run_sync(move || {
-        let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let sock =
+            std::net::UdpSocket::bind("0.0.0.0:0").context("hairpin home_nat_blocks udp bind")?;
         sock.set_read_timeout(Some(Duration::from_millis(500)))?;
         sock.send_to(b"PROBE", a_ext)?;
         let mut buf = [0u8; 512];
@@ -133,17 +135,18 @@ async fn custom_allows() -> Result<()> {
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9102);
-    dc.spawn_reflector(reflector)?;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let a_ext = a.probe_udp_mapping(reflector)?;
 
     let a_local_port = a_ext.port();
     let a_ip = a.ip().unwrap();
     let a_listen = SocketAddr::new(IpAddr::V4(a_ip), a_local_port);
-    a.spawn_reflector(a_listen)?;
+    let _r = a.spawn_reflector(a_listen).await?;
 
     let reply = b.run_sync(move || {
-        let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let sock =
+            std::net::UdpSocket::bind("0.0.0.0:0").context("hairpin custom_allows udp bind")?;
         sock.set_read_timeout(Some(Duration::from_secs(2)))?;
         sock.send_to(b"PROBE", a_ext)?;
         let mut buf = [0u8; 512];

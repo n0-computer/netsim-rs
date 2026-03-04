@@ -23,10 +23,12 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
@@ -38,18 +40,38 @@ jobs:
         working-directory: ui
         run: npm run build
 
+      - name: Get Playwright version
+        id: pw-version
+        working-directory: ui
+        run: echo "version=$(node -e "console.log(require('./node_modules/@playwright/test/package.json').version)")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: pw-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ steps.pw-version.outputs.version }}-chromium
+
       - name: Install Playwright browser
         working-directory: ui
         run: npx playwright install --with-deps chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+
+      - name: Install Playwright system deps
+        working-directory: ui
+        run: npx playwright install-deps chromium
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+
+      - name: Install iperf3
+        run: sudo apt-get update && sudo apt-get install -y iperf3
 
       - name: Enable unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Check
-        run: cargo check --workspace --tests
+      - name: Build
+        run: cargo build --workspace --all-targets
 
       - name: Test
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --profile ci
 
       - name: Clippy
         run: cargo clippy --workspace --tests -- -D warnings

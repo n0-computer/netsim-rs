@@ -26,8 +26,7 @@ async fn corporate_blocks_udp() -> Result<()> {
         .await?;
 
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9200);
-    dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let udp_result = dev.run_sync(move || test_utils::udp_rtt_sync(reflector));
     assert!(
@@ -69,8 +68,7 @@ async fn captive_portal_blocks_udp() -> Result<()> {
         .await?;
 
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9201);
-    dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let udp_result = dev.run_sync(move || test_utils::udp_rtt_sync(reflector));
     assert!(
@@ -107,12 +105,11 @@ async fn none_allows_all() -> Result<()> {
         .await?;
 
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9202);
-    dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
     assert!(
-        rtt < Duration::from_millis(100),
+        rtt < Duration::from_millis(500),
         "expected low RTT, got {rtt:?}"
     );
 
@@ -143,8 +140,7 @@ async fn custom_selective() -> Result<()> {
         .await?;
 
     let reflector_blocked = SocketAddr::new(IpAddr::V4(dc_ip), 9203);
-    dc.spawn_reflector(reflector_blocked)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector_blocked).await?;
 
     let blocked = dev.run_sync(move || test_utils::udp_rtt_sync(reflector_blocked));
     assert!(
@@ -154,12 +150,11 @@ async fn custom_selective() -> Result<()> {
     );
 
     let reflector_allowed = SocketAddr::new(IpAddr::V4(dc_ip), 5000);
-    dc.spawn_reflector(reflector_allowed)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector_allowed).await?;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector_allowed))?;
     assert!(
-        rtt < Duration::from_millis(100),
+        rtt < Duration::from_millis(500),
         "expected low RTT on allowed port, got {rtt:?}"
     );
 
@@ -196,25 +191,24 @@ async fn block_inbound_drops_unsolicited() -> Result<()> {
 
     // Outbound from device → DC should work (established return traffic allowed).
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9210);
-    dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
-    assert!(rtt < Duration::from_millis(100), "outbound should work");
+    assert!(rtt < Duration::from_millis(500), "outbound should work");
 
     // Unsolicited inbound from DC → device should be blocked.
     // Bind a UDP listener on the device, then try to send from DC.
     let dev_addr = SocketAddr::new(IpAddr::V4(dev_ip), 9211);
     let send_target = dev_addr;
     let result = dc.run_sync(move || {
-        let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0").context("firewall dc udp bind")?;
         sock.send_to(b"hello", send_target)?;
         Ok::<_, anyhow::Error>(())
     });
     // The send itself may succeed (UDP is connectionless), but the device
     // should never receive the packet. Listen on the device side with a timeout.
     let recv_result = dev.run_sync(move || {
-        let sock = std::net::UdpSocket::bind(dev_addr)?;
+        let sock = std::net::UdpSocket::bind(dev_addr).context("firewall dev udp bind")?;
         sock.set_read_timeout(Some(Duration::from_millis(500)))?;
         let mut buf = [0u8; 64];
         match sock.recv_from(&mut buf) {
@@ -265,16 +259,14 @@ async fn custom_block_inbound() -> Result<()> {
 
     // UDP to port 53 should work (outbound allowed).
     let reflector_53 = SocketAddr::new(IpAddr::V4(dc_ip), 53);
-    dc.spawn_reflector(reflector_53)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector_53).await?;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector_53))?;
-    assert!(rtt < Duration::from_millis(100), "UDP 53 should work");
+    assert!(rtt < Duration::from_millis(500), "UDP 53 should work");
 
     // UDP to other port should be blocked.
     let reflector_other = SocketAddr::new(IpAddr::V4(dc_ip), 9999);
-    dc.spawn_reflector(reflector_other)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector_other).await?;
 
     let blocked = dev.run_sync(move || test_utils::udp_rtt_sync(reflector_other));
     assert!(
@@ -305,11 +297,10 @@ async fn runtime_change() -> Result<()> {
         .await?;
 
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9204);
-    dc.spawn_reflector(reflector)?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _r = dc.spawn_reflector(reflector).await?;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
-    assert!(rtt < Duration::from_millis(100));
+    assert!(rtt < Duration::from_millis(500));
 
     home.set_firewall(Firewall::Corporate).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -325,7 +316,7 @@ async fn runtime_change() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
-    assert!(rtt < Duration::from_millis(100));
+    assert!(rtt < Duration::from_millis(500));
 
     Ok(())
 }

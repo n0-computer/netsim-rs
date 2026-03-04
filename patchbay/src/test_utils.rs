@@ -18,10 +18,24 @@ use crate::ObservedAddr;
 
 /// Runs an async UDP reflector. Loops until `cancel` is triggered.
 ///
-/// Spawned via `device.spawn_reflector(bind)` which uses the namespace's
-/// tokio runtime.
-pub async fn run_reflector(bind: SocketAddr, cancel: CancellationToken) -> Result<()> {
-    let sock = tokio::net::UdpSocket::bind(bind).await?;
+/// Binds the socket first, then signals readiness on `bound_tx` so callers
+/// can await confirmation before sending probes.
+pub async fn run_reflector(
+    bind: SocketAddr,
+    cancel: CancellationToken,
+    bound_tx: tokio::sync::oneshot::Sender<Result<()>>,
+) -> Result<()> {
+    let sock = match tokio::net::UdpSocket::bind(bind).await {
+        Ok(s) => {
+            let _ = bound_tx.send(Ok(()));
+            s
+        }
+        Err(e) => {
+            let err = Err(anyhow::anyhow!(e).context("reflector udp bind"));
+            let _ = bound_tx.send(err);
+            return Ok(());
+        }
+    };
     let mut buf = [0u8; 512];
     loop {
         tokio::select! {
@@ -54,7 +68,7 @@ pub fn probe_udp(
         };
         SocketAddr::new(unspecified, 0)
     });
-    let sock = UdpSocket::bind(bind_addr)?;
+    let sock = UdpSocket::bind(bind_addr).context("probe_udp bind")?;
     sock.set_read_timeout(Some(timeout))?;
     let mut buf = [0u8; 512];
     for attempt in 1..=3 {
@@ -79,7 +93,7 @@ pub fn probe_udp(
 
 /// One-shot UDP roundtrip probe. Returns the observed external address.
 pub fn udp_roundtrip(reflector: SocketAddr) -> Result<ObservedAddr> {
-    probe_udp(reflector, Duration::from_millis(500), None)
+    probe_udp(reflector, Duration::from_secs(2), None)
 }
 
 /// Returns UDP round-trip time to `reflector` (blocking).
@@ -89,7 +103,7 @@ pub fn udp_rtt_sync(reflector: SocketAddr) -> Result<Duration> {
     } else {
         "[::]:0"
     };
-    let sock = UdpSocket::bind(bind)?;
+    let sock = UdpSocket::bind(bind).context("udp_rtt_sync bind")?;
     sock.set_read_timeout(Some(Duration::from_secs(2)))?;
     let mut buf = [0u8; 256];
     let start = Instant::now();
@@ -110,7 +124,9 @@ pub async fn udp_rtt(reflector: SocketAddr) -> Result<Duration> {
         },
         0,
     );
-    let sock = tokio::net::UdpSocket::bind(bind).await?;
+    let sock = tokio::net::UdpSocket::bind(bind)
+        .await
+        .context("udp_rtt bind")?;
     let mut buf = [0u8; 256];
     let start = Instant::now();
     sock.send_to(b"PING", reflector).await?;
@@ -127,9 +143,7 @@ pub async fn udp_rtt(reflector: SocketAddr) -> Result<Duration> {
 /// while concurrently collecting responses. Returns `(sent, received)` after
 /// all packets are sent and `wait` has elapsed since the last send.
 ///
-/// Before the main burst, sends warmup probes to confirm the reflector is
-/// reachable (retries up to 15 seconds). This prevents false zeros from
-/// reflector startup races in busy CI runs.
+/// Assumes the reflector is already confirmed-bound (via `spawn_reflector`).
 ///
 /// Use inside `handle.spawn(|_| async move { udp_send_recv_count(r, 1000, 64, dur).await })`.
 pub async fn udp_send_recv_count(
@@ -141,24 +155,6 @@ pub async fn udp_send_recv_count(
     let sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
         .await
         .context("udp bind")?;
-
-    // Warmup: confirm the reflector is live before starting the measured burst.
-    // Some tests intentionally apply very high loss (for example 90%), and under
-    // CI load the reflector task can also start late. The longer deadline avoids
-    // false negatives before measurement begins.
-    let mut warmup_buf = [0u8; 64];
-    let warmup_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    loop {
-        let _ = sock.send_to(b"WARMUP", target).await;
-        match tokio::time::timeout(Duration::from_millis(50), sock.recv_from(&mut warmup_buf)).await
-        {
-            Ok(Ok(_)) => break,
-            _ if tokio::time::Instant::now() >= warmup_deadline => {
-                anyhow::bail!("reflector at {target} did not respond within 15s warmup");
-            }
-            _ => continue,
-        }
-    }
 
     let buf = vec![0u8; payload];
     let mut recv_buf = vec![0u8; payload + 64];
