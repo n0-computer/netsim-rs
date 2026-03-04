@@ -7,8 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
-use serde::Serialize;
+use anyhow::Result;
 
 use crate::{
     consts,
@@ -130,61 +129,4 @@ pub(crate) fn spawn_writer(
             }
         }
     })
-}
-
-// ── Run discovery ──────────────────────────────────────────────────
-
-/// Metadata for a single Lab run directory.
-#[derive(Debug, Clone, Serialize)]
-pub struct RunInfo {
-    /// Directory name (e.g. `"20260303_143001-my-lab"`).
-    pub name: String,
-    /// Full path to the run directory.
-    pub path: PathBuf,
-    /// Human-readable label from `state.json`, if available.
-    pub label: Option<String>,
-    /// Lab status from `state.json` (e.g. `"running"`, `"stopping"`).
-    pub status: Option<String>,
-}
-
-/// Lists Lab output directories under `base`, newest-first.
-///
-/// A directory is considered a run if it contains `events.jsonl`.
-/// Label and status are read from `state.json` if present.
-pub fn discover_runs(base: &Path) -> Result<Vec<RunInfo>> {
-    let mut runs = Vec::new();
-    let entries = fs::read_dir(base).context("read outdir base")?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        if !path.join(consts::EVENTS_JSONL).exists() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let (label, status) = read_run_metadata(&path);
-        runs.push(RunInfo {
-            name,
-            path,
-            label,
-            status,
-        });
-    }
-    // Sort newest-first (lexicographic descending works for YYYYMMDD_HHMMSS prefix).
-    runs.sort_by(|a, b| b.name.cmp(&a.name));
-    Ok(runs)
-}
-
-/// Reads label and status from `state.json` in a run directory.
-fn read_run_metadata(run_dir: &Path) -> (Option<String>, Option<String>) {
-    let state_path = run_dir.join(consts::STATE_JSON);
-    let Ok(contents) = fs::read_to_string(&state_path) else {
-        return (None, None);
-    };
-    let Ok(state) = serde_json::from_str::<LabState>(&contents) else {
-        return (None, None);
-    };
-    (state.label, Some(state.status))
 }

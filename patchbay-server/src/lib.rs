@@ -1,16 +1,12 @@
 //! Devtools HTTP server for patchbay labs.
 //!
 //! Serves the embedded UI, run discovery, per-run state/events/logs.
-//! Supports two modes:
-//!
-//! - **Live**: one or more running [`Lab`]s register via [`ServerHandle`].
-//! - **Static**: reads from an output directory only, watches for new runs.
+//! Reads from an output directory only, watching for new runs.
 
 use std::{
-    collections::HashMap,
     convert::Infallible,
+    fs,
     path::{Path, PathBuf},
-    sync::Arc,
     time::Duration,
 };
 
@@ -24,83 +20,169 @@ use axum::{
     routing::get,
     Router,
 };
-use patchbay::{consts, discover_runs, Lab, LabEvent};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
+
+// ── Mirrored constants ──────────────────────────────────────────────
+//
+// These are mirrored from `patchbay::consts`. If that module changes,
+// update here too.
+
+/// Lab-level event log (NDJSON).
+const EVENTS_JSONL: &str = "events.jsonl";
+
+/// Accumulated lab state snapshot.
+const STATE_JSON: &str = "state.json";
+
+/// Per-node full tracing log suffix.
+const TRACING_JSONL_EXT: &str = "tracing.jsonl";
 
 /// Default bind address for the devtools server.
 pub const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
 
-/// How often to poll events.jsonl in static mode.
+/// How often to poll events.jsonl.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// How often to re-scan for new runs.
 const RUN_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
-// ── Shared state ───────────────────────────────────────────────────
+// ── Run discovery ───────────────────────────────────────────────────
+//
+// Moved here from `patchbay::writer`. patchbay itself does not need
+// run discovery; the server is the only consumer.
 
-/// Shared state for route handlers.
+/// Metadata for a single Lab run directory.
+///
+/// A directory is a run if it contains `events.jsonl`.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunInfo {
+    /// Directory name (e.g. `"20260303_143001-my-lab"`).
+    pub name: String,
+    /// Full path to the run directory.
+    pub path: PathBuf,
+    /// Human-readable label from `state.json`, if available.
+    pub label: Option<String>,
+    /// Lab status from `state.json` (e.g. `"running"`, `"stopping"`).
+    pub status: Option<String>,
+}
+
+/// Lists Lab output directories under `base`, newest-first.
+pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
+    let mut runs = Vec::new();
+    let entries = fs::read_dir(base).map_err(|e| anyhow::anyhow!("read outdir base: {e}"))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if !path.join(EVENTS_JSONL).exists() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let (label, status) = read_run_metadata(&path);
+        runs.push(RunInfo {
+            name,
+            path,
+            label,
+            status,
+        });
+    }
+    runs.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(runs)
+}
+
+/// Minimal subset of `state.json` needed for run listing.
+#[derive(Deserialize)]
+struct StateJson {
+    label: Option<String>,
+    status: Option<String>,
+}
+
+fn read_run_metadata(run_dir: &Path) -> (Option<String>, Option<String>) {
+    let Ok(contents) = fs::read_to_string(run_dir.join(STATE_JSON)) else {
+        return (None, None);
+    };
+    let Ok(state) = serde_json::from_str::<StateJson>(&contents) else {
+        return (None, None);
+    };
+    (state.label, state.status)
+}
+
+// ── Event record ────────────────────────────────────────────────────
+//
+// The server only needs `opid` for cursor-based filtering. The rest of
+// the event is forwarded opaquely as JSON.
+
+#[derive(Deserialize, Serialize)]
+struct EventRecord {
+    opid: u64,
+    #[serde(flatten)]
+    rest: serde_json::Value,
+}
+
+// ── Shared state ────────────────────────────────────────────────────
+
 #[derive(Clone)]
 struct AppState {
-    /// Base output directory containing run subdirectories.
     base: PathBuf,
-    /// Live labs keyed by run dir name (empty in static mode).
-    live: Arc<RwLock<HashMap<String, Lab>>>,
-    /// Broadcast channel for run list updates (SSE).
     runs_tx: broadcast::Sender<()>,
 }
 
-/// Handle for registering/unregistering live labs with the server.
-#[derive(Clone)]
-pub struct ServerHandle {
-    live: Arc<RwLock<HashMap<String, Lab>>>,
-    runs_tx: broadcast::Sender<()>,
+// ── Router construction ─────────────────────────────────────────────
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index_html))
+        .route("/api/runs", get(get_runs))
+        .route("/api/runs/subscribe", get(runs_sse))
+        .route("/api/runs/{run}/state", get(get_run_state))
+        .route("/api/runs/{run}/events", get(run_events_sse))
+        .route("/api/runs/{run}/logs", get(get_run_logs))
+        .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
+        .route("/api/runs/{run}/files/{*path}", get(get_run_file))
+        .with_state(state)
 }
 
-impl ServerHandle {
-    /// Register a live lab with the server. The `name` should match
-    /// the run directory name (e.g. `20260303_143001-my-lab`).
-    pub async fn register(&self, name: String, lab: Lab) {
-        self.live.write().await.insert(name, lab);
-        let _ = self.runs_tx.send(());
-    }
+/// Creates an axum [`Router`] for serving a lab output directory.
+pub fn router(base: PathBuf) -> Router {
+    let (runs_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        base: base.clone(),
+        runs_tx: runs_tx.clone(),
+    };
 
-    /// Unregister a live lab.
-    pub async fn unregister(&self, name: &str) {
-        self.live.write().await.remove(name);
-        let _ = self.runs_tx.send(());
-    }
+    // Background run scanner: notifies SSE subscribers when new runs appear.
+    let scan_base = base;
+    let scan_tx = runs_tx;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(RUN_SCAN_INTERVAL);
+        let mut last_count = 0usize;
+        loop {
+            interval.tick().await;
+            if let Ok(runs) = discover_runs(&scan_base) {
+                if runs.len() != last_count {
+                    last_count = runs.len();
+                    let _ = scan_tx.send(());
+                }
+            }
+        }
+    });
+
+    build_router(state)
 }
 
-// ── Log entry type ─────────────────────────────────────────────────
-
-/// Kind of log file exposed by the devtools API.
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-enum LogKind {
-    /// JSON lines tracing output (`*.tracing.jsonl`).
-    TracingJsonl,
-    /// Generic JSON lines file (`*.jsonl`).
-    Jsonl,
-    /// Single JSON document (`*.json`).
-    Json,
-    /// qlog JSON sequence stream (`*.qlog`).
-    Qlog,
-    /// Text containing ANSI escape sequences.
-    AnsiText,
-    /// Plain UTF-8 text.
-    Text,
+/// Starts the devtools server on the given bind address.
+pub async fn serve(base: PathBuf, bind: &str) -> anyhow::Result<()> {
+    let app = router(base);
+    let listener = tokio::net::TcpListener::bind(bind).await?;
+    tracing::info!("devtools server listening on {bind}");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
-#[derive(Serialize)]
-struct LogEntry {
-    node: String,
-    kind: LogKind,
-    path: String,
-}
-
-// ── Path safety ────────────────────────────────────────────────────
+// ── Path safety ─────────────────────────────────────────────────────
 
 /// Returns `None` if the resolved path escapes `base`.
 ///
@@ -134,87 +216,7 @@ fn safe_sub_path(run_dir: &Path, sub: &str) -> Option<PathBuf> {
     Some(canonical)
 }
 
-// ── Router construction ────────────────────────────────────────────
-
-fn build_state(base: PathBuf) -> (AppState, ServerHandle) {
-    let live = Arc::new(RwLock::new(HashMap::new()));
-    let (runs_tx, _) = broadcast::channel(16);
-    let state = AppState {
-        base,
-        live: live.clone(),
-        runs_tx: runs_tx.clone(),
-    };
-    let handle = ServerHandle { live, runs_tx };
-    (state, handle)
-}
-
-fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/", get(index_html))
-        .route("/api/runs", get(get_runs))
-        .route("/api/runs/subscribe", get(runs_sse))
-        .route("/api/runs/{run}/state", get(get_run_state))
-        .route("/api/runs/{run}/events", get(run_events_sse))
-        .route("/api/runs/{run}/logs", get(get_run_logs))
-        .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
-        .route("/api/runs/{run}/files/{*path}", get(get_run_file))
-        .with_state(state)
-}
-
-/// Creates an axum [`Router`] and a [`ServerHandle`] for registering live labs.
-///
-/// Must be called from within an async (tokio) context.
-pub fn router(base: PathBuf) -> (Router, ServerHandle) {
-    let (state, handle) = build_state(base);
-    // Spawn background run scanner.
-    let scan_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(RUN_SCAN_INTERVAL);
-        let mut last_count = 0usize;
-        loop {
-            interval.tick().await;
-            if let Ok(runs) = discover_runs(&scan_state.base) {
-                if runs.len() != last_count {
-                    last_count = runs.len();
-                    let _ = scan_state.runs_tx.send(());
-                }
-            }
-        }
-    });
-    (build_router(state), handle)
-}
-
-/// Creates an axum [`Router`] for static mode (no live labs).
-pub fn router_static(base: PathBuf) -> Router {
-    let (router, _handle) = router(base);
-    router
-}
-
-/// Starts the devtools server on the given bind address.
-pub async fn serve(base: PathBuf, bind: &str) -> anyhow::Result<()> {
-    let app = router_static(base);
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!("devtools server listening on {bind}");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-/// Starts the devtools server with a live lab.
-pub async fn serve_live(lab: &Lab, base: PathBuf, bind: &str) -> anyhow::Result<()> {
-    let (app, handle) = router(base);
-    // Auto-register the lab if it has a run_dir.
-    if let Some(run_dir) = lab.run_dir() {
-        if let Some(name) = run_dir.file_name().and_then(|n| n.to_str()) {
-            handle.register(name.to_string(), lab.clone()).await;
-        }
-    }
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    tracing::info!("devtools server listening on {bind}");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-// ── Route handlers ─────────────────────────────────────────────────
+// ── Route handlers ──────────────────────────────────────────────────
 
 async fn index_html() -> Html<&'static str> {
     Html(include_str!("../../ui/dist/index.html"))
@@ -257,7 +259,7 @@ async fn get_run_state(
             r#"{"error":"forbidden"}"#.to_string(),
         );
     };
-    let path = run_dir.join(consts::STATE_JSON);
+    let path = run_dir.join(STATE_JSON);
     match tokio::fs::read_to_string(&path).await {
         Ok(contents) => (
             StatusCode::OK,
@@ -287,15 +289,15 @@ async fn run_events_sse(
         .keep_alive(KeepAlive::default());
     };
 
-    // Read historical events from events.jsonl.
-    let mut historical = Vec::new();
-    let events_path = run_dir.join(consts::EVENTS_JSONL);
+    let events_path = run_dir.join(EVENTS_JSONL);
     let contents = tokio::fs::read_to_string(&events_path)
         .await
         .unwrap_or_default();
     let file_len = contents.len() as u64;
+
+    let mut historical = Vec::new();
     for line in contents.lines() {
-        if let Ok(event) = serde_json::from_str::<LabEvent>(line) {
+        if let Ok(event) = serde_json::from_str::<EventRecord>(line) {
             if event.opid > after {
                 historical.push(event);
             }
@@ -304,73 +306,47 @@ async fn run_events_sse(
 
     let historical_stream = tokio_stream::iter(historical);
 
-    // Check if we have a live lab for this run.
-    let live_lab = state.live.read().await.get(&run).cloned();
-
-    if let Some(lab) = live_lab {
-        // Live mode: subscribe to broadcast channel.
-        let rx = lab.subscribe();
-        let live_stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-            move |result| match result {
-                Ok(event) if event.opid > after => Some(event),
-                _ => None,
-            },
-        );
-        let combined = historical_stream.chain(live_stream);
-        let stream = combined.map(|event| {
-            let data = serde_json::to_string(&event).unwrap_or_default();
-            Ok::<_, Infallible>(Event::default().data(data))
-        });
-        Sse::new(Box::pin(stream)
-            as std::pin::Pin<
-                Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>,
-            >)
-        .keep_alive(KeepAlive::default())
-    } else {
-        // Static mode: poll events.jsonl for new lines.
-        let poll_stream = async_stream::stream! {
-            let events_path = run_dir.join(consts::EVENTS_JSONL);
-            let mut pos = file_len;
-            let mut interval = tokio::time::interval(POLL_INTERVAL);
-            loop {
-                interval.tick().await;
-                let Ok(contents) = tokio::fs::read(&events_path).await else {
-                    continue;
-                };
-                let len = contents.len() as u64;
-                if len <= pos {
-                    continue;
-                }
-                let new_bytes = &contents[pos as usize..];
-                // Only advance cursor to the last complete newline to avoid
-                // consuming a partial line written concurrently.
-                let advance = match new_bytes.iter().rposition(|&b| b == b'\n') {
-                    Some(idx) => idx + 1,
-                    None => continue, // no complete line yet
-                };
-                let complete = &new_bytes[..advance];
-                pos += advance as u64;
-                let text = String::from_utf8_lossy(complete);
-                for line in text.lines() {
-                    if let Ok(event) = serde_json::from_str::<LabEvent>(line) {
-                        if event.opid > after {
-                            yield event;
-                        }
+    // Poll events.jsonl for new lines appended after the initial read.
+    let poll_stream = async_stream::stream! {
+        let mut pos = file_len;
+        let mut interval = tokio::time::interval(POLL_INTERVAL);
+        loop {
+            interval.tick().await;
+            let Ok(contents) = tokio::fs::read(&events_path).await else {
+                continue;
+            };
+            let len = contents.len() as u64;
+            if len <= pos {
+                continue;
+            }
+            let new_bytes = &contents[pos as usize..];
+            // Advance only to the last complete newline to avoid partial lines.
+            let advance = match new_bytes.iter().rposition(|&b| b == b'\n') {
+                Some(idx) => idx + 1,
+                None => continue,
+            };
+            let complete = &new_bytes[..advance];
+            pos += advance as u64;
+            let text = String::from_utf8_lossy(complete);
+            for line in text.lines() {
+                if let Ok(event) = serde_json::from_str::<EventRecord>(line) {
+                    if event.opid > after {
+                        yield event;
                     }
                 }
             }
-        };
-        let combined = historical_stream.chain(poll_stream);
-        let stream = combined.map(|event| {
-            let data = serde_json::to_string(&event).unwrap_or_default();
-            Ok::<_, Infallible>(Event::default().data(data))
-        });
-        Sse::new(Box::pin(stream)
-            as std::pin::Pin<
-                Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>,
-            >)
-        .keep_alive(KeepAlive::default())
-    }
+        }
+    };
+
+    let stream = historical_stream.chain(poll_stream).map(|event| {
+        let data = serde_json::to_string(&event).unwrap_or_default();
+        Ok::<_, Infallible>(Event::default().data(data))
+    });
+    Sse::new(Box::pin(stream)
+        as std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>,
+        >)
+    .keep_alive(KeepAlive::default())
 }
 
 /// List log files in a run directory.
@@ -393,7 +369,6 @@ async fn get_run_logs(
     )
 }
 
-/// Serve a specific log file with optional byte offset.
 #[derive(Deserialize)]
 struct LogQuery {
     after: Option<u64>,
@@ -413,7 +388,6 @@ async fn get_run_log_file(
     tail_file(&file_path, params.after.unwrap_or(0)).await
 }
 
-/// Serve any file within a run directory.
 async fn get_run_file(
     AxPath((run, path)): AxPath<(String, String)>,
     State(state): State<AppState>,
@@ -427,7 +401,7 @@ async fn get_run_file(
     serve_file(&file_path).await
 }
 
-// ── Helpers ────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────
 
 async fn tail_file(path: &Path, after_byte: u64) -> (StatusCode, String) {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -515,16 +489,39 @@ fn looks_like_qlog_json_seq(text: &str) -> bool {
     schema_ok && format_ok
 }
 
+/// Kind of log file exposed by the devtools API.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum LogKind {
+    /// JSON lines tracing output (`*.tracing.jsonl`).
+    TracingJsonl,
+    /// Generic JSON lines file (`*.jsonl`).
+    Jsonl,
+    /// Single JSON document (`*.json`).
+    Json,
+    /// qlog JSON sequence stream (`*.qlog`).
+    Qlog,
+    /// Text containing ANSI escape sequences.
+    AnsiText,
+    /// Plain UTF-8 text.
+    Text,
+}
+
+#[derive(Serialize)]
+struct LogEntry {
+    node: String,
+    kind: LogKind,
+    path: String,
+}
+
 fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
-    if filename.ends_with(&format!(".{}", consts::TRACING_JSONL_EXT)) {
+    if filename.ends_with(&format!(".{TRACING_JSONL_EXT}")) {
         return Some(LogKind::TracingJsonl);
     }
 
     let text = std::str::from_utf8(sample).ok()?;
     let text = text.trim_start_matches('\u{feff}');
-    if filename.ends_with(".qlog")
-        || filename.contains(".qlog-")
-        || looks_like_qlog_json_seq(text)
+    if filename.ends_with(".qlog") || filename.contains(".qlog-") || looks_like_qlog_json_seq(text)
     {
         return Some(LogKind::Qlog);
     }
@@ -542,7 +539,6 @@ fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
         return Some(LogKind::Text);
     }
 
-    // For unknown extensions, include UTF-8 files as plain text.
     Some(LogKind::Text)
 }
 
