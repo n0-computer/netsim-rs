@@ -344,7 +344,9 @@ impl NsWriterSubscriber {
 impl tracing::Subscriber for NsWriterSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         self.inner.enabled(metadata)
-            || self.file_filter.would_enable(metadata.target(), metadata.level())
+            || self
+                .file_filter
+                .would_enable(metadata.target(), metadata.level())
             || metadata.target().contains("_events::")
     }
 
