@@ -200,11 +200,7 @@ pub fn run_tests_in_vm(args: TestVmArgs) -> Result<()> {
     ];
     let mut env_pairs: Vec<String> = forward_envs
         .iter()
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|val| format!("{name}={val}"))
-        })
+        .filter_map(|name| std::env::var(name).ok().map(|val| format!("{name}={val}")))
         .collect();
     // Ensure /usr/sbin is on PATH so tools like nft are found.
     env_pairs.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
@@ -1653,7 +1649,11 @@ fn ensure_disk(vm: &VmConfig) -> Result<()> {
 
 fn wait_for_ssh(vm: &VmConfig) -> Result<()> {
     log(&format!("waiting for SSH on 127.0.0.1:{} ...", vm.ssh_port));
-    log(&format!("ssh key: {} (exists={})", vm.ssh_key().display(), vm.ssh_key().exists()));
+    log(&format!(
+        "ssh key: {} (exists={})",
+        vm.ssh_key().display(),
+        vm.ssh_key().exists()
+    ));
     let mut last_msg = String::new();
     for i in 1..=180 {
         // Use verbose probe every 30 attempts (~9s) to diagnose failures.
@@ -1822,7 +1822,11 @@ fn ssh_probe_inner(vm: &VmConfig, verbose: bool) -> bool {
             "-o",
             "ConnectionAttempts=1",
             "-o",
-            if verbose { "LogLevel=VERBOSE" } else { "LogLevel=ERROR" },
+            if verbose {
+                "LogLevel=VERBOSE"
+            } else {
+                "LogLevel=ERROR"
+            },
             "-o",
             "ConnectTimeout=1",
             "-p",
