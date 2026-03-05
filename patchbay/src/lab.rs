@@ -331,6 +331,11 @@ pub enum Ipv6ProvisioningMode {
 }
 
 /// Deployment-oriented IPv6 behavior profile for a lab.
+///
+/// Several variants currently map to the same `(DadMode, ProvisioningMode)` tuple.
+/// They exist as distinct variants so that `RouterPreset::recommended_ipv6_profile()`
+/// can select the right profile per deployment context. Future work will diverge
+/// their behavior (e.g. different RA intervals, prefix delegation, SLAAC vs DHCPv6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ipv6Profile {

@@ -6,21 +6,13 @@ Higher-level suggestions that were not applied directly.
 
 ## Open
 
-* server crate: scan dir recursively. if events.jsonl found in current dir then serve only that, otherwise scan up to 3 layers deep and use all dirs. wanna run this in testdir (see testdir crate, 
-
-* workdir vs outdir, clarify relation. runner-sim e2e test sets both, this should not be needed
-
 * add RegionLink::is_empty and same for link conditions to remove manual > 0 checks at callsites. break region link should be async. never use run_closure_in with Command if you can easily make the call site async, use async command then to not block calling thread on sync cmds
 
 #### IPv6 link-local / RA-driven provisioning branch (dev)
 
-**`Ipv6Profile` variants are currently redundant** — `ProductionLike`,
-`ConsumerHome`, `MobileCarrier`, `Enterprise` all map to `(Enabled, RaDriven)`.
-Either add a comment noting future divergence intent or collapse them.
-
-**`DeviceSetupData` unnecessary clone** — `dev: dev.clone()` in
-`DeviceBuilder::build()` when only a few fields are needed later for event
-emission.
+**`DeviceSetupData` clone** — `dev: dev.clone()` in
+`DeviceBuilder::build()`. All fields (id, name, ns, mtu, interfaces) are used
+in `setup_device_async`, so the clone is structurally required.
 
 #### `add_host` hardcodes /24 assumption (low)
 
@@ -32,14 +24,6 @@ wrong addresses.
 
 Rust crates for nftables via netlink (`nftnl`, `rustables`, `mnl`) exist but
 have immature APIs. Not worth replacing `Command::new("nft")` for now.
-
-#### Dead `apply_region_latency_dual` + `Qdisc` methods (low)
-
-`qdisc.rs` contains `apply_region_latency_dual()` and the full `Qdisc` builder
-(htb root, classes, netem, filters). These were written for per-destination
-latency shaping inside region routers but were never wired up; the current
-approach uses simple netem on inter-region veths. Delete or wire up when
-revisiting virtual-time or advanced region latency.
 
 #### TOML config ignores regions (medium)
 
@@ -76,6 +60,10 @@ for these rare operations.
 
 ## Completed
 
+63. **Dead `apply_region_latency_dual` + Qdisc builder** — already deleted in earlier refactors; `Qdisc` struct remains, used by `apply_impair`/`remove_qdisc`.
+62. **`Ipv6Profile` redundant variants** — added doc comment noting future divergence intent (RA intervals, prefix delegation, SLAAC vs DHCPv6). Variants kept for `RouterPreset::recommended_ipv6_profile()` mapping.
+61. **OutDir enum + runner uses Exact** — replaced separate `outdir`/`run_dir` fields on `LabOpts` with `OutDir` enum (`Nested` creates timestamped subdir, `Exact` writes directly). Runner uses `OutDir::Exact`, removing need for `PATCHBAY_OUTDIR` env var in e2e tests.
+60. **Server recursive scan** — `discover_runs` scans up to 3 levels deep, serves single-run if base dir itself contains `events.jsonl`, skips symlinks to avoid duplicates from runner's `latest` link.
 59. **Arc\<str\> migration + NetworkCore method extraction** - All internal `String` fields migrated to `Arc<str>` (clones become refcount bumps). Lock-body logic extracted into `NetworkCore` methods (`prepare_link_regions`, `prepare_add_iface`, `prepare_replug_iface`, `remove_device`, `remove_router`, `resolve_link_target`, `remove_device_iface`, `renew_device_ip`, `add_dns_entry`, `router_nat_v6_params`, etc.) with purpose-built setup structs. Eliminates `let x; { lock; x = ...; }` pattern throughout `lab.rs` and `handles.rs`.
 57. **Mutex/lock architecture overhaul** - `LabInner` struct with `netns` + `cancel` outside the mutex; `with()`/`with_mut()` helpers on handles; cached `name`/`ns` on Device/Router/Ix; per-node `tokio::sync::Mutex<()>` for operation serialization; `parking_lot::Mutex` for topology lock; all handle mutation methods made async; pre-await reads combined into single lock; `set_nat_v6_mode` write order fixed
 58. **No-panics refactor** - Device/Router handles return `Result` or `Option` instead of panicking on removed nodes; `spawn()` returns `Result<JoinHandle>`; `with_device`/`with_router` return `Option<R>`; all test call sites updated
