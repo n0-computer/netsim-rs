@@ -32,3 +32,4 @@ ctor = "0.2"
 futures-buffered = "0.2"
 hickory-resolver = { version = "0.25", default-features = false, features = ["system-config", "tokio"] }
 n0-tracing-test = "0.3.0"
+testdir = "0.9"

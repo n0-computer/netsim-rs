@@ -57,7 +57,12 @@ async fn block_icmp_frag_rule() -> Result<()> {
     let _dev = lab.add_device("d").uplink(rtr.id()).build().await?;
 
     let output = rtr.run_sync(|| {
-        let out = std::process::Command::new("nft")
+        let nft = if std::path::Path::new("/usr/sbin/nft").exists() {
+            "/usr/sbin/nft"
+        } else {
+            "nft"
+        };
+        let out = std::process::Command::new(nft)
             .args(["list", "ruleset"])
             .output()?;
         Ok(String::from_utf8_lossy(&out.stdout).to_string())

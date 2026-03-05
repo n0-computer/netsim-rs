@@ -112,6 +112,7 @@ pub struct RunVmArgs {
 
 #[derive(Debug, Clone)]
 pub struct TestVmArgs {
+    pub filter: Option<String>,
     pub target: String,
     pub packages: Vec<String>,
     pub tests: Vec<String>,
@@ -158,38 +159,82 @@ pub fn stop_vm_if_running() -> Result<()> {
 pub fn run_tests_in_vm(args: TestVmArgs) -> Result<()> {
     let mut vm = VmConfig::from_cleanup_defaults()?;
     vm.recreate = args.recreate;
-    up(&mut vm)?;
-    prepare_vm_guest(&vm)?;
-
     let target_dir = cargo_target_dir()?;
-    let test_bins = build_and_collect_test_binaries(
-        &target_dir,
-        &args.target,
-        &args.packages,
-        &args.tests,
-        &args.cargo_args,
-    )?;
+
+    // Build test binaries and boot/prepare the VM in parallel.
+    let (test_bins, vm_result) = std::thread::scope(|s| {
+        let build = s.spawn(|| {
+            build_and_collect_test_binaries(
+                &target_dir,
+                &args.target,
+                &args.packages,
+                &args.tests,
+                &args.cargo_args,
+            )
+        });
+        let vm_setup = s.spawn(|| {
+            up(&mut vm)?;
+            prepare_vm_guest(&vm)
+        });
+        (build.join(), vm_setup.join())
+    });
+    let test_bins = test_bins
+        .map_err(|_| anyhow!("build thread panicked"))?
+        .context("building test binaries")?;
+    vm_result
+        .map_err(|_| anyhow!("vm setup thread panicked"))?
+        .context("vm setup")?;
+
     if test_bins.is_empty() {
         bail!("no test binaries were built for target {}", args.target);
     }
 
     let staged = stage_test_binaries(&vm, &test_bins)?;
+
+    // Collect env vars to forward to the guest.
+    let forward_envs: &[&str] = &[
+        "RUST_LOG",
+        "RUST_BACKTRACE",
+        "PATCHBAY_OUTDIR",
+        "PATCHBAY_SIM",
+    ];
+    let mut env_pairs: Vec<String> = forward_envs
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|val| format!("{name}={val}"))
+        })
+        .collect();
+    // Ensure /usr/sbin is on PATH so tools like nft are found.
+    env_pairs.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into());
+
     let mut passed = 0usize;
     let mut failed = 0usize;
     for guest_bin in staged {
-        let rc = ssh_cmd_status(&vm, &["sudo", &guest_bin]);
+        let mut run_args: Vec<String> = Vec::new();
+        if !env_pairs.is_empty() {
+            run_args.push("env".into());
+            run_args.extend(env_pairs.iter().cloned());
+        }
+        run_args.push(guest_bin.clone());
+        if let Some(ref f) = args.filter {
+            run_args.push(f.clone());
+        }
+        let run_refs: Vec<&str> = run_args.iter().map(|s| s.as_str()).collect();
+        let rc = ssh_cmd_status(&vm, &run_refs);
         match rc {
             Ok(()) => {
                 passed += 1;
-                println!("test-vm: PASS {guest_bin}");
+                println!("[test] PASS {guest_bin}");
             }
             Err(err) => {
                 failed += 1;
-                println!("test-vm: FAIL {guest_bin}: {err}");
+                println!("[test] FAIL {guest_bin}: {err}");
             }
         }
     }
-    println!("test-vm summary: passed={passed} failed={failed}");
+    println!("[test] summary: passed={passed} failed={failed}");
     if failed > 0 {
         bail!("{} test binaries failed in VM", failed);
     }
@@ -415,9 +460,13 @@ fn up(vm: &mut VmConfig) -> Result<()> {
     log(&format!("target={}", vm.target_dir.display()));
     log(&format!("work={}", vm.work_dir.display()));
 
-    if vm.recreate && is_running(vm)? {
-        log("recreate requested; stopping existing VM");
-        down(vm)?;
+    if vm.recreate {
+        if is_running(vm)? {
+            log("recreate requested; stopping existing VM");
+            down(vm)?;
+        }
+        // Clear known_hosts so the new VM's host key is accepted.
+        remove_if_exists(&vm.known_hosts())?;
     }
 
     if is_running(vm)? {
@@ -1014,6 +1063,8 @@ fn build_and_collect_test_binaries(
     tests: &[String],
     cargo_args: &[String],
 ) -> Result<Vec<PathBuf>> {
+    use std::io::{BufRead, BufReader};
+
     let mut cmd = Command::new("cargo");
     cmd.args([
         "test",
@@ -1032,14 +1083,51 @@ fn build_and_collect_test_binaries(
     if !cargo_args.is_empty() {
         cmd.args(cargo_args);
     }
-    cmd.env("CARGO_TARGET_DIR", target_dir);
-    let out = cmd.output().context("run cargo test --no-run json")?;
-    if !out.status.success() {
+    cmd.env("CARGO_TARGET_DIR", target_dir)
+        .env("CARGO_TERM_COLOR", "always");
+    eprintln!("[cargo] {cmd:?}");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("spawn cargo test --no-run")?;
+
+    let stderr = child.stderr.take().unwrap();
+    let stderr_thread = std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            eprintln!("[cargo] {line}");
+        }
+    });
+
+    let stdout = child.stdout.take().unwrap();
+    let mut stdout_lines = Vec::new();
+    for line in BufReader::new(stdout).lines() {
+        let Ok(line) = line else { break };
+        stdout_lines.push(line);
+    }
+
+    let status = child.wait().context("wait cargo test --no-run")?;
+    let _ = stderr_thread.join();
+    if !status.success() {
+        // Print compiler diagnostics from the JSON stdout.
+        for line in &stdout_lines {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if v.get("reason").and_then(|x| x.as_str()) == Some("compiler-message") {
+                if let Some(rendered) = v
+                    .get("message")
+                    .and_then(|m| m.get("rendered"))
+                    .and_then(|r| r.as_str())
+                {
+                    eprint!("{rendered}");
+                }
+            }
+        }
         bail!("cargo test --no-run failed");
     }
 
     let mut bins = Vec::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
+    for line in &stdout_lines {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
@@ -1071,6 +1159,12 @@ fn stage_test_binaries(vm: &VmConfig, bins: &[PathBuf]) -> Result<Vec<String>> {
     let stage_dir = vm.work_dir.join("binaries").join("tests");
     std::fs::create_dir_all(&stage_dir)
         .with_context(|| format!("create {}", stage_dir.display()))?;
+    // Make world-writable so the guest user can create testdir output here.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stage_dir, std::fs::Permissions::from_mode(0o777))?;
+    }
     let mut staged_guest = Vec::new();
     for bin in bins {
         let file = bin
@@ -1515,6 +1609,22 @@ fn spawn_virtiofsd(
         ]);
     if readonly {
         cmd.arg("--readonly");
+    } else {
+        // Map all guest UIDs/GIDs to the host user so the guest can write freely.
+        #[cfg(unix)]
+        let (uid, gid) = {
+            use std::os::unix::fs::MetadataExt;
+            let m = std::fs::metadata(shared_dir).context("stat shared_dir")?;
+            (m.uid(), m.gid())
+        };
+        #[cfg(not(unix))]
+        let (uid, gid) = (1000u32, 1000u32);
+        cmd.args([
+            "--translate-uid",
+            &format!("squash-guest:0:{uid}:65536"),
+            "--translate-gid",
+            &format!("squash-guest:0:{gid}:65536"),
+        ]);
     }
     let child = cmd
         .stdout(Stdio::from(log))
@@ -1543,8 +1653,16 @@ fn ensure_disk(vm: &VmConfig) -> Result<()> {
 
 fn wait_for_ssh(vm: &VmConfig) -> Result<()> {
     log(&format!("waiting for SSH on 127.0.0.1:{} ...", vm.ssh_port));
+    log(&format!("ssh key: {} (exists={})", vm.ssh_key().display(), vm.ssh_key().exists()));
+    let mut last_msg = String::new();
     for i in 1..=180 {
-        if ssh_probe(vm) {
+        // Use verbose probe every 30 attempts (~9s) to diagnose failures.
+        let ok = if i % 30 == 0 {
+            ssh_probe_verbose(vm)
+        } else {
+            ssh_probe(vm)
+        };
+        if ok {
             cleanup_seed_server(vm)?;
             log("SSH is reachable");
             return Ok(());
@@ -1552,7 +1670,11 @@ fn wait_for_ssh(vm: &VmConfig) -> Result<()> {
         if i % 5 == 0 && vm.serial_log().exists() {
             if let Ok(text) = std::fs::read_to_string(vm.serial_log()) {
                 if let Some(last) = text.lines().last() {
-                    log(&format!("booting... {}", last.trim_end_matches('\r')));
+                    let line = last.trim_end_matches('\r').to_string();
+                    if line != last_msg {
+                        log(&format!("booting... {line}"));
+                        last_msg = line;
+                    }
                 }
             }
         }
@@ -1560,7 +1682,7 @@ fn wait_for_ssh(vm: &VmConfig) -> Result<()> {
     }
     cleanup_seed_server(vm)?;
     bail!(
-        "VM did not become reachable via SSH on port {}",
+        "VM did not become reachable via SSH on port {} (try --recreate)",
         vm.ssh_port
     )
 }
@@ -1677,6 +1799,14 @@ fn ssh_cmd_status(vm: &VmConfig, remote_args: &[&str]) -> Result<()> {
 }
 
 fn ssh_probe(vm: &VmConfig) -> bool {
+    ssh_probe_inner(vm, false)
+}
+
+fn ssh_probe_verbose(vm: &VmConfig) -> bool {
+    ssh_probe_inner(vm, true)
+}
+
+fn ssh_probe_inner(vm: &VmConfig, verbose: bool) -> bool {
     let mut cmd = Command::new("ssh");
     cmd.arg("-i")
         .arg(vm.ssh_key())
@@ -1692,7 +1822,7 @@ fn ssh_probe(vm: &VmConfig) -> bool {
             "-o",
             "ConnectionAttempts=1",
             "-o",
-            "LogLevel=ERROR",
+            if verbose { "LogLevel=VERBOSE" } else { "LogLevel=ERROR" },
             "-o",
             "ConnectTimeout=1",
             "-p",
@@ -1700,9 +1830,28 @@ fn ssh_probe(vm: &VmConfig) -> bool {
         .arg(&vm.ssh_port)
         .arg(format!("{}@127.0.0.1", vm.ssh_user))
         .arg("true")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    cmd.status().map(|s| s.success()).unwrap_or(false)
+        .stdout(Stdio::null());
+    if verbose {
+        cmd.stderr(Stdio::piped());
+        match cmd.output() {
+            Ok(out) => {
+                if !out.status.success() {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    for line in stderr.lines() {
+                        log(&format!("ssh-probe: {line}"));
+                    }
+                }
+                out.status.success()
+            }
+            Err(e) => {
+                log(&format!("ssh-probe error: {e}"));
+                false
+            }
+        }
+    } else {
+        cmd.stderr(Stdio::null());
+        cmd.status().map(|s| s.success()).unwrap_or(false)
+    }
 }
 
 fn start_vm(vm: &mut VmConfig) -> Result<()> {
@@ -1765,7 +1914,7 @@ fn start_vm(vm: &mut VmConfig) -> Result<()> {
         ));
     } else {
         qemu.arg("-smbios").arg(format!(
-            "type=1,serial=ds=nocloud-net;s=http://10.0.2.2:{}/",
+            "type=1,serial=ds=nocloud;s=http://10.0.2.2:{}/",
             vm.seed_port
         ));
     }
@@ -1939,7 +2088,7 @@ fn run_checked(cmd: &mut Command, label: &str) -> Result<()> {
 }
 
 fn log(msg: &str) {
-    eprintln!("qemu-vm: {msg}");
+    eprintln!("[qemu] {msg}");
 }
 
 fn abspath(path: &Path) -> Result<PathBuf> {

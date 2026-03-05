@@ -2871,7 +2871,12 @@ pub(crate) fn set_sysctl_root(path: &str, val: &str) -> Result<()> {
 /// Applies nftables rules (assumes caller is already in the target namespace).
 async fn run_nft(rules: &str) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new("nft")
+    let nft = if std::path::Path::new("/usr/sbin/nft").exists() {
+        "/usr/sbin/nft"
+    } else {
+        "nft"
+    };
+    let mut child = tokio::process::Command::new(nft)
         .args(["-f", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())

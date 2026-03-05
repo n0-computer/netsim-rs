@@ -75,13 +75,30 @@ enum Command {
         open: bool,
     },
     /// Build and run tests in VM (replaces legacy test-vm flow).
+    ///
+    /// Positional FILTER is passed to each test binary as a name filter
+    /// (like `cargo test <filter>`). Extra args after `--` go to cargo
+    /// during the build and to each test binary at runtime.
     Test {
+        /// Test name filter (passed to test binaries at runtime).
+        #[arg()]
+        filter: Option<String>,
         #[arg(long, default_value_t = default_test_target())]
         target: String,
-        #[arg(long = "package")]
+        #[arg(short = 'p', long = "package")]
         packages: Vec<String>,
         #[arg(long = "test")]
         tests: Vec<String>,
+        #[arg(short = 'j', long)]
+        jobs: Option<u32>,
+        #[arg(short = 'F', long)]
+        features: Vec<String>,
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        lib: bool,
+        #[arg(long)]
+        no_fail_fast: bool,
         #[arg(long)]
         recreate: bool,
         #[arg(last = true)]
@@ -158,17 +175,41 @@ async fn main() -> Result<()> {
             patchbay_server::serve(dir, &bind).await
         }
         Command::Test {
+            filter,
             target,
             packages,
             tests,
+            jobs,
+            features,
+            release,
+            lib,
+            no_fail_fast,
             recreate,
-            cargo_args,
-        } => vm::run_tests_in_vm(vm::TestVmArgs {
-            target,
-            packages,
-            tests,
-            recreate,
-            cargo_args,
-        }),
+            mut cargo_args,
+        } => {
+            if let Some(j) = jobs {
+                cargo_args.extend(["--jobs".into(), j.to_string()]);
+            }
+            for f in features {
+                cargo_args.extend(["--features".into(), f]);
+            }
+            if release {
+                cargo_args.push("--release".into());
+            }
+            if lib {
+                cargo_args.push("--lib".into());
+            }
+            if no_fail_fast {
+                cargo_args.push("--no-fail-fast".into());
+            }
+            vm::run_tests_in_vm(vm::TestVmArgs {
+                filter,
+                target,
+                packages,
+                tests,
+                recreate,
+                cargo_args,
+            })
+        }
     }
 }
