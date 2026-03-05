@@ -1611,6 +1611,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

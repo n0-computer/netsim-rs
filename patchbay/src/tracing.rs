@@ -144,8 +144,9 @@ struct NsWriterSubscriber {
     tracing_writer: Mutex<LazyFile>,
     /// Extracted `_events::` NDJSON writer.
     events_writer: Mutex<LazyFile>,
-    /// Minimum level for the tracing file (from PATCHBAY_LOG / RUST_LOG).
-    file_level: tracing::level_filters::LevelFilter,
+    /// Target+level filter for the tracing file (from PATCHBAY_LOG / RUST_LOG).
+    /// Supports full directive syntax, e.g. `iroh=trace,patchbay=debug`.
+    file_filter: tracing_subscriber::filter::Targets,
     /// Local span metadata storage to emit tracing-subscriber-compatible
     /// `span` and `spans` fields in JSON logs.
     span_state: Mutex<SpanState>,
@@ -295,7 +296,7 @@ impl NsWriterSubscriber {
 
         // Write to .tracing.jsonl — matching tracing-subscriber's JSON format:
         // {"timestamp":"...","level":"INFO","fields":{"message":"...","key":"val"},"target":"mod::path"}
-        if *meta.level() <= self.file_level || target.contains("_events::") {
+        if self.file_filter.would_enable(target, meta.level()) || target.contains("_events::") {
             let mut visitor = JsonFieldVisitor::new();
             event.record(&mut visitor);
             let mut obj = serde_json::Map::new();
@@ -343,7 +344,7 @@ impl NsWriterSubscriber {
 impl tracing::Subscriber for NsWriterSubscriber {
     fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
         self.inner.enabled(metadata)
-            || *metadata.level() <= self.file_level
+            || self.file_filter.would_enable(metadata.target(), metadata.level())
             || metadata.target().contains("_events::")
     }
 
@@ -405,6 +406,17 @@ impl tracing::Subscriber for NsWriterSubscriber {
 /// `log_prefix` is the file stem like `"device.client"` or `"router.home"`.
 /// Files are named `{log_prefix}.tracing.jsonl` and `{log_prefix}.events.jsonl`.
 ///
+/// The file filter is read from `PATCHBAY_LOG`, falling back to `RUST_LOG`,
+/// falling back to `info`. Full directive syntax is supported
+/// (e.g. `myapp=debug,patchbay::netlink=trace`).
+///
+/// **Limitation:** the file filter can only capture events at levels the global
+/// subscriber (console output) already enables. tracing-core caches callsite
+/// interest globally, so if the global subscriber rejects TRACE, those callsites
+/// are permanently disabled for all subscribers — including ours. To get TRACE
+/// in file output, ensure the global subscriber also enables TRACE
+/// (e.g. `RUST_LOG=trace`).
+///
 /// Returns a `DefaultGuard` that must be held for the thread's lifetime.
 /// When `run_dir` is `Some`, installs a wrapper that delegates span tracking
 /// to the global subscriber and adds file writing. When `None`, returns `None`
@@ -421,12 +433,12 @@ pub(crate) fn install_namespace_subscriber(
     let tracing_path = run_dir.join(format!("{log_prefix}.{}", consts::TRACING_JSONL_EXT));
     let events_path = run_dir.join(format!("{log_prefix}.{}", consts::EVENTS_JSONL_EXT));
 
-    let file_level_str = std::env::var("PATCHBAY_LOG")
+    let file_filter_str = std::env::var("PATCHBAY_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
         .unwrap_or_else(|_| "info".to_string());
-    let file_level: tracing::level_filters::LevelFilter = file_level_str
+    let file_filter: tracing_subscriber::filter::Targets = file_filter_str
         .parse()
-        .unwrap_or(tracing::level_filters::LevelFilter::INFO);
+        .unwrap_or_else(|_| "info".parse().unwrap());
 
     // Capture the current (global) subscriber's Dispatch — all span tracking
     // is delegated to it, keeping a single Registry for the whole process.
@@ -436,7 +448,7 @@ pub(crate) fn install_namespace_subscriber(
         inner,
         tracing_writer: Mutex::new(LazyFile::new(tracing_path)),
         events_writer: Mutex::new(LazyFile::new(events_path)),
-        file_level,
+        file_filter,
         span_state: Mutex::new(SpanState::default()),
     };
 

@@ -182,6 +182,25 @@ tracing target convention:
 tracing::info!(target: "myapp::_events::ConnectionEstablished", peer = %addr);
 ```
 
+## Controlling log output
+
+Per-namespace tracing logs are written to `{kind}.{name}.tracing.jsonl`
+files in the output directory. The filter is read from `PATCHBAY_LOG`,
+falling back to `RUST_LOG`, falling back to `info`. Full directive
+syntax is supported:
+
+```bash
+# Only capture trace-level output from your crate's networking code.
+PATCHBAY_LOG=myapp::net=trace cargo test tcp_through_nat
+```
+
+**Limitation:** the file filter can only capture events at levels the
+global subscriber (console output) already enables. tracing-core caches
+callsite interest globally, so if the global subscriber rejects TRACE,
+those callsites are permanently disabled — including for the file
+writer. To get TRACE in file output, ensure the global subscriber also
+enables TRACE (e.g. `RUST_LOG=trace`).
+
 ## Common flags
 
 `patchbay-vm test` supports the same flags as `cargo test`:
