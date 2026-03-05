@@ -174,8 +174,13 @@ router.flush_nat_state().await?;
 
 ## WiFi to Cellular Handoff
 
-The device's IP changes. Old connections are invalidated. There is typically a
-0.5-5s gap with no connectivity during the transition.
+When a device switches from WiFi to cellular, it loses its WiFi IP
+address and receives a new one from the cellular carrier. Existing TCP
+connections break because the remote peer is sending replies to the old
+address. QUIC connections can survive if both sides support connection
+migration. In practice there is a 0.5–5 second gap with no connectivity
+during the transition while the cellular radio attaches and the new
+address is assigned.
 
 ```rust
 let wifi_router = lab.add_router("wifi").nat(Nat::Home).build().await?;
@@ -217,8 +222,11 @@ let workstation = lab.add_device("ws").uplink(corp.id()).build().await?;
 
 ## Asymmetric Bandwidth
 
-Upload and download speeds differ. Common ratios: residential cable 100/10
-Mbps, cellular 50/10 Mbps, satellite 100/10 Mbps.
+Most consumer connections have significantly less upload bandwidth than
+download. Residential cable runs around 100/10 Mbps, cellular around
+50/10 Mbps, satellite around 100/10 Mbps. The asymmetry matters for P2P
+applications because the bottleneck is always the uploader's upload
+speed, not their download speed.
 
 The bottleneck for P2P transfers is the uploader's upload speed. For video
 calls, each direction is limited by the sender's upload.

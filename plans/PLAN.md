@@ -1,7 +1,6 @@
 # Plans
 
 ## Open
-- [virtual-time.md](virtual-time.md) - priority 2; stub with conntrack timeout override + Shadow-style research
 
 ## Partial
 
@@ -9,6 +8,10 @@
 - [workspace-reorg.md](workspace-reorg.md) - priority 2; steps 1-8 done, step 9 (report/SimOutcome refactor) outstanding
 - [patchbay-vm-split.md](patchbay-vm-split.md) - priority 2; implementation done, final review pending
 - [ui.md](ui.md) - priority 2; qlog auto-discovery pending
+
+## Not Planned
+
+- [virtual-time.md](virtual-time.md) - faster-than-real-time not achievable with real kernel stack; mitigations (ARP pre-warming, short conntrack, minimal netem, parallelism) already in place or trivial to add
 
 ## Completed
 

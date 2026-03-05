@@ -10,15 +10,14 @@ explains how to compose them into realistic network layouts.
 Every router connects to the lab's internet exchange (IX) bridge and
 receives a public IP address on that link. Downstream devices connect to
 the router through veth pairs and receive addresses from the router's
-address pool.
+address pool. The simplest router has no NAT and no firewall — devices
+behind it get public IPs, like a datacenter switch:
 
 ```rust
 let dc = lab.add_router("dc").build().await?;
 ```
 
-A router with no additional configuration acts like a datacenter switch:
-devices behind it get public IPs, there is no NAT, and there is no
-firewall. To model different real-world environments, you configure NAT,
+To model different real-world environments, you configure NAT,
 firewalls, IP support, and address pools on the router builder. The
 [NAT and Firewalls](nat-and-firewalls.md) chapter covers those options
 in detail.

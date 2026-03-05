@@ -1,6 +1,6 @@
 # Plan: Virtual Time / Time Acceleration
 
-Status: **stub** — needs further research before implementation.
+Status: **not planned** — research complete, no realistic path to faster-than-real-time with the current architecture.
 
 ## Problem
 
@@ -9,67 +9,122 @@ ICE restart timers, DTLS retransmit backoff, keepalive intervals — all require
 waiting real seconds/minutes. This limits how many timeout-sensitive scenarios
 can be covered in a test suite that needs to finish in reasonable time.
 
-## Approaches
+## Core constraint
+
+patchbay uses the real Linux kernel network stack: namespaces, veth pairs,
+nftables NAT, and `tc netem` qdiscs. Every kernel-internal timer — TCP
+retransmissions, ARP probes, netem delay queues, conntrack timeouts — ticks
+against `CLOCK_MONOTONIC` / jiffies. No userspace mechanism can make those
+timers run faster.
+
+**Every system that achieves virtual time does so by replacing the kernel
+network stack, not by accelerating it.**
+
+## Approaches evaluated
 
 ### 1. Shadow-style syscall interception (LD_PRELOAD + seccomp)
 
-Shadow intercepts `clock_gettime`, `gettimeofday`, `nanosleep`, `timerfd_*`,
-`poll`/`epoll_wait` timeouts via an LD_PRELOAD shim + seccomp filter. The
-simulated clock only advances when the event queue dictates. A 60-minute
-scenario completes in seconds.
+Shadow runs real binaries but intercepts every syscall. It re-implements TCP,
+UDP, routing, and queueing in a userspace "simulated kernel" driven by a
+discrete-event engine with fully virtual time. Deterministic, seeds all
+randomness from a PRNG.
 
-**Pros**: Works with unmodified binaries. Proven at scale (6000+ Tor nodes).
-**Cons**: Fragile with Rust binaries that use vDSO for `clock_gettime` (bypasses
-LD_PRELOAD). Requires ptrace fallback for vDSO, which adds overhead. Complex to
-implement. ~400 syscalls need interception. Cannot coexist with real kernel NAT
-(Shadow implements its own conntrack internally).
+**Verdict**: The only way to get true faster-than-real-time. But Shadow achieves
+this by not using the kernel network stack at all. Its TCP is a simplified
+model, not Linux's. Implementing this would be an enormous effort and would
+abandon kernel fidelity — patchbay's core value. This would be a different
+project.
 
-### 2. Kernel-level nf_conntrack timeout override
+### 2. Linux time namespaces (kernel 5.6+)
 
-Instead of virtualizing time globally, just make conntrack timeouts very short:
-```bash
-sysctl -w net.netfilter.nf_conntrack_udp_timeout=2          # 2 seconds
-sysctl -w net.netfilter.nf_conntrack_udp_timeout_stream=5   # 5 seconds
-```
+`CLONE_NEWTIME` allows per-namespace static offsets to `CLOCK_MONOTONIC` and
+`CLOCK_BOOTTIME`. Designed for checkpoint/restore (CRIU).
 
-**Pros**: No binary modification. Works with real nftables NAT. Trivial.
-**Cons**: Only accelerates conntrack-related behavior. Application-level timers
-still run at wall-clock speed. Tests must be written to expect short timeouts.
+**Verdict**: Not useful. These are fixed offsets, not dilation factors. The
+clock still ticks at wall-clock rate.
 
-### 3. Application-level timeout parameterization
+### 3. tokio::time::pause()
 
-Pass test-mode configuration to the application under test that shortens all
-relevant timeouts (NAT keepalive: 1s instead of 25s, ICE restart: 500ms
-instead of 5s, etc.).
+Pauses tokio's internal clock and auto-advances when all tasks block on timers.
+Only affects `tokio::time::Instant`, not `std::time`, not kernel timers.
+Requires `current_thread` runtime.
 
-**Pros**: No simulator changes needed. Application controls its own timing.
-**Cons**: Requires the application to support test-mode timeouts. Not all
-applications are configurable this way. Doesn't test the real timeout values.
+**Verdict**: Zero effect on kernel networking, `tc netem` delays, TCP
+retransmissions, or ARP resolution. Could test orchestration logic in isolation
+but not end-to-end simulation.
 
-### 4. Hybrid: short conntrack + application test mode
+### 4. libfaketime (LD_PRELOAD)
 
-Combine approaches 2 and 3. Set conntrack timeouts to 2-5s in the simulator,
-configure the application with matching short keepalive intervals.
+Intercepts `clock_gettime()` and related libc calls. Can apply a scaling factor.
+Does not affect kernel-internal timers, vDSO calls, or the `tc` qdisc layer.
 
-**Pros**: Practical today with minimal effort. Tests real NAT behavior.
-**Cons**: Doesn't test production timeout values. Still requires wall-clock waits
-of a few seconds per scenario.
+**Verdict**: Kernel network stack ignores it. A netem delay of 100 ms still
+costs 100 ms wall-clock.
 
-## Recommendation
+### 5. TimeKeeper kernel module (research, U of Illinois)
 
-Start with approach 4 (hybrid) as part of the NAT preset work — each NAT preset
-already proposes conntrack timeout values. Making these configurable and
-defaulting to short values in test mode gives us 90% of the benefit.
+True per-container time dilation at the kernel level. A TDF of 10 makes the
+container see 1 second per 10 wall-clock seconds — the network *appears* 10×
+faster, but the test takes 10× *longer*.
 
-Research approach 1 (Shadow-style) as a longer-term project if the test suite
-grows to need it. Key question: can we use `ptrace` to intercept `clock_gettime`
-vDSO calls without unacceptable overhead for Rust async runtimes?
+**Verdict**: Requires a custom kernel. Only makes simulations slower in
+wall-clock terms, not faster. Useful for emulating high-bandwidth on slow
+hardware, not for speeding up a test suite. Not practical for stock Linux.
 
-## Open Questions
+### 6. Turmoil / MadSim (Rust, pure simulation)
 
-- What is the overhead of ptrace-based time interception on a tokio runtime?
-- Can we selectively intercept only in the spawned application process, leaving
-  the simulator itself on real time?
-- Is there a lighter-weight approach using `CLOCK_MONOTONIC` namespacing (Linux
-  time namespaces, `CLONE_NEWTIME`)? This is available since kernel 5.6 but
-  only offsets the clock, doesn't allow acceleration.
+Simulate networking in-process with virtual time and deterministic execution.
+No namespaces, no veth, no kernel TCP.
+
+**Verdict**: Fundamentally different architecture. Would require building an
+alternative simulation backend behind the patchbay API.
+
+### 7. Conntrack timeout override + application test mode
+
+Shorten `nf_conntrack_udp_timeout` to 2-5s via sysctl, configure the
+application with matching short keepalive intervals.
+
+**Verdict**: Practical today, already partially supported via `ConntrackTimeouts`
+in the NAT config. Doesn't virtualize time but reduces real-time exposure for
+timeout-sensitive tests.
+
+### 8. eBPF timer compression
+
+Use `BPF_SOCK_OPS_RTO_CB` to shrink TCP retransmission timers per-namespace.
+Requires `CAP_BPF`/`CAP_SYS_ADMIN`. Only affects TCP RTO, not netem or
+conntrack.
+
+**Verdict**: Worth noting but fragile, kernel-version-dependent, and not a
+general solution.
+
+## What the kernel binds to real time
+
+| Component | Controllable from userspace? |
+|---|---|
+| `tc netem` delay / jitter | No — kernel qdisc timer |
+| `tc` TBF rate limiting | No — kernel token bucket |
+| TCP RTO | Partially — initial via BPF (4.13+), min via `ip route` |
+| TCP congestion window timing | No |
+| ARP / ND probes | Tunable intervals via sysctl, still wall-clock |
+| nftables conntrack timeouts | Tunable via sysctl, still wall-clock |
+| SLAAC / RA timers | Kernel-managed, wall-clock |
+
+## Conclusion
+
+Faster-than-real-time with the real kernel stack is not achievable. Every
+approach that works requires replacing the kernel stack, which defeats patchbay's
+purpose.
+
+The pragmatic mitigations already in place or easily added are:
+
+- **ARP/ND pre-warming** (done — `ddc5f79`)
+- **Short conntrack timeouts** (supported via `ConntrackTimeouts`)
+- **Minimal netem delays** for tests that only care about ordering
+- **Test parallelism** across independent lab instances
+- **A `time_scale` multiplier** on `LabOpts` that scales netem delay/jitter
+  values before passing them to `tc` (not virtual time — just smaller delays)
+
+If true virtual time becomes essential, the path would be an optional
+pure-simulation backend (Turmoil-style) behind the same Lab/Router/Device API,
+accepting the loss of kernel TCP fidelity for that mode. That is a separate
+project decision, not a patchbay enhancement.

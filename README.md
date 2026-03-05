@@ -147,7 +147,7 @@ See [docs/reference/ipv6.md](docs/reference/ipv6.md) for details.
 
 ### IPv6 link-local and provisioning modes
 
-Every IPv6-capable device/router interface now exposes a link-local address
+Every IPv6-capable device/router interface exposes a link-local address
 through the handle snapshots:
 
 - `Device::default_iface().and_then(|i| i.ll6())`
@@ -167,7 +167,7 @@ let lab = Lab::with_opts(
 
 `Ipv6ProvisioningMode::Static` keeps route wiring deterministic.  
 `Ipv6ProvisioningMode::RaDriven` enables patchbay's RA/RS-driven path.  
-`Ipv6DadMode::Disabled` is the current default for deterministic test setup.
+`Ipv6DadMode::Disabled` is the default for deterministic test setup.
 
 In `RaDriven` mode, patchbay models Router Advertisement and Router
 Solicitation behavior through structured events and route updates. It does
@@ -180,7 +180,7 @@ and [IPv6 reference](docs/reference/ipv6.md).
 
 Firewall presets control both inbound and outbound traffic:
 `BlockInbound` (RFC 6092 CE router), `Corporate` (TCP 80,443 + UDP 53),
-`CaptivePortal` (block non-web UDP). All presets expand to a
+and `CaptivePortal` (block non-web UDP). All presets expand to a
 `FirewallConfig` which can also be built from scratch via the builder API.
 
 ### Link conditions

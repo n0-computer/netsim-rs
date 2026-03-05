@@ -24,7 +24,7 @@
 //! conditions use [`LinkCondition`] presets (`Wifi`, `Mobile4G`, etc.) or
 //! custom [`LinkLimits`]. Both can be changed at runtime.
 //!
-//! The whole thing runs unprivileged. Call [`init_userns`] before spawning
+//! Everything runs unprivileged. Call [`init_userns`] before spawning
 //! any threads to bootstrap into a user namespace with full networking
 //! capabilities.
 //!

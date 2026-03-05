@@ -102,9 +102,7 @@ sync operations on the same namespace:
 
 ```rust
 let handle = dev.spawn_thread(|| {
-    // This thread runs in the device's namespace.
-    // It can do blocking work for an extended period
-    // without affecting run_sync calls.
+    // long-running blocking work here
     Ok(())
 })?;
 ```

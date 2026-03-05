@@ -8,9 +8,30 @@ configurations, and runtime mutation.
 
 ## IPv4 NAT
 
-NAT controls how a router translates addresses for traffic flowing between
-its downstream (private) and upstream (public) interfaces. You configure it
-on the router builder with `.nat()`:
+NAT controls how a router translates addresses for traffic flowing
+between its downstream (private) and upstream (public) interfaces. Two
+independent properties define how a NAT behaves, both specified by
+RFC 4787.
+
+*Mapping* determines how the router assigns external ports. With
+endpoint-independent mapping, the router reuses the same external port
+for all destinations. A device that binds port 40000 and sends to a
+STUN server gets mapped to, say, external port 40000. When it then
+sends to a different host, the mapping stays the same. This is what
+makes UDP hole-punching possible: a peer learns the mapped address via
+STUN, shares it with another peer, and the mapping holds regardless of
+who sends to it. With endpoint-dependent mapping, each new destination
+gets a different external port, so the address learned from STUN is
+useless for other peers.
+
+*Filtering* determines which inbound packets the router forwards.
+Endpoint-independent filtering (fullcone) accepts packets from any
+external host, as long as a mapping exists. Endpoint-dependent filtering
+only forwards packets from hosts the internal device has already
+contacted — unsolicited packets from unknown hosts are dropped even if
+the port is mapped.
+
+You configure NAT on the router builder with `.nat()`:
 
 ```rust
 use patchbay::Nat;
@@ -18,10 +39,8 @@ use patchbay::Nat;
 let home = lab.add_router("home").nat(Nat::Home).build().await?;
 ```
 
-Each NAT preset models a real-world device class by combining two
-independent axes from RFC 4787: **mapping** (how external ports are
-assigned) and **filtering** (which inbound packets are forwarded to a
-mapped port).
+Each preset combines a mapping and filtering mode to match a real-world
+device class:
 
 | Mode | Mapping | Filtering | Real-world model |
 |------|---------|-----------|------------------|
@@ -32,18 +51,8 @@ mapped port).
 | `CloudNat` | Endpoint-dependent | Endpoint-dependent | AWS/GCP cloud NAT |
 | `Cgnat` | Endpoint-dependent | Endpoint-dependent | Carrier-grade NAT at the ISP |
 
-Endpoint-independent mapping means the router reuses the same external
-port for all destinations. This is what makes UDP hole-punching possible:
-a peer can learn the mapped address via STUN and share it with another
-peer, and the mapping holds regardless of who sends to it.
-Endpoint-dependent mapping assigns a different external port per
-destination, which defeats naive hole-punching.
-
-Filtering is the inbound side. Endpoint-independent filtering (fullcone)
-forwards packets from any external host to a mapped port.
-Endpoint-dependent filtering only forwards replies from hosts the internal
-client has already contacted. For a deep dive into how these modes are
-implemented in nftables and how hole-punching works across them, see the
+For a deep dive into how these modes are implemented in nftables and how
+hole-punching works across them, see the
 [NAT Hole-Punching](../reference/holepunching.md) reference.
 
 ### Custom NAT configurations

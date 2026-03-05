@@ -142,10 +142,11 @@ let laptop = lab
     .await?;
 ```
 
-At this point you have four network namespaces (IX root, dc router, home
-router with NAT, server, laptop) wired together with veth pairs. The
-laptop has a private IP behind the home router's NAT, and the server has a
-public IP on the datacenter router's subnet.
+At this point you have five network namespaces — the IX root, two
+routers (dc and home), and two devices (server and laptop) — wired
+together with veth pairs. The laptop has a private IP behind the home
+router's NAT, and the server has a public IP on the datacenter router's
+subnet.
 
 ## Running a ping across the NAT
 
@@ -257,16 +258,8 @@ tracing::info!(target: "myapp::_events::PeerConnected", addr = %peer_addr);
 The per-namespace tracing subscriber extracts these into `.events.jsonl`
 files, which the timeline tab renders automatically.
 
-## What comes next
-
-The following chapters cover patchbay's features in more depth:
-
-- [Building Topologies](topology.md) explains router chains, multi-homed
-  devices, regions with inter-region latency, link condition presets, and
-  router presets.
-- [NAT and Firewalls](nat-and-firewalls.md) covers all NAT modes
-  (including NAT64 for IPv6-only networks), firewall presets, custom
-  configurations, and runtime changes.
-- [Running Code in Namespaces](running-code.md) describes the execution
-  model, all the ways to run code inside a namespace, and dynamic topology
-  operations like interface replug and link control.
+The next chapters — [Building Topologies](topology.md),
+[NAT and Firewalls](nat-and-firewalls.md), and
+[Running Code in Namespaces](running-code.md) — cover routers, devices,
+regions, link conditions, all NAT and firewall modes, the execution
+model, and dynamic topology operations in depth.

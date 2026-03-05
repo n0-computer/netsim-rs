@@ -62,14 +62,3 @@ not at the packet simulation level. This means the fidelity is high (you
 are testing against real Linux networking), but the scale is limited to
 what a single machine can support (typically dozens of namespaces, not
 thousands).
-
-## Scope of this book
-
-The **Guide** section walks through patchbay's concepts in order: setting
-up a lab, building topologies, configuring NAT and firewalls, running code
-inside namespaces, and running labs in a VM on non-Linux hosts. Each
-chapter builds on the previous one and includes runnable examples.
-
-The **Reference** section covers specialized topics in depth: real-world
-IPv6 deployment patterns, network event simulation recipes, NAT traversal
-and hole-punching internals, and the TOML simulation file format.

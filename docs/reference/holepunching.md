@@ -5,9 +5,10 @@
 > to read this to use patchbay; the [NAT and Firewalls](../guide/nat-and-firewalls.md)
 > guide covers the user-facing API.
 
-This document describes how patchbay implements NAT mapping and filtering
-using nftables, and what we learned getting UDP hole-punching to work
-across different NAT types in Linux network namespaces.
+patchbay implements NAT mapping and filtering using nftables. Getting UDP
+hole-punching to work across different NAT types in Linux network
+namespaces required solving several problems that are not obvious from
+the nftables documentation.
 
 ## RFC 4787: mapping and filtering
 
