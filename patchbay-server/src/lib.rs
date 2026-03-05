@@ -562,6 +562,31 @@ fn looks_like_json(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(t).is_ok()
 }
 
+/// Check if content looks like tracing-subscriber JSON output.
+///
+/// These lines have `timestamp`, `level`, and `target` keys — the
+/// standard shape emitted by `tracing_subscriber::fmt::json()`.
+fn looks_like_tracing_jsonl(text: &str) -> bool {
+    for line in text.lines().take(5) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let obj = match v.as_object() {
+            Some(o) => o,
+            None => return false,
+        };
+        if obj.contains_key("timestamp") && obj.contains_key("level") && obj.contains_key("target")
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn looks_like_jsonl(text: &str) -> bool {
     let mut saw = false;
     for line in text.lines() {
@@ -647,6 +672,9 @@ fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
         return Some(LogKind::Qlog);
     }
 
+    if looks_like_tracing_jsonl(text) {
+        return Some(LogKind::TracingJsonl);
+    }
     if filename.ends_with(".jsonl") || looks_like_jsonl(text) {
         return Some(LogKind::Jsonl);
     }
