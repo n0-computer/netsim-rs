@@ -51,6 +51,8 @@ pub struct SimState {
     pub(crate) work_dir: PathBuf,
     pub(crate) sim_name: String,
     pub(crate) verbose: bool,
+    /// Optional deadline for the entire sim. Steps should check this and bail early.
+    pub(crate) deadline: Option<Instant>,
 }
 
 pub(crate) struct GenericProcess {
@@ -144,6 +146,7 @@ pub async fn run_sims(
     verbose: bool,
     project_root: Option<PathBuf>,
     no_build: bool,
+    sim_timeout: Option<Duration>,
 ) -> Result<()> {
     let sims = expand_sim_inputs(&sim_inputs)?;
     if sims.is_empty() {
@@ -216,6 +219,7 @@ pub async fn run_sims(
             run_root.clone(),
             Arc::clone(&assembled_binary_paths),
             verbose,
+            sim_timeout,
         )
         .await?;
         sim_dir_names.push(outcome.sim_dir_name.clone());
@@ -322,6 +326,7 @@ async fn run_single_sim(
     run_root: PathBuf,
     assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
     verbose: bool,
+    sim_timeout: Option<Duration>,
 ) -> Result<SimRunOutcome> {
     let started_at = SystemTime::now();
     let started_at_str = format_timestamp(started_at);
@@ -389,6 +394,7 @@ async fn run_single_sim(
         setup.clone(),
         assembled_binary_paths,
         verbose,
+        sim_timeout.map(|t| Instant::now() + t),
     )
     .await;
 
@@ -707,6 +713,7 @@ async fn execute_single_sim(
     setup_base: SimSetupSummary,
     assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
     verbose: bool,
+    deadline: Option<Instant>,
 ) -> Result<SimSetupSummary> {
     // ── Load extends (templates, groups, binaries) ───────────────────────
     let (templates, groups, _extends_binaries, _extends_prepare) =
@@ -743,6 +750,7 @@ async fn execute_single_sim(
         work_dir: run_work_dir.to_path_buf(),
         sim_name: sim_name.to_string(),
         verbose,
+        deadline,
     };
 
     // ── Expand step templates and groups ─────────────────────────────────
@@ -1376,9 +1384,68 @@ fn expand_counted_steps(steps: Vec<Step>, counts: &HashMap<String, usize>) -> Ve
                 continue;
             }
         }
+        // Assert: expand check expressions whose LHS references a counted device.
+        if let Step::Assert {
+            ref check,
+            ref checks,
+        } = step
+        {
+            let expanded = expand_assert_checks(check, checks, counts);
+            if let Some(expanded_checks) = expanded {
+                out.push(Step::Assert {
+                    check: None,
+                    checks: expanded_checks,
+                });
+                continue;
+            }
+        }
         out.push(step);
     }
     out
+}
+
+/// Expand assert check expressions that reference counted devices.
+///
+/// For a check like `"fetcher.size matches [0-9]+"` and a counted device `fetcher` with
+/// count 3, produces: `["fetcher-0.size matches [0-9]+", "fetcher-1.size ...", "fetcher-2.size ..."]`.
+/// Returns `None` if no expansion was needed.
+fn expand_assert_checks(
+    check: &Option<String>,
+    checks: &[String],
+    counts: &HashMap<String, usize>,
+) -> Option<Vec<String>> {
+    let mut expanded = Vec::new();
+    let mut any_expanded = false;
+    for expr in check.iter().chain(checks.iter()) {
+        // Extract the LHS: everything before the first operator token.
+        let lhs_end = expr
+            .find(" == ")
+            .or_else(|| expr.find(" != "))
+            .or_else(|| expr.find(" contains "))
+            .or_else(|| expr.find(" matches "))
+            .or_else(|| expr.find(" >= "))
+            .unwrap_or(expr.len());
+        let lhs = expr[..lhs_end].trim();
+        // Check if the LHS prefix (before the first `.`) is a counted device.
+        if let Some(dot) = lhs.find('.') {
+            let prefix = &lhs[..dot];
+            if let Some(&n) = counts.get(prefix) {
+                let prefix_dot = format!("{prefix}.");
+                for idx in 0..n {
+                    let new_expr = expr.replacen(&prefix_dot, &format!("{prefix}-{idx}."), 1);
+                    expanded.push(new_expr);
+                }
+                any_expanded = true;
+                continue;
+            }
+        }
+        expanded.push(expr.clone());
+    }
+    if any_expanded {
+        Some(expanded)
+    } else {
+        None
+    }
 }
 
 fn set_step_device(step: &mut Step, device: String) {
@@ -1809,6 +1876,31 @@ mod tests {
     }
 
     #[test]
+    fn expand_counted_steps_expands_assert() {
+        let steps = vec![Step::Assert {
+            check: None,
+            checks: vec![
+                "fetcher.size matches [0-9]+".to_string(),
+                "other.val == ok".to_string(),
+            ],
+        }];
+        let mut counts = HashMap::new();
+        counts.insert("fetcher".to_string(), 3);
+        let expanded = expand_counted_steps(steps, &counts);
+        assert_eq!(expanded.len(), 1);
+        if let Step::Assert { check, checks } = &expanded[0] {
+            assert!(check.is_none());
+            assert_eq!(checks.len(), 4); // 3 fetcher + 1 other
+            assert_eq!(checks[0], "fetcher-0.size matches [0-9]+");
+            assert_eq!(checks[1], "fetcher-1.size matches [0-9]+");
+            assert_eq!(checks[2], "fetcher-2.size matches [0-9]+");
+            assert_eq!(checks[3], "other.val == ok");
+        } else {
+            panic!("expected Assert step");
+        }
+    }
+
+    #[test]
     fn expand_counted_steps_expands_device() {
         let steps = vec![
             Step::Run {
@@ -1833,5 +1925,64 @@ mod tests {
             assert_eq!(step_device(step), Some(format!("peer-{i}")).as_deref());
             assert_eq!(step_id(step), Some(format!("ping-{i}")).as_deref());
         }
+    }
+
+    /// Sim with a short timeout and a spawn+wait-for that never completes.
+    /// Verifies that the deadline triggers and the sim aborts promptly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn sim_timeout_aborts_stuck_sim() {
+        let root = std::env::temp_dir().join(format!(
+            "patchbay-timeout-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp dir");
+        let sim_toml = r#"
+[sim]
+name = "timeout-test"
+
+[[router]]
+name = "r1"
+
+[device.node.eth0]
+gateway = "r1"
+
+[[step]]
+action = "spawn"
+id     = "sleeper"
+device = "node"
+cmd    = ["sleep", "3600"]
+
+[[step]]
+action  = "wait-for"
+id      = "sleeper"
+timeout = "3600s"
+"#;
+        let sim_path = root.join("timeout-test.toml");
+        std::fs::write(&sim_path, sim_toml).expect("write sim");
+
+        let start = std::time::Instant::now();
+        let result = run_sims(
+            vec![sim_path],
+            root.clone(),
+            vec![],
+            false,
+            None,
+            true, // no_build
+            Some(Duration::from_secs(3)), // 3s timeout
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        // Should fail due to timeout.
+        assert!(result.is_err(), "expected timeout error, got Ok");
+        // Should complete within a reasonable time (well under the 3600s wait).
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "timeout took too long: {elapsed:?}"
+        );
     }
 }

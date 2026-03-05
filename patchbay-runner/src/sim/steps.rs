@@ -62,6 +62,13 @@ pub(crate) fn step_device(step: &Step) -> Option<&str> {
 const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
+    // Check sim deadline before each step.
+    if let Some(dl) = state.deadline {
+        if std::time::Instant::now() >= dl {
+            bail!("sim timed out");
+        }
+    }
+
     tracing::info!(
         action = %step_action(step),
         id = ?step_id(step),
@@ -70,11 +77,23 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
     );
 
     // Block on `requires` captures before executing.
+    // Cap the wait by the sim deadline if set.
+    let capture_timeout = match state.deadline {
+        Some(dl) => dl
+            .saturating_duration_since(std::time::Instant::now())
+            .min(DEFAULT_CAPTURE_TIMEOUT),
+        None => DEFAULT_CAPTURE_TIMEOUT,
+    };
     let requires = step_requires(step);
     for key in requires {
+        tracing::debug!(
+            step_id = ?step_id(step),
+            capture = %key,
+            "sim: waiting for required capture"
+        );
         state
             .captures
-            .wait(key, DEFAULT_CAPTURE_TIMEOUT)
+            .wait(key, capture_timeout)
             .with_context(|| {
                 format!(
                     "step '{}': requires '{}'",
@@ -82,6 +101,11 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                     key
                 )
             })?;
+        tracing::debug!(
+            step_id = ?step_id(step),
+            capture = %key,
+            "sim: required capture resolved"
+        );
     }
 
     match step {
@@ -96,7 +120,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
             results,
             ..
         } => {
-            let cmd_parts = interpolate_with_captures(cmd, &state.env, &state.captures)?;
+            let cmd_parts = interpolate_with_captures(cmd, &state.env, &state.captures, state.deadline)?;
             tracing::info!(
                 device,
                 cmd = %shell_join(&cmd_parts),
@@ -186,6 +210,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 cmd.as_deref().context("spawn: missing cmd")?,
                 &state.env,
                 &state.captures,
+                state.deadline,
             )?;
             tracing::info!(
                 id,
@@ -308,11 +333,16 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
 
         // ── wait-for ──────────────────────────────────────────────────────
         Step::WaitFor { id, timeout } => {
-            let timeout = timeout
+            let mut timeout = timeout
                 .as_deref()
                 .map(parse_duration)
                 .transpose()?
                 .unwrap_or(Duration::from_secs(300));
+            // Cap by sim deadline.
+            if let Some(dl) = state.deadline {
+                let remaining = dl.saturating_duration_since(std::time::Instant::now());
+                timeout = timeout.min(remaining);
+            }
 
             if state.spawned.contains_key(id) {
                 {
@@ -495,6 +525,7 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 std::slice::from_ref(content),
                 &state.env,
                 &state.captures,
+                state.deadline,
             )?;
             let text = interpolated.into_iter().next().unwrap_or_default();
 
@@ -527,18 +558,49 @@ fn step_requires(step: &Step) -> &[String] {
 }
 
 /// Interpolate a slice of strings, blocking on `${step_id.capture}` tokens.
+///
+/// After interpolation, drops `--flag value` pairs where the value is empty
+/// (e.g. when a capture resolved to empty string due to a missing JSON path).
 pub(crate) fn interpolate_with_captures(
     parts: &[String],
     env: &SimEnv,
     captures: &CaptureStore,
+    deadline: Option<std::time::Instant>,
 ) -> Result<Vec<String>> {
-    parts
+    let resolved: Vec<String> = parts
         .iter()
-        .map(|s| interpolate_str_with_captures(s, env, captures))
-        .collect()
+        .map(|s| interpolate_str_with_captures(s, env, captures, deadline))
+        .collect::<Result<_>>()?;
+
+    // Drop `--flag <empty>` pairs.
+    let mut out = Vec::with_capacity(resolved.len());
+    let mut skip_next = false;
+    for (i, val) in resolved.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        // Check if this is a --flag whose next arg is empty.
+        if val.starts_with("--") && !val.contains('=') {
+            if let Some(next) = resolved.get(i + 1) {
+                if next.is_empty() {
+                    tracing::debug!(flag = %val, "sim: dropping flag with empty value");
+                    skip_next = true;
+                    continue;
+                }
+            }
+        }
+        out.push(val.clone());
+    }
+    Ok(out)
 }
 
-fn interpolate_str_with_captures(s: &str, env: &SimEnv, captures: &CaptureStore) -> Result<String> {
+fn interpolate_str_with_captures(
+    s: &str,
+    env: &SimEnv,
+    captures: &CaptureStore,
+    deadline: Option<std::time::Instant>,
+) -> Result<String> {
     // Pre-check: if no `${` tokens, fast path via env interpolation.
     if !s.contains("${") {
         return env.interpolate_str(s);
@@ -560,7 +622,15 @@ fn interpolate_str_with_captures(s: &str, env: &SimEnv, captures: &CaptureStore)
                 out.push_str(&env.interpolate_str(&format!("${{{}}}", key))?);
             } else if key.contains('.') {
                 // Capture reference: block until available.
-                let val = captures.wait(key, DEFAULT_CAPTURE_TIMEOUT)?;
+                let cap_timeout = match deadline {
+                    Some(dl) => dl
+                        .saturating_duration_since(std::time::Instant::now())
+                        .min(DEFAULT_CAPTURE_TIMEOUT),
+                    None => DEFAULT_CAPTURE_TIMEOUT,
+                };
+                tracing::debug!(capture = %key, "sim: interpolating capture (blocking)");
+                let val = captures.wait(key, cap_timeout)?;
+                tracing::debug!(capture = %key, value = %val, "sim: capture resolved");
                 out.push_str(&val);
             } else {
                 // Lab var.
@@ -656,9 +726,10 @@ fn apply_json_pick(v: &serde_json::Value, spec: &CaptureSpec) -> Option<String> 
             }
         }
     }
-    // Extract pick path.
+    // Extract pick path. If match succeeded but pick path doesn't resolve,
+    // return empty string so the capture is recorded (unblocking waiters).
     if let Some(pick) = &spec.pick {
-        return extract_json_path(v, pick);
+        return Some(extract_json_path(v, pick).unwrap_or_default());
     }
     // No pick: return raw regex match if any.
     None

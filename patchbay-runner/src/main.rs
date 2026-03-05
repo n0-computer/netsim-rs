@@ -49,6 +49,15 @@ enum Command {
         /// Bind address for embedded UI server.
         #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
+
+        /// Project root directory for resolving binaries and cargo builds.
+        /// Defaults to the current working directory.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
+
+        /// Per-sim timeout (e.g. "120s", "5m"). Sims that exceed this are aborted.
+        #[arg(long)]
+        timeout: Option<String>,
     },
     /// Resolve sims and build all required assets without running simulations.
     Prepare {
@@ -64,6 +73,11 @@ enum Command {
         /// Do not build binaries; resolve expected artifacts from target dirs.
         #[arg(long, default_value_t = false)]
         no_build: bool,
+
+        /// Project root directory for resolving binaries and cargo builds.
+        /// Defaults to the current working directory.
+        #[arg(long)]
+        project_root: Option<PathBuf>,
     },
     /// Serve embedded devtools UI over HTTP for a lab output directory.
     Serve {
@@ -126,7 +140,13 @@ async fn tokio_main() -> Result<()> {
             verbose,
             open,
             bind,
+            project_root,
+            timeout,
         } => {
+            let sim_timeout = timeout
+                .map(|s| sim::steps::parse_duration(&s))
+                .transpose()
+                .context("invalid --timeout value")?;
             if open {
                 let bind_addr = bind.clone();
                 let work = work_dir.clone();
@@ -139,7 +159,10 @@ async fn tokio_main() -> Result<()> {
                 let url = format!("http://{bind}/");
                 let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }
-            let project_root = std::env::current_dir().context("resolve current directory")?;
+            let project_root = match project_root {
+                Some(p) => p,
+                None => std::env::current_dir().context("resolve current directory")?,
+            };
             let res = sim::run_sims(
                 sims,
                 work_dir,
@@ -147,6 +170,7 @@ async fn tokio_main() -> Result<()> {
                 verbose,
                 Some(project_root),
                 no_build,
+                sim_timeout,
             )
             .await;
             if open && res.is_ok() {
@@ -162,8 +186,12 @@ async fn tokio_main() -> Result<()> {
             work_dir,
             binary_overrides,
             no_build,
+            project_root,
         } => {
-            let project_root = std::env::current_dir().context("resolve current directory")?;
+            let project_root = match project_root {
+                Some(p) => p,
+                None => std::env::current_dir().context("resolve current directory")?,
+            };
             sim::prepare_sims(
                 sims,
                 work_dir,
@@ -517,6 +545,7 @@ mod tests {
             false,
             Some(project_root),
             false,
+            None,
         )
         .await
         .expect("run iperf sim");

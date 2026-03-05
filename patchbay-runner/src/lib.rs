@@ -11,7 +11,7 @@ pub use patchbay_utils::assets::BinaryOverride;
 mod init;
 pub(crate) mod sim;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 
@@ -25,6 +25,7 @@ pub async fn run_sims(
     verbose: bool,
     project_root: Option<PathBuf>,
     no_build: bool,
+    sim_timeout: Option<Duration>,
 ) -> Result<()> {
     sim::run_sims(
         sim_inputs,
@@ -33,6 +34,7 @@ pub async fn run_sims(
         verbose,
         project_root,
         no_build,
+        sim_timeout,
     )
     .await
 }
