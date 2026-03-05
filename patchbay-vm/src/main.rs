@@ -63,6 +63,12 @@ enum Command {
     Serve {
         #[arg(long, default_value = ".patchbay-work")]
         work_dir: PathBuf,
+        /// Serve `<work-dir>/binaries/tests/testdir-current` instead of work_dir.
+        ///
+        /// In the VM, test binaries live under `<work-dir>/binaries/tests/` and
+        /// the testdir crate writes output next to the executable.
+        #[arg(long, default_value_t = false)]
+        testdir: bool,
         #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
         #[arg(long, default_value_t = false)]
@@ -132,15 +138,24 @@ async fn main() -> Result<()> {
         }
         Command::Serve {
             work_dir,
+            testdir,
             bind,
             open,
         } => {
+            let dir = if testdir {
+                work_dir
+                    .join("binaries")
+                    .join("tests")
+                    .join("testdir-current")
+            } else {
+                work_dir
+            };
+            println!("patchbay: serving {} at http://{bind}/", dir.display());
             if open {
                 let url = format!("http://{bind}");
-                println!("patchbay UI: {url}");
                 let _ = open::that(&url);
             }
-            patchbay_server::serve(work_dir, &bind).await
+            patchbay_server::serve(dir, &bind).await
         }
         Command::Test {
             target,

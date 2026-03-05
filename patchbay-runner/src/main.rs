@@ -91,8 +91,15 @@ enum Command {
     /// Serve embedded devtools UI over HTTP for a lab output directory.
     Serve {
         /// Output directory containing lab run subdirectories.
+        ///
+        /// Ignored when `--testdir` is set.
         #[arg(default_value = ".patchbay-work")]
         outdir: PathBuf,
+        /// Serve `<cargo-target-dir>/testdir-current` instead of a path.
+        ///
+        /// Uses `cargo metadata` to locate the target directory.
+        #[arg(long, default_value_t = false)]
+        testdir: bool,
         /// Bind address for HTTP server.
         #[arg(long, default_value = DEFAULT_UI_BIND)]
         bind: String,
@@ -215,13 +222,23 @@ async fn tokio_main() -> Result<()> {
             )
             .await
         }
-        Command::Serve { outdir, bind, open } => {
-            println!("patchbay: http://{bind}/");
+        Command::Serve {
+            outdir,
+            testdir,
+            bind,
+            open,
+        } => {
+            let dir = if testdir {
+                resolve_testdir_native()?
+            } else {
+                outdir
+            };
+            println!("patchbay: serving {} at http://{bind}/", dir.display());
             if open {
                 let url = format!("http://{bind}/");
                 let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
             }
-            patchbay_server::serve(outdir, &bind).await
+            patchbay_server::serve(dir, &bind).await
         }
         Command::FmtLog { file, follow } => fmt_log::run(file.as_deref(), follow),
         Command::Cleanup { prefixes } => cleanup_command(prefixes),
@@ -233,6 +250,28 @@ async fn tokio_main() -> Result<()> {
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
     }
+}
+
+/// Resolve `testdir-current` inside the cargo target directory.
+///
+/// Runs `cargo metadata` to find the target directory, then appends
+/// `testdir-current`. This matches the convention used by the `testdir`
+/// crate when running tests natively.
+fn resolve_testdir_native() -> Result<PathBuf> {
+    let output = ProcessCommand::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .output()
+        .context("failed to run `cargo metadata`")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("cargo metadata failed: {stderr}");
+    }
+    let meta: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parse cargo metadata")?;
+    let target_dir = meta["target_directory"]
+        .as_str()
+        .ok_or_else(|| anyhow!("cargo metadata missing target_directory"))?;
+    Ok(PathBuf::from(target_dir).join("testdir-current"))
 }
 
 fn default_cleanup_prefixes() -> Vec<String> {
