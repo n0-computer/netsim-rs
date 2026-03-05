@@ -19,13 +19,17 @@ patchbay::init_userns().expect("failed to enter user namespace");
 // Create a lab (async - sets up the root namespace and IX bridge).
 let lab = Lab::new().await?;
 
-// A "datacenter" router: downstream devices get public IPs.
-let dc = lab.add_router("dc").build().await?;
+// A public router: downstream devices get globally routable IPs.
+let dc = lab
+    .add_router("dc")
+    .preset(RouterPreset::Public)
+    .build()
+    .await?;
 
-// A "home" router with NAT: downstream devices get private IPs.
+// A home router: downstream devices get private IPs behind NAT.
 let home = lab
     .add_router("home")
-    .nat(Nat::Home)
+    .preset(RouterPreset::Home)
     .build()
     .await?;
 
@@ -43,17 +47,16 @@ let server = lab
     .build()
     .await?;
 
-// Run a command inside a device's network namespace.
-let mut child = dev.spawn_command_sync({
-    let mut cmd = std::process::Command::new("ping");
+// Run an OS command inside a device's network namespace.
+let mut child = dev.spawn_command({
+    let mut cmd = tokio::process::Command::new("ping");
     cmd.args(["-c1", &server.ip().unwrap().to_string()]);
     cmd
 })?;
+child.wait().await?;
 
-// Run an async task inside a device's network namespace.
-// This runs on a per-namespace tokio runtime, so you can use all
-// tokio networking primitives and everything built on top of them.
-let client_task = dev.spawn(|_dev| async move {
+// Spawn an async task on the device's per-namespace tokio runtime.
+let client_task = dev.spawn(async move |_dev| {
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
     println!("local addr: {}", stream.local_addr()?);
     stream.write_all(b"hello server").await?;
@@ -123,14 +126,15 @@ one call to match real-world deployment patterns:
 
 ```rust
 let home = lab.add_router("home").preset(RouterPreset::Home).build().await?;
-let dc   = lab.add_router("dc").preset(RouterPreset::Datacenter).build().await?;
+let dc   = lab.add_router("dc").preset(RouterPreset::Public).build().await?;
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;
 ```
 
-Available presets: `Home`, `Datacenter`, `IspV4`, `Mobile`, `MobileV6`,
-`Corporate`, `Hotel`, `Cloud`. Individual methods called after `preset()`
-override preset values. See [docs/reference/ipv6.md](docs/reference/ipv6.md) for the full
-reference table.
+Available presets: `Home`, `Public`, `PublicV4`, `IspCgnat`, `IspV6`,
+`Corporate`, `Hotel`, `Cloud`. Individual methods called after
+`preset()` override preset values. See
+[docs/reference/ipv6.md](docs/reference/ipv6.md) for the full reference
+table.
 
 ### NAT
 
@@ -142,7 +146,7 @@ build custom NAT configs from mapping + filtering + timeout parameters.
 **NAT64** provides IPv4 access for IPv6-only devices via the well-known
 prefix `64:ff9b::/96`. A userspace SIIT translator on the router converts
 between IPv6 and IPv4 headers; nftables masquerade handles port mapping.
-Use `RouterPreset::MobileV6` or `.nat_v6(NatV6Mode::Nat64)` directly.
+Use `RouterPreset::IspV6` or `.nat_v6(NatV6Mode::Nat64)` directly.
 See [docs/reference/ipv6.md](docs/reference/ipv6.md) for details.
 
 ### IPv6 link-local and provisioning modes
@@ -208,13 +212,13 @@ lab.link_regions(&eu, &us, RegionLink::good(80)).await?;
 
 // Routers
 let dc = lab.add_router("dc")
+    .preset(RouterPreset::Public)
     .region(&eu)
     .build().await?;
 
 let home = lab.add_router("home")
+    .preset(RouterPreset::Home)
     .upstream(dc.id())           // chain behind dc
-    .nat(Nat::Home)
-    .ip_support(IpSupport::DualStack)
     .nat_v6(NatV6Mode::Nptv6)
     .build().await?;
 
@@ -230,7 +234,7 @@ let dev = lab.add_device("phone")
 
 ```rust
 // Async task on the device's tokio runtime
-let jh = dev.spawn(|_dev| async move {
+let jh = dev.spawn(async move |_dev| {
     let stream = tokio::net::TcpStream::connect("203.0.113.10:80").await?;
     Ok::<_, anyhow::Error>(())
 })?;

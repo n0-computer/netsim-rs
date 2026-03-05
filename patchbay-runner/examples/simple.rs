@@ -1,24 +1,31 @@
 use anyhow::Result;
-use patchbay::{Lab, LinkCondition, Nat};
+use patchbay::{Lab, LinkCondition, RouterPreset};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn main() -> Result<()> {
-    // We need to enter a user namespace for rootless operation before any threads
-    // are spawned. Therefore this needs to happen before the tokio initialization.
+    // Enter a user namespace for rootless operation before any threads
+    // are spawned — this must happen before the tokio runtime starts.
     patchbay::init_userns().expect("failed to enter user namespace");
     async_main()
 }
 
 #[tokio::main]
 async fn async_main() -> Result<()> {
-    // Create a lab with a global "internet switch" to which routers are connected.
     let lab = Lab::new().await?;
 
-    // A "datacenter" router: downstream devices get "public" IPs.
-    let dc = lab.add_router("dc").build().await?;
+    // A public router: downstream devices get globally routable IPs.
+    let dc = lab
+        .add_router("dc")
+        .preset(RouterPreset::Public)
+        .build()
+        .await?;
 
-    // A "home" router with a NAT: downstream devices get private IPs.
-    let home = lab.add_router("home").nat(Nat::Home).build().await?;
+    // A home router: downstream devices get private IPs behind NAT.
+    let home = lab
+        .add_router("home")
+        .preset(RouterPreset::Home)
+        .build()
+        .await?;
 
     // A device behind the home router, with a lossy WiFi link.
     let dev = lab
@@ -34,25 +41,22 @@ async fn async_main() -> Result<()> {
         .build()
         .await?;
 
-    // Run a command inside a device's network namespace.
-    let mut child = dev.spawn_command_sync({
-        let mut cmd = std::process::Command::new("ping");
+    // Run an OS command inside a device's network namespace.
+    let mut child = dev.spawn_command({
+        let mut cmd = tokio::process::Command::new("ping");
         cmd.args(["-c1", &server.ip().unwrap().to_string()]);
         cmd
     })?;
-    tokio::task::spawn_blocking(move || child.wait().expect("command failed")).await?;
+    child.wait().await?;
 
-    // You can spawn tasks on a single-threaded tokio runtime
-    // running in a device's network namespace.
-    //
-    // Through this, you can use all async rust networking primitives,
-    // but they run fully isolated to the networking stack of a simulated device.
+    // Spawn async tasks on a per-namespace tokio runtime. All async Rust
+    // networking primitives work inside, fully isolated to the simulated
+    // device's network stack.
     let addr = std::net::SocketAddr::from((server.ip().unwrap(), 8080));
     let server_task = server.spawn(async move |_| {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         let (mut stream, peer) = listener.accept().await?;
         println!("got connection from {peer}");
-        // Can also spawn tasks, it's full tokio in here.
         tokio::spawn(async move {
             let mut s = String::new();
             stream.read_to_string(&mut s).await?;

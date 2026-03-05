@@ -135,7 +135,7 @@ default when your test scenario diverges from the preset.
 ```rust
 // One-liner for each common case:
 let home = lab.add_router("home").preset(RouterPreset::Home).build().await?;
-let dc   = lab.add_router("dc").preset(RouterPreset::Datacenter).build().await?;
+let dc   = lab.add_router("dc").preset(RouterPreset::Public).build().await?;
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;
 
 // Override one knob:
@@ -150,13 +150,13 @@ The full preset table:
 | Preset | NAT | NAT v6 | Firewall | IP | Pool |
 |--------|-----|--------|----------|----|------|
 | `Home` | Home (EIM+APDF) | None | BlockInbound | DualStack | Private |
-| `Datacenter` | None | None | None | DualStack | Public |
-| `IspV4` | None | None | None | V4Only | Public |
-| `Mobile` | Cgnat | None | BlockInbound | DualStack | Public |
-| `MobileV6` | None | **Nat64** | BlockInbound | V6Only | Public |
-| `Corporate` | Corporate (sym) | None | Corporate | DualStack | Public |
+| `Public` | None | None | None | DualStack | Public |
+| `PublicV4` | None | None | None | V4Only | Public |
+| `IspCgnat` | Cgnat (EIM+EIF) | None | None | DualStack | Private |
+| `IspV6` | None | **Nat64** | BlockInbound | V6Only | Public |
+| `Corporate` | Corporate (sym) | None | Corporate | DualStack | Private |
 | `Hotel` | Corporate (sym) | None | CaptivePortal | V4Only | Private |
-| `Cloud` | CloudNat | None | None | DualStack | Public |
+| `Cloud` | CloudNat (sym) | None | None | DualStack | Private |
 
 ### Scenario 1: Residential Dual-Stack (Most Common)
 
@@ -186,7 +186,7 @@ environment.
 
 ```rust
 let carrier = lab.add_router("carrier")
-    .preset(RouterPreset::MobileV6)
+    .preset(RouterPreset::IspV6)
     .build().await?;
 let phone = lab.add_device("phone").uplink(carrier.id()).build().await?;
 // phone.ip6() -> 2001:db8:1:x::2 (public GUA)
@@ -198,7 +198,7 @@ let nat64_addr = embed_v4_in_nat64(server_v4_ip);
 // Connect to [64:ff9b::<server_v4>]:port, translated to IPv4 by the router
 ```
 
-The `MobileV6` preset configures `IpSupport::V6Only`,
+The `IspV6` preset configures `IpSupport::V6Only`,
 `NatV6Mode::Nat64`, `Firewall::BlockInbound`, and a public GUA pool.
 You can also configure NAT64 manually on any router when you need a
 different combination:
@@ -243,7 +243,7 @@ IPv6, but the IPv4 address is behind carrier-grade NAT — an extra layer
 on top of any home NAT.
 
 ```rust
-let carrier = lab.add_router("carrier").preset(RouterPreset::Mobile).build().await?;
+let carrier = lab.add_router("carrier").preset(RouterPreset::IspCgnat).build().await?;
 let phone = lab.add_device("phone").uplink(carrier.id()).build().await?;
 ```
 
@@ -262,7 +262,7 @@ let home = lab.add_router("home")
     .build().await?;
 let alice = lab.add_device("alice").uplink(home.id()).build().await?;
 
-let mobile = lab.add_router("mobile").preset(RouterPreset::Mobile).build().await?;
+let mobile = lab.add_router("mobile").preset(RouterPreset::IspCgnat).build().await?;
 let bob = lab.add_device("bob").uplink(mobile.id()).build().await?;
 
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;

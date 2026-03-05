@@ -56,7 +56,7 @@ same combinations across tests:
 use patchbay::RouterPreset;
 
 let home = lab.add_router("home").preset(RouterPreset::Home).build().await?;
-let dc   = lab.add_router("dc").preset(RouterPreset::Datacenter).build().await?;
+let dc   = lab.add_router("dc").preset(RouterPreset::Public).build().await?;
 let corp = lab.add_router("corp").preset(RouterPreset::Corporate).build().await?;
 ```
 
@@ -66,14 +66,14 @@ the preset configures:
 
 | Preset | NAT | Firewall | IP support | Pool |
 |--------|-----|----------|------------|------|
-| `Home` | Home | BlockInbound | DualStack | Private |
-| `Datacenter` | None | None | DualStack | Public |
-| `IspV4` | Cgnat | None | V4Only | CgnatShared |
-| `Mobile` | Home | BlockInbound | DualStack | Private |
-| `MobileV6` | None (v4) / Nat64 (v6) | BlockInbound | V6Only | Public |
-| `Corporate` | Corporate | Corporate | DualStack | Private |
-| `Hotel` | Home | CaptivePortal | DualStack | Private |
-| `Cloud` | None | None | DualStack | Public |
+| `Home` | Home (EIM+APDF) | BlockInbound | DualStack | Private |
+| `Public` | None | None | DualStack | Public |
+| `PublicV4` | None | None | V4Only | Public |
+| `IspCgnat` | Cgnat (EIM+EIF) | None | DualStack | Private |
+| `IspV6` | None (v4) / Nat64 (v6) | BlockInbound | V6Only | Public |
+| `Corporate` | Corporate (sym) | Corporate | DualStack | Private |
+| `Hotel` | Corporate (sym) | CaptivePortal | V4Only | Private |
+| `Cloud` | CloudNat (sym) | None | DualStack | Private |
 
 Methods called after `.preset()` override the preset's defaults, so you
 can use a preset as a starting point and customize individual settings.

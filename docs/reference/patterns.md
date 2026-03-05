@@ -279,9 +279,9 @@ be dual-stack.
 ```rust
 use patchbay::nat64::embed_v4_in_nat64;
 
-// One-liner: MobileV6 preset = V6Only + NAT64 + BlockInbound
+// One-liner: IspV6 preset = V6Only + NAT64 + BlockInbound
 let carrier = lab.add_router("carrier")
-    .preset(RouterPreset::MobileV6)
+    .preset(RouterPreset::IspV6)
     .build().await?;
 let phone = lab.add_device("phone").uplink(carrier.id()).build().await?;
 
@@ -381,6 +381,6 @@ for _ in 0..3 {
 | PMTU blackhole | `.block_icmp_frag_needed()` on router builder |
 | IPv6 dual-stack | `.ip_support(IpSupport::DualStack)` |
 | IPv6 only | `.ip_support(IpSupport::V6Only)` |
-| IPv6-only + NAT64 | `.preset(RouterPreset::MobileV6)` or `.nat_v6(NatV6Mode::Nat64)` |
-| Mobile carrier (CGNAT) | `.preset(RouterPreset::Mobile)` |
-| Mobile carrier (v6-only) | `.preset(RouterPreset::MobileV6)` |
+| IPv6-only + NAT64 | `.preset(RouterPreset::IspV6)` or `.nat_v6(NatV6Mode::Nat64)` |
+| Mobile carrier (CGNAT) | `.preset(RouterPreset::IspCgnat)` |
+| Mobile carrier (v6-only) | `.preset(RouterPreset::IspV6)` |

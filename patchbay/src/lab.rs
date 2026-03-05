@@ -330,34 +330,29 @@ pub enum Ipv6ProvisioningMode {
     RaDriven,
 }
 
-/// Deployment-oriented IPv6 behavior profile for a lab.
+/// IPv6 behavior profile for a lab, controlling DAD and route provisioning.
 ///
-/// Several variants currently map to the same `(DadMode, ProvisioningMode)` tuple.
-/// They exist as distinct variants so that `RouterPreset::recommended_ipv6_profile()`
-/// can select the right profile per deployment context. Future work will diverge
-/// their behavior (e.g. different RA intervals, prefix delegation, SLAAC vs DHCPv6).
+/// `Deterministic` keeps tests fast and reproducible by disabling DAD and
+/// wiring routes statically. `Realistic` enables DAD and RA/RS-driven
+/// provisioning, matching how real networks operate. Use `Realistic` when
+/// your application depends on RA timing, default-route installation
+/// order, or link-local gateway behavior.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Ipv6Profile {
-    /// Deterministic test profile: DAD off and static v6 route wiring.
-    LabDeterministic,
-    /// Production-like baseline: DAD on and RA/RS-driven route learning.
-    ProductionLike,
-    /// Consumer home baseline: DAD on and RA/RS-driven route learning.
-    ConsumerHome,
-    /// Mobile carrier baseline: DAD on and RA/RS-driven route learning.
-    MobileCarrier,
-    /// Enterprise baseline: DAD on and RA/RS-driven route learning.
-    Enterprise,
+    /// DAD disabled, static route wiring. Fast and reproducible for tests.
+    Deterministic,
+    /// DAD enabled, RA/RS-driven route provisioning. Matches real-world
+    /// network behavior where routers announce prefixes and hosts learn
+    /// routes through Router Advertisements.
+    Realistic,
 }
 
 impl Ipv6Profile {
     fn modes(self) -> (Ipv6DadMode, Ipv6ProvisioningMode) {
         match self {
-            Self::LabDeterministic => (Ipv6DadMode::Disabled, Ipv6ProvisioningMode::Static),
-            Self::ProductionLike | Self::ConsumerHome | Self::MobileCarrier | Self::Enterprise => {
-                (Ipv6DadMode::Enabled, Ipv6ProvisioningMode::RaDriven)
-            }
+            Self::Deterministic => (Ipv6DadMode::Disabled, Ipv6ProvisioningMode::Static),
+            Self::Realistic => (Ipv6DadMode::Enabled, Ipv6ProvisioningMode::RaDriven),
         }
     }
 }
@@ -1476,18 +1471,27 @@ impl Lab {
 // RouterPreset
 // ─────────────────────────────────────────────
 
-/// Common real-world router configurations.
+/// Pre-built router configurations that match common real-world deployments.
 ///
-/// Each preset sets NAT, firewall, IP support, and address pool to match
-/// a real-world deployment pattern. Individual knobs (`.nat()`, `.firewall()`,
-/// etc.) can override any preset value.
+/// Each preset configures NAT mode, firewall policy, IP address family, and
+/// downstream address pool as a single unit. Methods called after `.preset()`
+/// on the [`RouterBuilder`] override the preset's defaults, so you can start
+/// from a known configuration and adjust only what your test needs.
+///
+/// The ISP presets (`IspCgnat`, `IspV6`) cover both fixed-line and mobile
+/// carriers. Most mobile networks (T-Mobile, Vodafone, AT&T) use the same
+/// CGNAT or NAT64 infrastructure as their fixed-line counterparts, and
+/// real-world measurements confirm that hole-punching succeeds on the
+/// majority of them.
 ///
 /// # Example
-/// ```ignore
-/// // One-liner for common case:
-/// let home = lab.add_router("home").preset(RouterPreset::Home).build().await?;
 ///
-/// // Override one knob:
+/// ```ignore
+/// let home = lab.add_router("home")
+///     .preset(RouterPreset::Home)
+///     .build().await?;
+///
+/// // Override NAT while keeping the rest of the Home preset:
 /// let home = lab.add_router("home")
 ///     .preset(RouterPreset::Home)
 ///     .nat(Nat::FullCone)
@@ -1495,66 +1499,96 @@ impl Lab {
 /// ```
 #[derive(Clone, Copy, Debug)]
 pub enum RouterPreset {
-    /// Home router (FritzBox, UniFi, TP-Link, ASUS, OpenWRT).
+    /// Residential home router.
     ///
-    /// - IPv4: NAT (EIM+APDF, port-preserving)
-    /// - IPv6: No NAT, public GUA
-    /// - Firewall: Block unsolicited inbound (RFC 6092)
-    /// - Dual-stack
+    /// Models the standard consumer setup: a FritzBox, UniFi, TP-Link, or
+    /// similar device where every LAN host gets an RFC 1918 IPv4 address
+    /// behind NAT and a ULA IPv6 address behind a stateful firewall. The
+    /// NAT is endpoint-independent mapping with address-and-port-dependent
+    /// filtering (EIM+APDF), which preserves the external port and allows
+    /// UDP hole-punching. The firewall blocks unsolicited inbound
+    /// connections on both address families (RFC 6092 CE router behavior).
+    ///
+    /// Dual-stack, private downstream pool.
     Home,
 
-    /// ISP transit / datacenter / cloud VM / public server.
+    /// Public-IP router with no NAT or firewall.
     ///
-    /// - IPv4: No NAT, public addressing
-    /// - IPv6: No NAT, public GUA
-    /// - Firewall: None
-    /// - Dual-stack
+    /// Downstream devices receive globally routable addresses on both
+    /// address families. Use this for datacenter switches, ISP handoff
+    /// points, VPS hosts, and any topology where devices need direct
+    /// reachability without translation or filtering.
     ///
-    /// Use for relay servers, STUN servers, or any host with a public IP.
-    Datacenter,
+    /// Dual-stack, public downstream pool.
+    Public,
 
-    /// ISP transit — IPv4 only.
+    /// IPv4-only variant of [`Public`](Self::Public).
     ///
-    /// Same as [`Datacenter`](Self::Datacenter) but without IPv6.
-    IspV4,
+    /// Same behavior — no NAT, no firewall, public downstream — but
+    /// without IPv6. Models legacy ISPs and v4-only VPS providers.
+    ///
+    /// V4-only, public downstream pool.
+    PublicV4,
 
-    /// Mobile carrier (T-Mobile, Jio, Vodafone, O2).
+    /// ISP or mobile carrier with carrier-grade NAT.
     ///
-    /// - IPv4: CGNAT
-    /// - IPv6: No NAT, public GUA
-    /// - Firewall: Block inbound
-    /// - Dual-stack
-    Mobile,
+    /// Models any provider that shares a pool of public IPv4 addresses
+    /// across subscribers via CGNAT: budget fiber, fixed-wireless,
+    /// satellite (Starlink), and dual-stack mobile carriers (Vodafone, O2,
+    /// AT&T). The CGNAT uses endpoint-independent mapping and filtering
+    /// per RFC 6888, so hole-punching works — inbound packets reach
+    /// mapped ports. No additional firewall beyond the NAT. IPv6 addresses
+    /// are globally routable.
+    ///
+    /// Dual-stack, private downstream pool.
+    IspCgnat,
 
-    /// IPv6-only mobile carrier with NAT64 (T-Mobile US, NTT Docomo).
+    /// IPv6-only ISP or mobile carrier with NAT64.
     ///
-    /// - IPv4: None (NAT64 provides v4 reachability via `64:ff9b::/96`)
-    /// - IPv6: NAT64 (userspace SIIT translator + nftables masquerade)
-    /// - Firewall: Block inbound
-    /// - IPv6-only
-    MobileV6,
+    /// Models T-Mobile US, Jio, NTT Docomo, and other providers that run
+    /// pure IPv6 networks. The device has no IPv4 address. A userspace
+    /// SIIT translator on the router converts between IPv6 and IPv4 via
+    /// the well-known prefix `64:ff9b::/96`, and nftables masquerade
+    /// handles port mapping on the IPv4 side. A `BlockInbound` firewall
+    /// prevents unsolicited connections.
+    ///
+    /// V6-only, public downstream pool.
+    IspV6,
 
-    /// Enterprise / corporate network (Cisco ASA, Palo Alto, Fortinet).
+    /// Enterprise gateway with restrictive outbound filtering.
     ///
-    /// - IPv4: Symmetric NAT (EDM+APDF)
-    /// - IPv6: No NAT, public GUA
-    /// - Firewall: Block inbound + restrict outbound (TCP 80,443 + UDP 53)
-    /// - Dual-stack
+    /// Models a Cisco ASA, Palo Alto, or Fortinet appliance. Symmetric NAT
+    /// (endpoint-dependent mapping) makes STUN useless — the external port
+    /// changes with every new destination, so the reflexive address learned
+    /// from a STUN server does not work for other peers. The `Corporate`
+    /// firewall restricts outbound traffic to TCP 80/443 and UDP 53,
+    /// blocking all other UDP. Applications behind this preset must fall
+    /// back to TURN-over-TLS on port 443.
+    ///
+    /// Dual-stack, private downstream pool.
     Corporate,
 
-    /// Hotel / airport / guest WiFi (after captive portal auth).
+    /// Hotel, airport, or conference guest WiFi.
     ///
-    /// - IPv4: Symmetric NAT
-    /// - Firewall: Block inbound + block non-web UDP
-    /// - IPv4 only (most guest networks lack IPv6)
+    /// Symmetric NAT with a `CaptivePortal` firewall that allows TCP on
+    /// any port but blocks all non-DNS UDP. This kills QUIC and prevents
+    /// direct P2P, but TURN-over-TCP on non-standard ports can still work
+    /// — unlike the stricter `Corporate` preset. IPv4-only, because most
+    /// guest networks still do not offer IPv6.
+    ///
+    /// V4-only, private downstream pool.
     Hotel,
 
-    /// Cloud NAT gateway (AWS, Azure, GCP).
+    /// Cloud NAT gateway.
     ///
-    /// - IPv4: Symmetric NAT with longer timeouts
-    /// - IPv6: No NAT, public GUA
-    /// - Firewall: None
-    /// - Dual-stack
+    /// Models AWS NAT Gateway, Azure NAT Gateway, and GCP Cloud NAT. VPC
+    /// instances get private addresses, and the NAT gateway handles
+    /// public-facing translation with symmetric mapping. Timeouts are
+    /// longer than residential NAT (350 seconds for UDP) to accommodate
+    /// long-lived cloud workloads. No firewall — security groups and
+    /// NACLs are a separate concern in cloud environments.
+    ///
+    /// Dual-stack, private downstream pool.
     Cloud,
 }
 
@@ -1562,25 +1596,24 @@ impl RouterPreset {
     fn nat(self) -> Nat {
         match self {
             Self::Home => Nat::Home,
-            Self::Datacenter | Self::IspV4 | Self::MobileV6 => Nat::None,
-            Self::Mobile => Nat::Cgnat,
-            Self::Corporate => Nat::Corporate,
-            Self::Hotel => Nat::Corporate,
+            Self::Public | Self::PublicV4 | Self::IspV6 => Nat::None,
+            Self::IspCgnat => Nat::Cgnat,
+            Self::Corporate | Self::Hotel => Nat::Corporate,
             Self::Cloud => Nat::CloudNat,
         }
     }
 
     fn nat_v6(self) -> NatV6Mode {
         match self {
-            Self::MobileV6 => NatV6Mode::Nat64,
+            Self::IspV6 => NatV6Mode::Nat64,
             _ => NatV6Mode::None,
         }
     }
 
     fn firewall(self) -> Firewall {
         match self {
-            Self::Home | Self::Mobile | Self::MobileV6 => Firewall::BlockInbound,
-            Self::Datacenter | Self::IspV4 | Self::Cloud => Firewall::None,
+            Self::Home | Self::IspV6 => Firewall::BlockInbound,
+            Self::Public | Self::PublicV4 | Self::IspCgnat | Self::Cloud => Firewall::None,
             Self::Corporate => Firewall::Corporate,
             Self::Hotel => Firewall::CaptivePortal,
         }
@@ -1588,28 +1621,26 @@ impl RouterPreset {
 
     fn ip_support(self) -> IpSupport {
         match self {
-            Self::Hotel | Self::IspV4 => IpSupport::V4Only,
-            Self::MobileV6 => IpSupport::V6Only,
+            Self::PublicV4 | Self::Hotel => IpSupport::V4Only,
+            Self::IspV6 => IpSupport::V6Only,
             _ => IpSupport::DualStack,
         }
     }
 
     fn downstream_pool(self) -> DownstreamPool {
         match self {
-            Self::Home | Self::Hotel => DownstreamPool::Private,
-            _ => DownstreamPool::Public,
+            Self::Public | Self::PublicV4 | Self::IspV6 => DownstreamPool::Public,
+            _ => DownstreamPool::Private,
         }
     }
 
-    /// Returns the recommended lab-level IPv6 profile for this router preset.
+    /// Returns the recommended IPv6 profile for this preset.
+    ///
+    /// All presets return [`Ipv6Profile::Realistic`]. Use
+    /// [`LabOpts::ipv6_profile`] with [`Ipv6Profile::Deterministic`] to
+    /// override for fast, reproducible tests.
     pub fn recommended_ipv6_profile(self) -> Ipv6Profile {
-        match self {
-            Self::Home => Ipv6Profile::ConsumerHome,
-            Self::Mobile | Self::MobileV6 => Ipv6Profile::MobileCarrier,
-            Self::Corporate | Self::Cloud | Self::Datacenter => Ipv6Profile::Enterprise,
-            // These presets are primarily v4-focused and do not benefit from RA-driven v6 provisioning.
-            Self::Hotel | Self::IspV4 => Ipv6Profile::LabDeterministic,
-        }
+        Ipv6Profile::Realistic
     }
 }
 

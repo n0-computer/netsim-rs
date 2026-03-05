@@ -11,7 +11,7 @@ async fn preset_home() -> Result<()> {
 
     let dc = lab
         .add_router("dc")
-        .ip_support(IpSupport::DualStack)
+        .preset(RouterPreset::Public)
         .build()
         .await?;
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -50,16 +50,16 @@ async fn preset_home() -> Result<()> {
     Ok(())
 }
 
-/// RouterPreset::Datacenter builds a dual-stack router with no NAT and no firewall.
+/// RouterPreset::Public builds a dual-stack router with no NAT and no firewall.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn preset_datacenter() -> Result<()> {
+async fn preset_public() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
     let dc = lab
         .add_router("dc")
-        .preset(RouterPreset::Datacenter)
+        .preset(RouterPreset::Public)
         .build()
         .await?;
 
@@ -69,54 +69,16 @@ async fn preset_datacenter() -> Result<()> {
         .build()
         .await?;
 
-    // Datacenter preset: dual-stack, no NAT.
     assert_eq!(dc.ip_support(), Some(IpSupport::DualStack));
     assert!(dev.ip().is_some(), "device should have v4");
     assert!(dev.ip6().is_some(), "device should have v6");
 
-    // Device should have public IP (Nat::None → DownstreamPool::Public).
+    // No NAT → public IP.
     let dev_ip = dev.ip().unwrap();
     assert!(
         !dev_ip.is_private(),
-        "datacenter device should have public v4, got {dev_ip}"
+        "public device should have public v4, got {dev_ip}"
     );
-
-    Ok(())
-}
-
-/// RouterPreset::Mobile builds a dual-stack CGNAT router.
-#[tokio::test(flavor = "current_thread")]
-#[traced_test]
-async fn preset_mobile() -> Result<()> {
-    check_caps()?;
-    let lab = Lab::new().await?;
-
-    let dc = lab.add_router("dc").build().await?;
-    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
-
-    let carrier = lab
-        .add_router("carrier")
-        .preset(RouterPreset::Mobile)
-        .build()
-        .await?;
-
-    let phone = lab
-        .add_device("phone")
-        .iface("eth0", carrier.id(), None)
-        .build()
-        .await?;
-
-    // Mobile: dual-stack with CGNAT.
-    assert_eq!(carrier.ip_support(), Some(IpSupport::DualStack));
-    assert!(phone.ip().is_some(), "should have v4");
-    assert!(phone.ip6().is_some(), "should have v6");
-
-    // Outbound should work.
-    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9222);
-    let _r = dc.spawn_reflector(reflector).await?;
-
-    let rtt = phone.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
-    assert!(rtt < Duration::from_millis(500));
 
     Ok(())
 }
@@ -128,7 +90,11 @@ async fn preset_corporate_blocks_udp() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
-    let dc = lab.add_router("dc").build().await?;
+    let dc = lab
+        .add_router("dc")
+        .preset(RouterPreset::Public)
+        .build()
+        .await?;
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
     let corp = lab
@@ -171,7 +137,11 @@ async fn preset_override() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
-    let dc = lab.add_router("dc").build().await?;
+    let dc = lab
+        .add_router("dc")
+        .preset(RouterPreset::Public)
+        .build()
+        .await?;
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
     // Home preset + FullCone NAT override.
@@ -201,26 +171,26 @@ async fn preset_override() -> Result<()> {
     Ok(())
 }
 
-/// Router presets expose sane default IPv6 deployment profile recommendations.
+/// All presets recommend Ipv6Profile::Realistic.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
 async fn preset_recommended_ipv6_profiles() -> Result<()> {
-    assert_eq!(
-        RouterPreset::Home.recommended_ipv6_profile(),
-        Ipv6Profile::ConsumerHome
-    );
-    assert_eq!(
-        RouterPreset::Mobile.recommended_ipv6_profile(),
-        Ipv6Profile::MobileCarrier
-    );
-    assert_eq!(
-        RouterPreset::Corporate.recommended_ipv6_profile(),
-        Ipv6Profile::Enterprise
-    );
-    assert_eq!(
-        RouterPreset::Hotel.recommended_ipv6_profile(),
-        Ipv6Profile::LabDeterministic
-    );
+    for preset in [
+        RouterPreset::Home,
+        RouterPreset::Public,
+        RouterPreset::PublicV4,
+        RouterPreset::IspCgnat,
+        RouterPreset::IspV6,
+        RouterPreset::Corporate,
+        RouterPreset::Hotel,
+        RouterPreset::Cloud,
+    ] {
+        assert_eq!(
+            preset.recommended_ipv6_profile(),
+            Ipv6Profile::Realistic,
+            "{preset:?} should recommend Realistic"
+        );
+    }
 
     Ok(())
 }
@@ -232,10 +202,9 @@ async fn public_v6_pool_is_gua() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
-    // Datacenter preset uses DownstreamPool::Public.
     let dc = lab
         .add_router("dc")
-        .preset(RouterPreset::Datacenter)
+        .preset(RouterPreset::Public)
         .build()
         .await?;
 
@@ -286,7 +255,6 @@ async fn private_v6_pool_is_ula() -> Result<()> {
 
     let v6 = dev.ip6().context("no v6 address")?;
     let segs = v6.segments();
-    // Private ULA pool is fd10::/48.
     assert_eq!(
         segs[0], 0xfd10,
         "home device v6 should be ULA fd10::, got {v6}"
@@ -321,16 +289,16 @@ async fn preset_hotel_v4_only() -> Result<()> {
     Ok(())
 }
 
-/// RouterPreset::IspV4 builds v4-only with no NAT.
+/// RouterPreset::PublicV4 builds v4-only with no NAT and public IPs.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn preset_isp_v4() -> Result<()> {
+async fn preset_public_v4() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
     let isp = lab
         .add_router("isp")
-        .preset(RouterPreset::IspV4)
+        .preset(RouterPreset::PublicV4)
         .build()
         .await?;
 
@@ -341,30 +309,76 @@ async fn preset_isp_v4() -> Result<()> {
         .await?;
 
     assert_eq!(isp.ip_support(), Some(IpSupport::V4Only));
-    // No NAT → public IP.
     let dev_ip = dev.ip().unwrap();
     assert!(
         !dev_ip.is_private(),
-        "IspV4 device should have public IP, got {dev_ip}"
+        "PublicV4 device should have public IP, got {dev_ip}"
     );
-    assert!(dev.ip6().is_none(), "IspV4 should have no v6");
+    assert!(dev.ip6().is_none(), "PublicV4 should have no v6");
 
     Ok(())
 }
 
-/// RouterPreset::MobileV6 builds an IPv6-only carrier with NAT64.
+/// RouterPreset::IspCgnat builds dual-stack with CGNAT and private downstream.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn preset_mobile_v6() -> Result<()> {
+async fn preset_isp_cgnat() -> Result<()> {
     check_caps()?;
     let lab = Lab::new().await?;
 
-    let dc = lab.add_router("dc").build().await?;
+    let dc = lab
+        .add_router("dc")
+        .preset(RouterPreset::Public)
+        .build()
+        .await?;
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+
+    let isp = lab
+        .add_router("isp")
+        .preset(RouterPreset::IspCgnat)
+        .build()
+        .await?;
+
+    let dev = lab
+        .add_device("sub")
+        .iface("eth0", isp.id(), None)
+        .build()
+        .await?;
+
+    assert_eq!(isp.ip_support(), Some(IpSupport::DualStack));
+    let dev_ip = dev.ip().unwrap();
+    assert!(
+        dev_ip.is_private(),
+        "IspCgnat device should have private v4, got {dev_ip}"
+    );
+
+    // Outbound should work through CGNAT.
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9226);
+    let _r = dc.spawn_reflector(reflector).await?;
+
+    let rtt = dev.run_sync(move || test_utils::udp_rtt_sync(reflector))?;
+    assert!(rtt < Duration::from_millis(500));
+
+    Ok(())
+}
+
+/// RouterPreset::IspV6 builds an IPv6-only carrier with NAT64.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn preset_isp_v6() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+
+    let dc = lab
+        .add_router("dc")
+        .preset(RouterPreset::Public)
+        .build()
+        .await?;
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
     let carrier = lab
         .add_router("carrier")
-        .preset(RouterPreset::MobileV6)
+        .preset(RouterPreset::IspV6)
         .build()
         .await?;
 
@@ -374,7 +388,7 @@ async fn preset_mobile_v6() -> Result<()> {
         .build()
         .await?;
 
-    // MobileV6: IPv6-only.
+    // IspV6: IPv6-only with public GUA.
     assert_eq!(carrier.ip_support(), Some(IpSupport::V6Only));
     assert!(phone.ip6().is_some(), "should have v6");
 

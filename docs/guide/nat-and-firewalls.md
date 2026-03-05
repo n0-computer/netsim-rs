@@ -120,7 +120,7 @@ prefix, the translator extracts the embedded IPv4 address, rewrites the
 headers, and forwards the packet as IPv4. Return traffic is translated
 back to IPv6.
 
-You can configure NAT64 explicitly or use the `MobileV6` preset, which
+You can configure NAT64 explicitly or use the `IspV6` preset, which
 sets up a V6Only router with NAT64 and an inbound firewall, matching the
 configuration of a typical mobile carrier gateway:
 
@@ -130,16 +130,16 @@ use patchbay::{IpSupport, NatV6Mode, Nat, RouterPreset};
 // Explicit configuration:
 let carrier = lab
     .add_router("carrier")
-    .ip_support(IpSupport::DualStack)
-    .nat(Nat::Home)
+    .ip_support(IpSupport::V6Only)
     .nat_v6(NatV6Mode::Nat64)
+    .firewall(Firewall::BlockInbound)
     .build()
     .await?;
 
 // Or equivalently, using the preset:
 let carrier = lab
     .add_router("carrier")
-    .preset(RouterPreset::MobileV6)
+    .preset(RouterPreset::IspV6)
     .build()
     .await?;
 ```
