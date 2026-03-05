@@ -115,6 +115,10 @@ async fn simple_lab_for_e2e() -> Result<()> {
             state_content.contains("\"client\""),
             "state.json missing client device"
         );
+        assert!(
+            state_content.contains("\"stopped\""),
+            "state.json status should be 'stopped' after lab drop"
+        );
 
         // Verify per-namespace tracing files (flat: {kind}.{name}.{ext}).
         // Files are created lazily on first write — only namespaces that actually log

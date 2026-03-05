@@ -300,7 +300,7 @@ pub struct LabState {
     pub lab_prefix: String,
     /// Human-readable label.
     pub label: Option<String>,
-    /// Lab status (`"running"`, `"stopping"`).
+    /// Lab status (`"running"` or `"stopped"`).
     pub status: String,
     /// Lab creation timestamp.
     pub created_at: Option<DateTime<Utc>>,
@@ -497,7 +497,7 @@ impl LabState {
                 }
             }
             LabEventKind::LabStopping => {
-                self.status = "stopping".into();
+                self.status = "stopped".into();
             }
             LabEventKind::IxCreated {
                 bridge,

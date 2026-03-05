@@ -22,18 +22,19 @@ function JsonValue({ value, depth, defaultDepth }: { value: unknown; depth: numb
 function JsonArray({ items, depth, defaultDepth }: { items: unknown[]; depth: number; defaultDepth: number }) {
   const [open, setOpen] = useState(depth < defaultDepth)
   if (items.length === 0) return <span className="jt-brace">[]</span>
+  const toggle = () => setOpen((v) => !v)
   if (!open) {
     return (
-      <span className="jt-toggle" onClick={() => setOpen(true)}>
+      <span className="jt-toggle" onClick={toggle}>
         <span className="jt-brace">[</span>
-        <span className="jt-ellipsis">{items.length} items</span>
+        <span className="jt-ellipsis">{items.length} {items.length === 1 ? 'item' : 'items'}</span>
         <span className="jt-brace">]</span>
       </span>
     )
   }
   return (
     <span>
-      <span className="jt-toggle jt-brace" onClick={() => setOpen(false)}>[</span>
+      <span className="jt-toggle jt-brace" onClick={toggle}>[</span>
       <div className="jt-indent">
         {items.map((item, i) => (
           <div key={i} className="jt-row">
@@ -51,22 +52,23 @@ function JsonObject({ obj, depth, defaultDepth }: { obj: Record<string, unknown>
   const [open, setOpen] = useState(depth < defaultDepth)
   const entries = Object.entries(obj)
   if (entries.length === 0) return <span className="jt-brace">{'{}'}</span>
+  const toggle = () => setOpen((v) => !v)
   if (!open) {
     return (
-      <span className="jt-toggle" onClick={() => setOpen(true)}>
+      <span className="jt-toggle" onClick={toggle}>
         <span className="jt-brace">{'{'}</span>
-        <span className="jt-ellipsis">{entries.length} fields</span>
+        <span className="jt-ellipsis">{entries.length} {entries.length === 1 ? 'field' : 'fields'}</span>
         <span className="jt-brace">{'}'}</span>
       </span>
     )
   }
   return (
     <span>
-      <span className="jt-toggle jt-brace" onClick={() => setOpen(false)}>{'{'}</span>
+      <span className="jt-toggle jt-brace" onClick={toggle}>{'{'}</span>
       <div className="jt-indent">
         {entries.map(([key, val], i) => (
           <div key={key} className="jt-row">
-            <span className="jt-key">"{key}"</span>
+            <span className="jt-key jt-toggle" onClick={toggle}>"{key}"</span>
             <span className="jt-colon">: </span>
             <JsonValue value={val} depth={depth + 1} defaultDepth={defaultDepth} />
             {i < entries.length - 1 && <span className="jt-comma">,</span>}

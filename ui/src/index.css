@@ -518,13 +518,7 @@ tbody td {
 .timeline-detail-fields {
     color: #e6edf3;
     font-size: 13px;
-    margin-bottom: 8px;
     line-height: 1.5;
-}
-.timeline-detail-raw {
-    color: var(--text-muted);
-    font-size: 11px;
-    line-height: 1.4;
 }
 
 /* ── Qlog tab ── */
@@ -639,6 +633,10 @@ tbody td {
 .kv-empty {
     color: var(--text-muted);
     font-style: italic;
+}
+.kv-pairs-vertical .kv-pair {
+    display: block;
+    line-height: 1.6;
 }
 
 /* ── Events / JSONL table ── */

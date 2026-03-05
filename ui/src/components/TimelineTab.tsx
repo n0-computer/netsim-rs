@@ -258,8 +258,7 @@ export default function TimelineTab({ base, logs, labEvents, onJumpToLog }: Prop
               )}
             </div>
             <div className="timeline-detail-body">
-              <div className="timeline-detail-fields"><KvPairs pairs={selected.fieldPairs} /></div>
-              <div className="timeline-detail-raw">{selected.details}</div>
+              <div className="timeline-detail-fields"><KvPairs pairs={selected.fieldPairs} vertical /></div>
             </div>
           </>
         ) : (

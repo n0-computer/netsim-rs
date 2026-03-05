@@ -567,6 +567,7 @@ pub(crate) struct LabInner {
 
 impl Drop for LabInner {
     fn drop(&mut self) {
+        self.emit(crate::event::LabEventKind::LabStopping);
         self.cancel.cancel();
     }
 }
