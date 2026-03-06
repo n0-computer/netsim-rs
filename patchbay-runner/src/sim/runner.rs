@@ -465,15 +465,7 @@ fn expand_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
         }
         if input.is_dir() {
             let mut dir_sims = Vec::new();
-            for ent in std::fs::read_dir(input)
-                .with_context(|| format!("read sim dir {}", input.display()))?
-            {
-                let ent = ent?;
-                let path = ent.path();
-                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("toml") {
-                    dir_sims.push(path);
-                }
-            }
+            collect_toml_files(input, &mut dir_sims)?;
             dir_sims.sort();
             sims.extend(dir_sims);
             continue;
@@ -483,6 +475,22 @@ fn expand_sim_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
     sims.sort();
     sims.dedup();
     Ok(sims)
+}
+
+/// Recursively collect `*.toml` files from a directory.
+fn collect_toml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for ent in
+        std::fs::read_dir(dir).with_context(|| format!("read sim dir {}", dir.display()))?
+    {
+        let ent = ent?;
+        let path = ent.path();
+        if path.is_dir() {
+            collect_toml_files(&path, out)?;
+        } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 async fn assemble_binaries_for_run(

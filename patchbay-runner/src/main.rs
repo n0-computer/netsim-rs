@@ -3,7 +3,10 @@
 mod sim;
 
 use std::{
-    collections::HashMap, path::PathBuf, process::Command as ProcessCommand, time::Duration,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+    time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -163,6 +166,7 @@ async fn tokio_main() -> Result<()> {
                 Some(p) => p,
                 None => std::env::current_dir().context("resolve current directory")?,
             };
+            let sims = resolve_sim_args(sims, &project_root)?;
             let res = sim::run_sims(
                 sims,
                 work_dir,
@@ -192,6 +196,7 @@ async fn tokio_main() -> Result<()> {
                 Some(p) => p,
                 None => std::env::current_dir().context("resolve current directory")?,
             };
+            let sims = resolve_sim_args(sims, &project_root)?;
             sim::prepare_sims(
                 sims,
                 work_dir,
@@ -227,6 +232,43 @@ async fn tokio_main() -> Result<()> {
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
     }
+}
+
+/// When no sim paths are given on the CLI, look for `patchbay.toml` or
+/// `.patchbay.toml` in the project root and use its `simulations` path.
+fn resolve_sim_args(sims: Vec<PathBuf>, project_root: &Path) -> Result<Vec<PathBuf>> {
+    if !sims.is_empty() {
+        return Ok(sims);
+    }
+    let candidates = [
+        project_root.join("patchbay.toml"),
+        project_root.join(".patchbay.toml"),
+    ];
+    for path in &candidates {
+        if path.is_file() {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("read {}", path.display()))?;
+            let cfg: PatchbayConfig = toml::from_str(&text)
+                .with_context(|| format!("parse {}", path.display()))?;
+            let sims_dir = project_root.join(&cfg.simulations);
+            if !sims_dir.exists() {
+                bail!(
+                    "{}: simulations path '{}' does not exist",
+                    path.display(),
+                    sims_dir.display()
+                );
+            }
+            println!("patchbay: using simulations from {}", sims_dir.display());
+            return Ok(vec![sims_dir]);
+        }
+    }
+    bail!("no sim files specified and no patchbay.toml found in {}", project_root.display())
+}
+
+#[derive(Deserialize)]
+struct PatchbayConfig {
+    /// Path to sims directory (relative to project root).
+    simulations: String,
 }
 
 /// Resolve `testdir-current` inside the cargo target directory.
