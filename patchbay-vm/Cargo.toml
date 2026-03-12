@@ -11,8 +11,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-dirs = "5"
-flate2 = "1"
+dirs = "6"
 patchbay-utils = { path = "../patchbay-utils" }
 patchbay-server = { path = "../patchbay-server" }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
@@ -21,5 +20,4 @@ open = "5"
 nix = { version = "0.30", features = ["signal", "process"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tar = "0.4"
-toml = "0.8"
+toml = "1.0"
