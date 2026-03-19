@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { fetchRuns, subscribeRuns } from './api'
 import type { RunInfo } from './api'
 
@@ -32,9 +32,11 @@ function groupByInvocation(runs: RunInfo[]): { groups: InvocationGroup[]; ungrou
 
 export default function RunsIndex() {
   const [runs, setRuns] = useState<RunInfo[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const navigate = useNavigate()
 
   useEffect(() => {
-    const refresh = () => fetchRuns().then(setRuns)
+    const refresh = () => fetchRuns().then((r) => { setRuns(r); setLoaded(true) })
     refresh()
     const es = subscribeRuns(refresh)
     return () => es.close()
@@ -42,10 +44,21 @@ export default function RunsIndex() {
 
   const { groups, ungrouped } = groupByInvocation(runs)
 
+  // Auto-navigate: if there's only one run, go directly to it.
+  // If there's only one invocation group, go to it.
+  useEffect(() => {
+    if (!loaded || runs.length === 0) return
+    if (runs.length === 1) {
+      navigate(`/run/${runs[0].name}`, { replace: true })
+    } else if (groups.length === 1 && ungrouped.length === 0) {
+      navigate(`/inv/${groups[0].invocation}`, { replace: true })
+    }
+  }, [loaded, runs, groups, ungrouped, navigate])
+
   return (
     <div className="runs-index">
       <h1>patchbay runs</h1>
-      {runs.length === 0 && <div className="empty">No runs found.</div>}
+      {runs.length === 0 && loaded && <div className="empty">No runs found.</div>}
       {groups.map((g) => (
         <div key={g.invocation} className="run-group">
           <div className="run-group-header">

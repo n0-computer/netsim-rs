@@ -291,12 +291,8 @@ Add this to your workflow **after** the test step:
           exit 1
         fi
 
-        FIRST_RUN=$(echo "$BODY" | jq -r '.first_run // empty')
-        if [ -n "$FIRST_RUN" ]; then
-          VIEW_URL="$PATCHBAY_URL/#/run/$FIRST_RUN"
-        else
-          VIEW_URL="$PATCHBAY_URL/#/"
-        fi
+        INVOCATION=$(echo "$BODY" | jq -r .invocation)
+        VIEW_URL="$PATCHBAY_URL/#/inv/$INVOCATION"
         echo "PATCHBAY_VIEW_URL=$VIEW_URL" >> "$GITHUB_ENV"
         echo "Results uploaded: $VIEW_URL"
 

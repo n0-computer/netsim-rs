@@ -725,6 +725,18 @@ tbody td {
     padding: 16px;
 }
 
+/* ── Sims list (invocation view) ── */
+.sims-list {
+    padding: 1.5rem;
+    max-width: 700px;
+}
+.sims-list h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin-bottom: 1rem;
+    color: var(--text-muted);
+}
+
 /* ── Runs index ── */
 .runs-index {
     max-width: 800px;

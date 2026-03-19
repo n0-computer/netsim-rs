@@ -822,36 +822,35 @@ struct RunIndexEntry {
 }
 
 /// Discover pushed runs for the index page.
-/// Structure: run_dir/{project}/{date}-{uuid}/...
+/// Structure: run_dir/{project}-{date}-{uuid}/...
 fn discover_pushed_runs(run_dir: &Path) -> Vec<RunIndexEntry> {
     let mut entries = Vec::new();
-    let Ok(projects) = fs::read_dir(run_dir) else {
+    let Ok(dirs) = fs::read_dir(run_dir) else {
         return entries;
     };
-    for project_entry in projects.flatten() {
-        if !project_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    for dir_entry in dirs.flatten() {
+        if !dir_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let project = project_entry.file_name().to_string_lossy().to_string();
-        let Ok(runs) = fs::read_dir(project_entry.path()) else {
-            continue;
-        };
-        for run_entry in runs.flatten() {
-            if !run_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let run_name = run_entry.file_name().to_string_lossy().to_string();
-            let path = format!("{project}/{run_name}");
-            let manifest = read_run_json(&run_entry.path());
-            // Extract date from dirname: YYYYMMDD_HHMMSS-uuid
-            let date = run_name.get(..15).map(|s| s.to_string());
-            entries.push(RunIndexEntry {
-                path,
-                project: project.clone(),
-                manifest,
-                date,
-            });
-        }
+        let name = dir_entry.file_name().to_string_lossy().to_string();
+        let manifest = read_run_json(&dir_entry.path());
+        // Extract project from dirname: {project}-YYYYMMDD_HHMMSS-{uuid}
+        // Find the date portion (first occurrence of YYYYMMDD_)
+        let project = name
+            .find(|c: char| c.is_ascii_digit())
+            .and_then(|i| if i > 0 { Some(name[..i - 1].to_string()) } else { None })
+            .or_else(|| manifest.as_ref().map(|m| m.project.clone()))
+            .unwrap_or_else(|| name.clone());
+        let date = name
+            .find(|c: char| c.is_ascii_digit())
+            .and_then(|i| name.get(i..i + 15))
+            .map(|s| s.to_string());
+        entries.push(RunIndexEntry {
+            path: name,
+            project,
+            manifest,
+            date,
+        });
     }
     entries.sort_by(|a, b| b.path.cmp(&a.path));
     entries
@@ -939,8 +938,11 @@ async fn runs_index_html(State(state): State<AppState>) -> Html<String> {
                 html.push_str(&format!(r#"<span class="date">{date}</span>"#));
             }
 
-            // Link to the UI runs index — the run will be listed there
-            html.push_str(r#" <a class="view-link" href="/">View &rarr;</a>"#);
+            // Deep-link into the UI invocation view
+            html.push_str(&format!(
+                r#" <a class="view-link" href="/#/inv/{}">View &rarr;</a>"#,
+                html_escape(&entry.path)
+            ));
 
             html.push_str("</div>\n");
         }
@@ -991,12 +993,12 @@ async fn push_run(
         );
     }
 
-    // Create run directory: {run_dir}/{project}/{date}-{uuid}
+    // Create run directory: {run_dir}/{project}-{date}-{uuid}
     let now = chrono::Utc::now();
     let date = now.format("%Y%m%d_%H%M%S").to_string();
     let uuid = uuid::Uuid::new_v4();
-    let run_name = format!("{date}-{uuid}");
-    let run_dir = push.run_dir.join(&project).join(&run_name);
+    let run_name = format!("{project}-{date}-{uuid}");
+    let run_dir = push.run_dir.join(&run_name);
 
     if let Err(e) = std::fs::create_dir_all(&run_dir) {
         return (
@@ -1020,24 +1022,12 @@ async fn push_run(
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
 
-    // Discover runs inside the extracted directory to provide a deep link.
-    // The run_dir is {project}/{date}-{uuid} inside the base. discover_runs
-    // works relative to state.base, so the run names will include the project prefix.
-    let first_run = discover_runs(&state.base)
-        .ok()
-        .and_then(|runs| {
-            runs.into_iter()
-                .find(|r| r.name.starts_with(&format!("{project}/{run_name}")))
-                .map(|r| r.name)
-        });
-
-    let view_path = format!("{project}/{run_name}");
+    // run_name is the invocation name (first path component for all sims inside)
     let result = serde_json::json!({
         "ok": true,
         "project": project,
         "run": run_name,
-        "path": view_path,
-        "first_run": first_run,
+        "invocation": run_name,
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())
@@ -1061,21 +1051,12 @@ fn enforce_retention(run_dir: &Path, max_bytes: u64) -> anyhow::Result<()> {
     // Collect all run dirs with their sizes, sorted oldest first
     let mut runs: Vec<(PathBuf, u64)> = Vec::new();
 
-    let projects = fs::read_dir(run_dir)?;
-    for project_entry in projects.flatten() {
-        if !project_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+    for entry in fs::read_dir(run_dir)?.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let Ok(run_entries) = fs::read_dir(project_entry.path()) else {
-            continue;
-        };
-        for run_entry in run_entries.flatten() {
-            if !run_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                continue;
-            }
-            let size = dir_size(&run_entry.path());
-            runs.push((run_entry.path(), size));
-        }
+        let size = dir_size(&entry.path());
+        runs.push((entry.path(), size));
     }
 
     // Sort oldest first (by path, which includes date)
@@ -1094,20 +1075,6 @@ fn enforce_retention(run_dir: &Path, max_bytes: u64) -> anyhow::Result<()> {
         tracing::info!("retention: removing {}", path.display());
         let _ = fs::remove_dir_all(path);
         to_free = to_free.saturating_sub(*size);
-    }
-
-    // Clean up empty project directories
-    if let Ok(projects) = fs::read_dir(run_dir) {
-        for entry in projects.flatten() {
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                let Ok(mut contents) = fs::read_dir(entry.path()) else {
-                    continue;
-                };
-                if contents.next().is_none() {
-                    let _ = fs::remove_dir(entry.path());
-                }
-            }
-        }
     }
 
     Ok(())

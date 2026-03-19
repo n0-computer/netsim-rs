@@ -29,7 +29,7 @@ import TimelineTab from './components/TimelineTab'
 import TopologyGraph from './components/TopologyGraph'
 import NodeDetail from './components/NodeDetail'
 
-type Tab = 'topology' | 'logs' | 'timeline' | 'perf'
+type Tab = 'topology' | 'logs' | 'timeline' | 'perf' | 'sims'
 
 // ── Selection model ────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
   const selectedRun = selection?.kind === 'run' ? selection.name : null
   const selectedInvocation = selection?.kind === 'invocation' ? selection.name : null
 
-  const [tab, setTab] = useState<Tab>('topology')
+  const [tab, setTab] = useState<Tab>(mode === 'inv' ? 'sims' : 'topology')
 
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
@@ -310,10 +310,15 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
   const isSimView = selection?.kind === 'run'
   const isInvocationView = selection?.kind === 'invocation'
 
+  // Runs belonging to the current invocation
+  const invocationRuns = isInvocationView
+    ? runs.filter((r) => r.invocation === selectedInvocation)
+    : []
+
   const availableTabs: Tab[] = isSimView
     ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : [])]
     : isInvocationView
-      ? ['perf']
+      ? ['sims', ...(combinedResults ? (['perf'] as Tab[]) : [])]
       : []
 
   // When available tabs change, ensure current tab is still valid.
@@ -426,6 +431,24 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
 
         {tab === 'timeline' && selectedRun && (
           <TimelineTab base={base} logs={logsForTabs} labEvents={labEvents} onJumpToLog={handleJumpToLog} />
+        )}
+
+        {tab === 'sims' && isInvocationView && (
+          <div className="sims-list">
+            <h2>{selectedInvocation}</h2>
+            {invocationRuns.length === 0 && <div className="empty">No sims found.</div>}
+            {invocationRuns.map((r) => (
+              <a
+                key={r.name}
+                href={`#/run/${r.name}`}
+                className="run-entry"
+                onClick={(e) => { e.preventDefault(); navigate(`/run/${r.name}`) }}
+              >
+                <span className="run-entry-label">{simLabel(r)}</span>
+                {r.status && <span className="run-entry-status">{r.status}</span>}
+              </a>
+            ))}
+          </div>
         )}
 
         {tab === 'perf' && isSimView && <PerfTab results={simResults} />}
