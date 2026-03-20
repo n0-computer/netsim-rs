@@ -111,6 +111,8 @@ test('multi-sim invocation shows grouped selector and combined results', async (
     await expect(combinedOption).toBeAttached()
     await selector.selectOption({ label: await combinedOption.innerText() })
 
+    // Switch to perf tab — invocation view defaults to sims list.
+    await page.getByRole('button', { name: 'perf' }).click()
     // Perf tab should show summary and detail tables with both sims.
     await expect(page.getByText('summary')).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('all steps')).toBeVisible()

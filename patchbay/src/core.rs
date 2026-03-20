@@ -563,11 +563,33 @@ pub(crate) struct LabInner {
     pub ipv6_dad_mode: Ipv6DadMode,
     /// IPv6 provisioning behavior.
     pub ipv6_provisioning_mode: Ipv6ProvisioningMode,
+    /// Writer task handle (kept alive until lab is dropped).
+    pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Test outcome flag shared with the writer and [`TestGuard`].
+    pub test_status: Arc<std::sync::atomic::AtomicU8>,
+    /// Accumulated lab state, shared with the background writer. Updated on
+    /// every event so that `Drop` can always write a complete `state.json`
+    /// synchronously — even if the async writer task never ran its shutdown path.
+    pub shared_state: Arc<std::sync::Mutex<crate::event::LabState>>,
 }
 
 impl Drop for LabInner {
     fn drop(&mut self) {
         self.cancel.cancel();
+
+        // Determine final status from the test guard.
+        let status = match self.test_status.load(Ordering::Acquire) {
+            crate::writer::STATUS_SUCCESS => "success",
+            crate::writer::STATUS_FAILED => "failed",
+            _ => "stopped",
+        };
+
+        // Write the final state.json synchronously. The shared_state mutex
+        // holds the fully accumulated LabState (updated by the writer on every
+        // event), so this works even if the async task never flushed.
+        if let Some(ref run_dir) = self.run_dir {
+            crate::writer::write_final_state(run_dir, &self.shared_state, status);
+        }
     }
 }
 

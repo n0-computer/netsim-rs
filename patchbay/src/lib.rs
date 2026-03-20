@@ -226,7 +226,7 @@ pub use lab::{
     FirewallConfig, FirewallConfigBuilder, IpSupport, Ipv6DadMode, Ipv6Profile,
     Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition, LinkLimits, Nat, NatConfig,
     NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir, Region, RegionLink, Router,
-    RouterBuilder, RouterIface, RouterPreset,
+    RouterBuilder, RouterIface, RouterPreset, TestGuard,
 };
 
 pub use crate::{

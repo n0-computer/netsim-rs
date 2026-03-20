@@ -20,4 +20,11 @@ export default function globalSetup() {
     stdio: 'inherit',
     timeout: 5 * 60_000,
   })
+
+  console.log('[setup] building patchbay-serve binary...')
+  execFileSync('cargo', ['build', '--bin', 'patchbay-serve'], {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    timeout: 3 * 60_000,
+  })
 }
