@@ -572,10 +572,23 @@ pub(crate) struct LabInner {
 impl Drop for LabInner {
     fn drop(&mut self) {
         self.cancel.cancel();
-        // Write the final status synchronously so it completes even during
-        // panic unwind or when the tokio runtime is shutting down. The async
-        // writer may or may not get a chance to run after cancel, but this
-        // ensures state.json always reflects the final test outcome.
+
+        // Block on the writer task so it can do its final flush (drain
+        // remaining events, set status, write state.json). We spawn a helper
+        // thread because we may be inside an async context where block_on
+        // would panic.
+        if let Some(handle) = self.writer_handle.lock().unwrap().take() {
+            let _ = std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                    let _ = rt.block_on(handle);
+                }
+            })
+            .join();
+        }
+
+        // Safety net: patch or create state.json with the final status.
+        // The writer should have written it above, but if it didn't (runtime
+        // already shut down, writer init failed, etc.) we do it here.
         if let Some(ref run_dir) = self.run_dir {
             use std::sync::atomic::Ordering;
             let status = match self.test_status.load(Ordering::Acquire) {
@@ -583,16 +596,24 @@ impl Drop for LabInner {
                 crate::writer::STATUS_FAILED => "failed",
                 _ => "stopped",
             };
-            // Read current state.json, patch the status, write it back.
             let state_path = run_dir.join(crate::consts::STATE_JSON);
             let tmp_path = run_dir.join(crate::consts::STATE_JSON_TMP);
             if let Ok(contents) = std::fs::read_to_string(&state_path) {
+                // Patch existing state.json.
                 if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&contents) {
                     val["status"] = serde_json::Value::String(status.to_string());
                     if let Ok(patched) = serde_json::to_string_pretty(&val) {
                         let _ = std::fs::write(&tmp_path, patched);
                         let _ = std::fs::rename(&tmp_path, &state_path);
                     }
+                }
+            } else {
+                // state.json doesn't exist (test finished before first flush).
+                // Create a minimal one so the server can report the status.
+                let minimal = serde_json::json!({ "status": status });
+                if let Ok(json) = serde_json::to_string_pretty(&minimal) {
+                    let _ = std::fs::write(&tmp_path, json);
+                    let _ = std::fs::rename(&tmp_path, &state_path);
                 }
             }
         }
