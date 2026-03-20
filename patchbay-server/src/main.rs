@@ -3,9 +3,7 @@
 //! Serves the devtools UI and optionally accepts pushed run results via HTTP.
 //! Supports automatic TLS via ACME (Let's Encrypt).
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -175,8 +173,7 @@ async fn serve_acme(
     http_bind: SocketAddr,
     https_bind: SocketAddr,
 ) -> Result<()> {
-    use tokio_rustls_acme::caches::DirCache;
-    use tokio_rustls_acme::AcmeConfig;
+    use tokio_rustls_acme::{caches::DirCache, AcmeConfig};
     use tokio_stream::StreamExt;
 
     let acme_dir = data_dir.join("acme");
@@ -209,16 +206,15 @@ async fn serve_acme(
     // HTTP redirect
     let redirect_domain = domain.to_string();
     tokio::spawn(async move {
-        let redirect = axum::Router::new().fallback(axum::routing::any(
-            move |req: axum::extract::Request| {
+        let redirect =
+            axum::Router::new().fallback(axum::routing::any(move |req: axum::extract::Request| {
                 let host = redirect_domain.clone();
                 async move {
                     let uri = req.uri();
                     let path = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
                     axum::response::Redirect::permanent(&format!("https://{host}{path}"))
                 }
-            },
-        ));
+            }));
         let listener = tokio::net::TcpListener::bind(http_bind).await.unwrap();
         let _ = axum::serve(listener, redirect).await;
     });

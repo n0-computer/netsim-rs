@@ -866,7 +866,13 @@ fn discover_pushed_runs(run_dir: &Path) -> Vec<RunIndexEntry> {
         // Find the date portion (first occurrence of YYYYMMDD_)
         let project = name
             .find(|c: char| c.is_ascii_digit())
-            .and_then(|i| if i > 0 { Some(name[..i - 1].to_string()) } else { None })
+            .and_then(|i| {
+                if i > 0 {
+                    Some(name[..i - 1].to_string())
+                } else {
+                    None
+                }
+            })
             .or_else(|| manifest.as_ref().map(|m| m.project.clone()))
             .unwrap_or_else(|| name.clone());
         let date = name
@@ -948,10 +954,7 @@ async fn runs_index_html(State(state): State<AppState>) -> Html<String> {
                 }
                 if let Some(pr) = m.pr {
                     if let Some(url) = &m.pr_url {
-                        html.push_str(&format!(
-                            r#"<a href="{}">PR #{pr}</a> "#,
-                            html_escape(url)
-                        ));
+                        html.push_str(&format!(r#"<a href="{}">PR #{pr}</a> "#, html_escape(url)));
                     } else {
                         html.push_str(&format!("PR #{pr} "));
                     }
@@ -1015,10 +1018,7 @@ async fn push_run(
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
-        return (
-            StatusCode::BAD_REQUEST,
-            "invalid project name".to_string(),
-        );
+        return (StatusCode::BAD_REQUEST, "invalid project name".to_string());
     }
 
     // Create run directory: {run_dir}/{project}-{date}-{uuid}

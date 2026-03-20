@@ -154,11 +154,7 @@ pub(crate) fn spawn_writer(
 ///
 /// Called from `LabInner::drop`. Reads the accumulated state from the shared
 /// mutex, patches the status, and writes atomically.
-pub(crate) fn write_final_state(
-    run_dir: &Path,
-    shared_state: &Mutex<LabState>,
-    status: &str,
-) {
+pub(crate) fn write_final_state(run_dir: &Path, shared_state: &Mutex<LabState>, status: &str) {
     let tmp = run_dir.join(consts::STATE_JSON_TMP);
     let dst = run_dir.join(consts::STATE_JSON);
     let mut state = shared_state.lock().unwrap();

@@ -461,6 +461,7 @@ impl Lab {
         let (events_tx, _rx) = tokio::sync::broadcast::channel::<LabEvent>(256);
         drop(_rx);
         let test_status = Arc::new(AtomicU8::new(crate::writer::STATUS_UNKNOWN));
+        let shared_state = Arc::new(std::sync::Mutex::new(crate::event::LabState::default()));
 
         let lab = Self {
             inner: Arc::new(LabInner {
@@ -476,6 +477,7 @@ impl Lab {
                 ipv6_provisioning_mode: opts.ipv6_provisioning_mode,
                 writer_handle: std::sync::Mutex::new(None),
                 test_status: test_status.clone(),
+                shared_state: shared_state.clone(),
             }),
         };
         // Initialize root namespace and IX bridge eagerly — no lazy-init race.
@@ -491,7 +493,7 @@ impl Lab {
                 run_dir.clone(),
                 lab.inner.events_tx.subscribe(),
                 lab.inner.cancel.clone(),
-                test_status,
+                shared_state,
             );
             *lab.inner.writer_handle.lock().unwrap() = Some(handle);
         }
