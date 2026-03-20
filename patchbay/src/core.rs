@@ -563,11 +563,39 @@ pub(crate) struct LabInner {
     pub ipv6_dad_mode: Ipv6DadMode,
     /// IPv6 provisioning behavior.
     pub ipv6_provisioning_mode: Ipv6ProvisioningMode,
+    /// Writer task handle (kept alive until lab is dropped).
+    pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Test outcome flag shared with the writer and [`TestGuard`].
+    pub test_status: Arc<std::sync::atomic::AtomicU8>,
 }
 
 impl Drop for LabInner {
     fn drop(&mut self) {
         self.cancel.cancel();
+        // Write the final status synchronously so it completes even during
+        // panic unwind or when the tokio runtime is shutting down. The async
+        // writer may or may not get a chance to run after cancel, but this
+        // ensures state.json always reflects the final test outcome.
+        if let Some(ref run_dir) = self.run_dir {
+            use std::sync::atomic::Ordering;
+            let status = match self.test_status.load(Ordering::Acquire) {
+                crate::writer::STATUS_SUCCESS => "success",
+                crate::writer::STATUS_FAILED => "failed",
+                _ => "stopped",
+            };
+            // Read current state.json, patch the status, write it back.
+            let state_path = run_dir.join(crate::consts::STATE_JSON);
+            let tmp_path = run_dir.join(crate::consts::STATE_JSON_TMP);
+            if let Ok(contents) = std::fs::read_to_string(&state_path) {
+                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    val["status"] = serde_json::Value::String(status.to_string());
+                    if let Ok(patched) = serde_json::to_string_pretty(&val) {
+                        let _ = std::fs::write(&tmp_path, patched);
+                        let _ = std::fs::rename(&tmp_path, &state_path);
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc,
     },
 };
@@ -460,6 +460,7 @@ impl Lab {
         let cancel = tokio_util::sync::CancellationToken::new();
         let (events_tx, _rx) = tokio::sync::broadcast::channel::<LabEvent>(256);
         drop(_rx);
+        let test_status = Arc::new(AtomicU8::new(crate::writer::STATUS_UNKNOWN));
 
         let lab = Self {
             inner: Arc::new(LabInner {
@@ -473,6 +474,8 @@ impl Lab {
                 run_dir: run_dir.clone(),
                 ipv6_dad_mode: opts.ipv6_dad_mode,
                 ipv6_provisioning_mode: opts.ipv6_provisioning_mode,
+                writer_handle: std::sync::Mutex::new(None),
+                test_status: test_status.clone(),
             }),
         };
         // Initialize root namespace and IX bridge eagerly — no lazy-init race.
@@ -481,14 +484,16 @@ impl Lab {
             .await
             .context("failed to set up root namespace")?;
 
-        // Spawn file writer if outdir is configured — subscribe before emitting
+        // Spawn file writer if outdir is configured -- subscribe before emitting
         // initial events so the writer captures LabCreated and IxCreated.
         if let Some(ref run_dir) = run_dir {
-            crate::writer::spawn_writer(
+            let handle = crate::writer::spawn_writer(
                 run_dir.clone(),
                 lab.inner.events_tx.subscribe(),
                 lab.inner.cancel.clone(),
+                test_status,
             );
+            *lab.inner.writer_handle.lock().unwrap() = Some(handle);
         }
 
         // Emit lifecycle events.
@@ -528,6 +533,21 @@ impl Lab {
     /// Returns the human-readable label, if one was set at construction.
     pub fn label(&self) -> Option<&str> {
         self.inner.label.as_deref()
+    }
+
+    /// Returns a guard that records whether the test passed or failed.
+    ///
+    /// On drop the guard checks [`std::thread::panicking`] and writes
+    /// "failed" to state.json if a panic is unwinding. Call [`.ok()`](TestGuard::ok)
+    /// at the end of a successful test to record "success" explicitly.
+    /// If neither `.ok()` is called nor a panic occurs (e.g. the test returns
+    /// `Err`), the status defaults to "failed" -- a safe default that avoids
+    /// false positives.
+    pub fn test_guard(&self) -> TestGuard {
+        TestGuard {
+            status: Arc::clone(&self.inner.test_status),
+            marked: false,
+        }
     }
 
     /// Parses `lab.toml`, builds the network, and returns a ready-to-use lab.
@@ -2387,5 +2407,39 @@ impl DeviceBuilder {
             dev.ns.clone(),
             Arc::clone(&self.inner),
         ))
+    }
+}
+
+/// RAII guard that records test pass/fail into the lab's state.json.
+///
+/// Created by [`Lab::test_guard`]. Defaults to "failed" on drop unless
+/// [`.ok()`](TestGuard::ok) was called. This means the only way to get
+/// "success" is to explicitly call `.ok()`, avoiding false positives from
+/// early `?` returns or panics.
+pub struct TestGuard {
+    status: Arc<AtomicU8>,
+    marked: bool,
+}
+
+impl TestGuard {
+    /// Mark the test as successful.
+    ///
+    /// Call this at the end of a passing test, typically just before `Ok(())`.
+    pub fn ok(mut self) {
+        use std::sync::atomic::Ordering;
+        self.status
+            .store(crate::writer::STATUS_SUCCESS, Ordering::Release);
+        self.marked = true;
+    }
+}
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering;
+        if !self.marked {
+            // Panic or early error return -- both count as failure.
+            self.status
+                .store(crate::writer::STATUS_FAILED, Ordering::Release);
+        }
     }
 }

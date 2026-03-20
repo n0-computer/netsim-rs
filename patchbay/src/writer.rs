@@ -4,6 +4,10 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -16,6 +20,11 @@ use crate::{
 
 /// How often events.jsonl is flushed and state.json is written.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Test outcome communicated from [`TestGuard`] to the writer on shutdown.
+pub(crate) const STATUS_UNKNOWN: u8 = 0;
+pub(crate) const STATUS_SUCCESS: u8 = 1;
+pub(crate) const STATUS_FAILED: u8 = 2;
 
 /// Writes events to `events.jsonl` and maintains `state.json`.
 pub(crate) struct LabWriter {
@@ -42,7 +51,7 @@ impl LabWriter {
     }
 
     /// Append event to events.jsonl buffer and update in-memory state.
-    /// Does NOT flush — call [`flush`] to persist to disk.
+    /// Does NOT flush -- call [`flush`] to persist to disk.
     fn append_event(&mut self, event: &LabEvent) -> Result<()> {
         serde_json::to_writer(&mut self.events_file, event)?;
         self.events_file.write_all(b"\n")?;
@@ -71,10 +80,15 @@ impl LabWriter {
 /// Events are buffered in memory and flushed to `events.jsonl` + `state.json`
 /// at most once per [`FLUSH_INTERVAL`], with a final flush when the lab is
 /// cancelled or the channel closes.
+///
+/// `test_status` is an optional shared atomic set by [`TestGuard`] to communicate
+/// whether the test passed or failed. The writer reads it on shutdown and sets the
+/// final status accordingly.
 pub(crate) fn spawn_writer(
     outdir: PathBuf,
     mut rx: tokio::sync::broadcast::Receiver<LabEvent>,
     cancel: tokio_util::sync::CancellationToken,
+    test_status: Arc<AtomicU8>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut writer = match LabWriter::new(&outdir) {
@@ -105,20 +119,15 @@ pub(crate) fn spawn_writer(
                             tracing::warn!("LabWriter lagged {n} events");
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            // Channel closed means the lab was dropped — treat as stop.
-                            writer.state.status = "stopped".into();
-                            dirty = true;
                             break;
                         }
                     }
                 }
                 _ = cancel.cancelled() => {
-                    // Lab is shutting down — drain remaining events, then stop.
+                    // Lab is shutting down -- drain remaining events, then stop.
                     while let Ok(event) = rx.try_recv() {
                         let _ = writer.append_event(&event);
                     }
-                    writer.state.status = "stopped".into();
-                    dirty = true;
                     break;
                 }
                 _ = interval.tick() => {
@@ -134,6 +143,14 @@ pub(crate) fn spawn_writer(
                 }
             }
         }
+
+        // Determine final status from the test guard signal.
+        writer.state.status = match test_status.load(Ordering::Acquire) {
+            STATUS_SUCCESS => "success".into(),
+            STATUS_FAILED => "failed".into(),
+            _ => "stopped".into(),
+        };
+        dirty = true;
 
         // Final flush on close.
         if dirty {
