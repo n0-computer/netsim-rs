@@ -15,7 +15,7 @@ cargo install --git https://github.com/n0-computer/patchbay patchbay-server --bi
 patchbay-serve \
   --accept-push \
   --api-key "$(openssl rand -hex 32)" \
-  --bind 0.0.0.0:8080 \
+  --http-bind 0.0.0.0:8080 \
   --retention 10GB
 ```
 
@@ -66,7 +66,8 @@ The `invocation` value is used for deep linking: `https://your-server/#/inv/{inv
 | `--acme-domain <d>` | Enable automatic TLS for this domain |
 | `--acme-email <e>` | Contact email for Let's Encrypt (required with `--acme-domain`) |
 | `--retention <size>` | Max total run storage (e.g. `500MB`, `10GB`) |
-| `--bind <addr>` | Listen address (default: `0.0.0.0:8080`, ignored with `--acme-domain`) |
+| `--http-bind <addr>` | HTTP listen address (default: `0.0.0.0:8080`; redirect when ACME is active) |
+| `--https-bind <addr>` | HTTPS listen address (default: `0.0.0.0:4443`; only used with `--acme-domain`) |
 
 ## Deploy with systemd
 
@@ -105,6 +106,8 @@ ExecStart=
 ExecStart=/usr/local/bin/patchbay-serve \
     --accept-push \
     --data-dir /var/lib/patchbay-serve \
+    --http-bind 0.0.0.0:80 \
+    --https-bind 0.0.0.0:443 \
     --acme-domain patchbay.yourcompany.com \
     --acme-email ops@yourcompany.com \
     --retention 10GB

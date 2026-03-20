@@ -57,7 +57,7 @@ test('push run results and view via deep link', async ({ page }) => {
         '--accept-push',
         '--api-key', API_KEY,
         '--data-dir', serveDataDir,
-        '--bind', SERVE_BIND,
+        '--http-bind', SERVE_BIND,
       ],
       { cwd: REPO_ROOT, stdio: 'inherit' },
     )

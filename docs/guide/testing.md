@@ -345,7 +345,7 @@ cargo install --git https://github.com/n0-computer/patchbay patchbay-server --bi
 patchbay-serve \
   --accept-push \
   --api-key "$(openssl rand -hex 32)" \
-  --bind 0.0.0.0:8080 \
+  --http-bind 0.0.0.0:8080 \
   --retention 10GB
 ```
 
@@ -378,7 +378,8 @@ This will:
 | `--acme-domain <d>` | Enable automatic TLS for domain |
 | `--acme-email <e>` | Contact email for Let's Encrypt (required with `--acme-domain`) |
 | `--retention <size>` | Max total run storage (e.g. `500MB`, `10GB`) |
-| `--bind <addr>` | Listen address (default: `0.0.0.0:8080`, ignored with ACME) |
+| `--http-bind <addr>` | HTTP listen address (default: `0.0.0.0:8080`; redirect when ACME is active) |
+| `--https-bind <addr>` | HTTPS listen address (default: `0.0.0.0:4443`; only with `--acme-domain`) |
 
 ### systemd
 

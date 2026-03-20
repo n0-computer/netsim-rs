@@ -3,6 +3,7 @@
 //! Serves the devtools UI and optionally accepts pushed run results via HTTP.
 //! Supports automatic TLS via ACME (Let's Encrypt).
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -16,12 +17,16 @@ struct Cli {
     #[arg(long)]
     run_dir: Option<PathBuf>,
 
-    /// Bind address for HTTP server.
+    /// Bind address for HTTP server (plain HTTP, or without ACME).
     #[arg(long, default_value = "0.0.0.0:8080")]
-    bind: String,
+    http_bind: SocketAddr,
+
+    /// Bind address for HTTPS server (only used with --acme-domain).
+    #[arg(long, default_value = "0.0.0.0:4443")]
+    https_bind: SocketAddr,
 
     /// Domain for automatic TLS via ACME (Let's Encrypt).
-    /// When set, serves HTTPS on port 443 and HTTP redirect on port 80.
+    /// Serves HTTPS on --https-bind and HTTP redirect on --http-bind.
     #[arg(long)]
     acme_domain: Option<String>,
 
@@ -136,10 +141,10 @@ async fn main() -> Result<()> {
 
     if let Some(domain) = &cli.acme_domain {
         let email = cli.acme_email.as_deref().unwrap();
-        serve_acme(app, domain, email, &data_dir).await
+        serve_acme(app, domain, email, &data_dir, cli.http_bind, cli.https_bind).await
     } else {
-        tracing::info!("listening on {}", cli.bind);
-        let listener = tokio::net::TcpListener::bind(&cli.bind).await?;
+        tracing::info!("listening on {}", cli.http_bind);
+        let listener = tokio::net::TcpListener::bind(cli.http_bind).await?;
         axum::serve(listener, app).await?;
         Ok(())
     }
@@ -150,6 +155,8 @@ async fn serve_acme(
     domain: &str,
     email: &str,
     data_dir: &std::path::Path,
+    http_bind: SocketAddr,
+    https_bind: SocketAddr,
 ) -> Result<()> {
     use tokio_rustls_acme::caches::DirCache;
     use tokio_rustls_acme::AcmeConfig;
@@ -180,9 +187,9 @@ async fn serve_acme(
         }
     });
 
-    tracing::info!("listening on 0.0.0.0:443 with ACME TLS for {domain}");
+    tracing::info!("ACME TLS for {domain}: https on {https_bind}, http redirect on {http_bind}");
 
-    // HTTP redirect on port 80
+    // HTTP redirect
     let redirect_domain = domain.to_string();
     tokio::spawn(async move {
         let redirect = axum::Router::new().fallback(axum::routing::any(
@@ -195,13 +202,12 @@ async fn serve_acme(
                 }
             },
         ));
-        let listener = tokio::net::TcpListener::bind("0.0.0.0:80").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(http_bind).await.unwrap();
         let _ = axum::serve(listener, redirect).await;
     });
 
-    // Serve HTTPS with axum-server and ACME acceptor
-    let addr: std::net::SocketAddr = "0.0.0.0:443".parse()?;
-    axum_server::bind(addr)
+    // HTTPS with ACME acceptor
+    axum_server::bind(https_bind)
         .acceptor(acceptor)
         .serve(app.into_make_service())
         .await?;
