@@ -112,6 +112,23 @@ async fn main() -> Result<()> {
         bail!("--acme-domain requires --acme-email to be set");
     }
 
+    if cli.acme_domain.is_some() {
+        if cli.https_bind.port() != 443 {
+            bail!(
+                "ACME TLS-ALPN-01 requires port 443, but --https-bind is {}. \
+                 Use --https-bind 0.0.0.0:443",
+                cli.https_bind
+            );
+        }
+        if cli.http_bind.port() != 80 {
+            tracing::warn!(
+                "ACME HTTP redirect is on port {} instead of 80; \
+                 browsers won't follow the redirect unless port 80 is forwarded",
+                cli.http_bind.port()
+            );
+        }
+    }
+
     // Parse retention
     let retention_bytes = cli
         .retention
