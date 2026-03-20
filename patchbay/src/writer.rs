@@ -4,10 +4,7 @@ use std::{
     fs,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU8, Ordering},
-        Arc,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -27,14 +24,14 @@ pub(crate) const STATUS_SUCCESS: u8 = 1;
 pub(crate) const STATUS_FAILED: u8 = 2;
 
 /// Writes events to `events.jsonl` and maintains `state.json`.
-pub(crate) struct LabWriter {
+struct LabWriter {
     outdir: PathBuf,
-    state: LabState,
+    shared_state: Arc<Mutex<LabState>>,
     events_file: BufWriter<fs::File>,
 }
 
 impl LabWriter {
-    pub(crate) fn new(outdir: &Path) -> Result<Self> {
+    fn new(outdir: &Path, shared_state: Arc<Mutex<LabState>>) -> Result<Self> {
         fs::create_dir_all(outdir)?;
         let events_path = outdir.join(consts::EVENTS_JSONL);
         let events_file = BufWriter::new(
@@ -45,17 +42,17 @@ impl LabWriter {
         );
         Ok(Self {
             outdir: outdir.to_path_buf(),
-            state: LabState::default(),
+            shared_state,
             events_file,
         })
     }
 
-    /// Append event to events.jsonl buffer and update in-memory state.
-    /// Does NOT flush -- call [`flush`] to persist to disk.
+    /// Append event to events.jsonl buffer and update shared state.
+    /// Does NOT flush -- call [`flush_events`] to persist to disk.
     fn append_event(&mut self, event: &LabEvent) -> Result<()> {
         serde_json::to_writer(&mut self.events_file, event)?;
         self.events_file.write_all(b"\n")?;
-        self.state.apply(event);
+        self.shared_state.lock().unwrap().apply(event);
         Ok(())
     }
 
@@ -69,7 +66,8 @@ impl LabWriter {
     fn write_state(&self) -> Result<()> {
         let tmp = self.outdir.join(consts::STATE_JSON_TMP);
         let dst = self.outdir.join(consts::STATE_JSON);
-        fs::write(&tmp, serde_json::to_string_pretty(&self.state)?)?;
+        let state = self.shared_state.lock().unwrap();
+        fs::write(&tmp, serde_json::to_string_pretty(&*state)?)?;
         fs::rename(&tmp, &dst)?;
         Ok(())
     }
@@ -78,20 +76,17 @@ impl LabWriter {
 /// Spawns a background task that writes events to disk.
 ///
 /// Events are buffered in memory and flushed to `events.jsonl` + `state.json`
-/// at most once per [`FLUSH_INTERVAL`], with a final flush when the lab is
-/// cancelled or the channel closes.
-///
-/// `test_status` is an optional shared atomic set by [`TestGuard`] to communicate
-/// whether the test passed or failed. The writer reads it on shutdown and sets the
-/// final status accordingly.
+/// at most once per [`FLUSH_INTERVAL`]. The shared `LabState` is updated on
+/// every event so that `LabInner::drop` can always write a final `state.json`
+/// synchronously, even if this task never gets to run its shutdown path.
 pub(crate) fn spawn_writer(
     outdir: PathBuf,
     mut rx: tokio::sync::broadcast::Receiver<LabEvent>,
     cancel: tokio_util::sync::CancellationToken,
-    test_status: Arc<AtomicU8>,
+    shared_state: Arc<Mutex<LabState>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut writer = match LabWriter::new(&outdir) {
+        let mut writer = match LabWriter::new(&outdir, shared_state) {
             Ok(w) => w,
             Err(e) => {
                 tracing::error!("LabWriter init failed: {e}");
@@ -144,22 +139,37 @@ pub(crate) fn spawn_writer(
             }
         }
 
-        // Determine final status from the test guard signal.
-        writer.state.status = match test_status.load(Ordering::Acquire) {
-            STATUS_SUCCESS => "success".into(),
-            STATUS_FAILED => "failed".into(),
-            _ => "stopped".into(),
-        };
-        dirty = true;
-
-        // Final flush on close.
-        if dirty {
-            if let Err(e) = writer.flush_events() {
-                tracing::error!("LabWriter final events flush error: {e}");
-            }
-            if let Err(e) = writer.write_state() {
-                tracing::error!("LabWriter final state write error: {e}");
-            }
+        // Final flush of events.jsonl. State.json is written by LabInner::drop
+        // which sets the final status and writes synchronously.
+        if let Err(e) = writer.flush_events() {
+            tracing::error!("LabWriter final events flush error: {e}");
+        }
+        if let Err(e) = writer.write_state() {
+            tracing::error!("LabWriter final state write error: {e}");
         }
     })
+}
+
+/// Synchronously write the final `state.json` with the given status.
+///
+/// Called from `LabInner::drop`. Reads the accumulated state from the shared
+/// mutex, patches the status, and writes atomically.
+pub(crate) fn write_final_state(
+    run_dir: &Path,
+    shared_state: &Mutex<LabState>,
+    status: &str,
+) {
+    let tmp = run_dir.join(consts::STATE_JSON_TMP);
+    let dst = run_dir.join(consts::STATE_JSON);
+    let mut state = shared_state.lock().unwrap();
+    state.status = status.into();
+    match serde_json::to_string_pretty(&*state) {
+        Ok(json) => {
+            let _ = fs::write(&tmp, json);
+            let _ = fs::rename(&tmp, &dst);
+        }
+        Err(e) => {
+            tracing::error!("write_final_state serialize error: {e}");
+        }
+    }
 }

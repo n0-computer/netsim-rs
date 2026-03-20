@@ -567,55 +567,28 @@ pub(crate) struct LabInner {
     pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Test outcome flag shared with the writer and [`TestGuard`].
     pub test_status: Arc<std::sync::atomic::AtomicU8>,
+    /// Accumulated lab state, shared with the background writer. Updated on
+    /// every event so that `Drop` can always write a complete `state.json`
+    /// synchronously — even if the async writer task never ran its shutdown path.
+    pub shared_state: Arc<std::sync::Mutex<crate::event::LabState>>,
 }
 
 impl Drop for LabInner {
     fn drop(&mut self) {
         self.cancel.cancel();
 
-        // Block on the writer task so it can do its final flush (drain
-        // remaining events, set status, write state.json). We spawn a helper
-        // thread because we may be inside an async context where block_on
-        // would panic.
-        if let Some(handle) = self.writer_handle.lock().unwrap().take() {
-            let _ = std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                    let _ = rt.block_on(handle);
-                }
-            })
-            .join();
-        }
+        // Determine final status from the test guard.
+        let status = match self.test_status.load(Ordering::Acquire) {
+            crate::writer::STATUS_SUCCESS => "success",
+            crate::writer::STATUS_FAILED => "failed",
+            _ => "stopped",
+        };
 
-        // Safety net: patch or create state.json with the final status.
-        // The writer should have written it above, but if it didn't (runtime
-        // already shut down, writer init failed, etc.) we do it here.
+        // Write the final state.json synchronously. The shared_state mutex
+        // holds the fully accumulated LabState (updated by the writer on every
+        // event), so this works even if the async task never flushed.
         if let Some(ref run_dir) = self.run_dir {
-            use std::sync::atomic::Ordering;
-            let status = match self.test_status.load(Ordering::Acquire) {
-                crate::writer::STATUS_SUCCESS => "success",
-                crate::writer::STATUS_FAILED => "failed",
-                _ => "stopped",
-            };
-            let state_path = run_dir.join(crate::consts::STATE_JSON);
-            let tmp_path = run_dir.join(crate::consts::STATE_JSON_TMP);
-            if let Ok(contents) = std::fs::read_to_string(&state_path) {
-                // Patch existing state.json.
-                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    val["status"] = serde_json::Value::String(status.to_string());
-                    if let Ok(patched) = serde_json::to_string_pretty(&val) {
-                        let _ = std::fs::write(&tmp_path, patched);
-                        let _ = std::fs::rename(&tmp_path, &state_path);
-                    }
-                }
-            } else {
-                // state.json doesn't exist (test finished before first flush).
-                // Create a minimal one so the server can report the status.
-                let minimal = serde_json::json!({ "status": status });
-                if let Ok(json) = serde_json::to_string_pretty(&minimal) {
-                    let _ = std::fs::write(&tmp_path, json);
-                    let _ = std::fs::rename(&tmp_path, &state_path);
-                }
-            }
+            crate::writer::write_final_state(run_dir, &self.shared_state, status);
         }
     }
 }
