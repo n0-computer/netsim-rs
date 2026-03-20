@@ -215,6 +215,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/state", get(get_run_state))
         .route("/api/runs/{run}/events", get(run_events_sse))
+        .route("/api/runs/{run}/events.json", get(run_events_json))
         .route("/api/runs/{run}/logs", get(get_run_logs))
         .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
@@ -446,6 +447,33 @@ async fn run_events_sse(
             Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>,
         >)
     .keep_alive(KeepAlive::default())
+}
+
+/// Return all events as a JSON array (non-streaming).
+async fn run_events_json(
+    AxPath(run): AxPath<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let Some(run_dir) = safe_run_dir(&state.base, &run) else {
+        return (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            r#"[]"#.to_string(),
+        );
+    };
+    let events_path = run_dir.join(EVENTS_JSONL);
+    let contents = tokio::fs::read_to_string(&events_path)
+        .await
+        .unwrap_or_default();
+    let events: Vec<serde_json::Value> = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string()),
+    )
 }
 
 /// List log files in a run directory.

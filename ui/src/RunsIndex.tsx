@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { fetchRuns, subscribeRuns } from './api'
+import { fetchRuns } from './api'
 import type { RunInfo } from './api'
 
 interface InvocationGroup {
@@ -38,8 +38,8 @@ export default function RunsIndex() {
   useEffect(() => {
     const refresh = () => fetchRuns().then((r) => { setRuns(r); setLoaded(true) })
     refresh()
-    const es = subscribeRuns(refresh)
-    return () => es.close()
+    const id = setInterval(refresh, 5_000)
+    return () => clearInterval(id)
   }, [])
 
   const { groups, ungrouped } = groupByInvocation(runs)

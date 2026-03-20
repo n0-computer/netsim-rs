@@ -15,8 +15,8 @@ import type { CombinedResults, SimResults } from './types'
 import {
   fetchRuns,
   fetchState,
+  fetchEvents,
   subscribeEvents,
-  subscribeRuns,
   fetchLogs,
   fetchResults,
   fetchCombinedResults,
@@ -187,11 +187,11 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
 
-  // Lab state (from SSE)
+  // Lab state and events
   const [labState, setLabState] = useState<LabState | null>(null)
   const [labEvents, setLabEvents] = useState<LabEvent[]>([])
   const esRef = useRef<EventSource | null>(null)
-  const runsEsRef = useRef<EventSource | null>(null)
+  const lastOpidRef = useRef<number>(0)
 
   // Log files
   const [logList, setLogList] = useState<LogEntry[]>([])
@@ -207,7 +207,7 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
   // Cross-tab log jump
   const [logJump, setLogJump] = useState<{ node: string; path: string; timeLabel: string; nonce: number } | null>(null)
 
-  // ── Fetch and subscribe to runs ──
+  // ── Poll runs list ──
 
   const refreshRuns = useCallback(async () => {
     const r = await fetchRuns()
@@ -216,12 +216,8 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
 
   useEffect(() => {
     refreshRuns()
-    const es = subscribeRuns(() => refreshRuns())
-    runsEsRef.current = es
-    return () => {
-      es.close()
-      runsEsRef.current = null
-    }
+    const id = setInterval(refreshRuns, 5_000)
+    return () => clearInterval(id)
   }, [refreshRuns])
 
   // ── Load run data when an individual sim is selected ──
@@ -238,11 +234,14 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
     let dead = false
     Promise.all([
       fetchState(selectedRun),
+      fetchEvents(selectedRun),
       fetchLogs(selectedRun),
       fetchResults(selectedRun),
-    ]).then(([state, logs, results]) => {
+    ]).then(([state, events, logs, results]) => {
       if (dead) return
       if (state) setLabState(state)
+      setLabEvents(events)
+      lastOpidRef.current = events.length ? Math.max(...events.map((e) => e.opid ?? 0)) : 0
       setLogList(logs)
       setSimResults(results)
     })
@@ -267,29 +266,36 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
     return () => { dead = true }
   }, [selectedInvocation])
 
-  // ── SSE event subscription (from opid 0 to get historical + live) ──
+  // ── SSE for live updates (only when run is "running") ──
 
   useEffect(() => {
     if (!selectedRun) return
-    const es = subscribeEvents(selectedRun, 0, (event) => {
+    const runInfo = runs.find((r) => r.name === selectedRun)
+    if (runInfo?.status !== 'running') return
+
+    const es = subscribeEvents(selectedRun, lastOpidRef.current, (event) => {
       setLabState((prev) => (prev ? applyEvent(prev, event) : prev))
       setLabEvents((prev) => [...prev.slice(-999), event])
+      if (event.opid != null) lastOpidRef.current = event.opid
     })
     esRef.current = es
     return () => {
       es.close()
       esRef.current = null
     }
-  }, [selectedRun])
+  }, [selectedRun, runs])
 
-  // Close SSE connections on page unload/refresh.
+  // Close SSE when tab becomes hidden, reconnect when visible.
   useEffect(() => {
-    const cleanup = () => {
-      runsEsRef.current?.close()
-      esRef.current?.close()
+    const onVisibility = () => {
+      if (document.hidden) {
+        esRef.current?.close()
+        esRef.current = null
+      }
     }
-    window.addEventListener('beforeunload', cleanup)
-    return () => window.removeEventListener('beforeunload', cleanup)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('beforeunload', () => esRef.current?.close())
+    return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
   // ── Callbacks ──

@@ -28,12 +28,6 @@ export async function fetchRuns(): Promise<RunInfo[]> {
   }
 }
 
-export function subscribeRuns(onRun: () => void): EventSource {
-  const es = new EventSource(`${API}/runs/subscribe`)
-  es.onmessage = () => onRun()
-  return es
-}
-
 export async function fetchState(run: string): Promise<LabState | null> {
   try {
     const res = await fetch(`${API}/runs/${encodeURIComponent(run)}/state`)
@@ -41,6 +35,16 @@ export async function fetchState(run: string): Promise<LabState | null> {
     return (await res.json()) as LabState
   } catch {
     return null
+  }
+}
+
+export async function fetchEvents(run: string): Promise<LabEvent[]> {
+  try {
+    const res = await fetch(`${API}/runs/${encodeURIComponent(run)}/events.json`)
+    if (!res.ok) return []
+    return (await res.json()) as LabEvent[]
+  } catch {
+    return []
   }
 }
 
