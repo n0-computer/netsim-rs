@@ -18,6 +18,7 @@ function resolveTargetDir(): string {
 
 const TARGET_DIR = resolveTargetDir()
 export const PATCHBAY_BIN = path.join(TARGET_DIR, 'debug', 'patchbay')
+export const PATCHBAY_SERVE_BIN = path.join(TARGET_DIR, 'debug', 'patchbay-serve')
 
 export async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
   const start = Date.now()
