@@ -275,11 +275,20 @@ impl NatConfigBuilder {
 impl Nat {
     /// Expands a preset into its full [`NatConfig`].
     ///
-    /// Returns `None` for [`Nat::None`] and [`Nat::Cgnat`], which use
-    /// different code paths (no NAT and ISP-level masquerade respectively).
+    /// Returns `None` for [`Nat::None`] (no NAT applied).
     pub fn to_config(self) -> Option<NatConfig> {
         match self {
-            Nat::None | Nat::Cgnat => None,
+            Nat::None => None,
+            Nat::Cgnat => Some(NatConfig {
+                mapping: NatMapping::EndpointIndependent,
+                filtering: NatFiltering::EndpointIndependent,
+                timeouts: ConntrackTimeouts {
+                    udp: 30,
+                    udp_stream: 300,
+                    tcp_established: 7200,
+                },
+                hairpin: false,
+            }),
             Nat::Home => Some(NatConfig {
                 mapping: NatMapping::EndpointIndependent,
                 filtering: NatFiltering::AddressAndPortDependent,

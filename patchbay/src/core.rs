@@ -99,7 +99,7 @@ pub(crate) struct RouterConfig {
 
 impl RouterConfig {
     /// Returns the effective NAT config by expanding the preset (or returning
-    /// the custom config). Returns `None` for `Nat::None` and `Nat::Cgnat`.
+    /// the custom config). Returns `None` for `Nat::None`.
     pub(crate) fn effective_nat_config(&self) -> Option<NatConfig> {
         self.nat.to_config()
     }
@@ -3084,10 +3084,6 @@ pub(crate) async fn apply_nat_for_router(
     wan_if: &str,
     wan_ip: Ipv4Addr,
 ) -> Result<()> {
-    // CGNAT is applied at the ISP level, not via NatConfig.
-    if router_cfg.nat == Nat::Cgnat {
-        return apply_isp_cgnat(netns, ns, wan_if).await;
-    }
     match router_cfg.effective_nat_config() {
         None => Ok(()),
         Some(cfg) => apply_nat_config(netns, ns, &cfg, wan_if, wan_ip).await,
@@ -3170,26 +3166,6 @@ table ip6 nat {{
             Ok(())
         }
     }
-}
-
-/// Applies ISP CGNAT masquerade rules in `ns` on `ix_if`.
-pub(crate) async fn apply_isp_cgnat(
-    netns: &netns::NetnsManager,
-    ns: &str,
-    ix_if: &str,
-) -> Result<()> {
-    let rules = format!(
-        r#"
-table ip nat {{
-    chain postrouting {{
-        type nat hook postrouting priority 100;
-        oif "{ix}" masquerade
-    }}
-}}
-"#,
-        ix = ix_if,
-    );
-    run_nft_in(netns, ns, &rules).await
 }
 
 /// Applies an impairment preset or manual limits on `ifname` inside `ns`.
