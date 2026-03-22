@@ -599,6 +599,107 @@ async fn fullcone_external_reachable() -> Result<()> {
     Ok(())
 }
 
+/// CGNAT (EIM+EIF) allows unsolicited inbound to a mapped port, just like FullCone.
+///
+/// A device directly behind a CGNAT router creates a mapping via a reflector,
+/// then an unrelated external host sends to that mapped address. Since CGNAT
+/// uses endpoint-independent filtering, the packet must reach the device.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn cgnat_external_reachable() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let isp = lab.add_router("isp").nat(Nat::Cgnat).build().await?;
+    // Device directly behind CGNAT (no Home NAT layer) to test CGNAT EIF in isolation.
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", isp.id(), None)
+        .build()
+        .await?;
+
+    let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
+    let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 20_050);
+    let _r = dc.spawn_reflector(reflector).await?;
+
+    // Create a mapping through CGNAT via the reflector.
+    let mapped = dev.probe_udp_mapping(reflector)?;
+    info!("mapped address: {mapped}");
+
+    // The mapped address should be the ISP's public IP.
+    let isp_public = isp.uplink_ip().context("no isp uplink ip")?;
+    assert_eq!(
+        mapped.ip(),
+        IpAddr::V4(isp_public),
+        "mapped IP must be the ISP's public address"
+    );
+
+    // Start a reflector on the device at the same local port.
+    let dev_listen_port = mapped.port();
+    let dev_ip = dev.ip().unwrap();
+    let listen = SocketAddr::new(IpAddr::V4(dev_ip), dev_listen_port);
+    let _r = dev.spawn_reflector(listen).await?;
+
+    // An unrelated external host sends to the mapped address.
+    // CGNAT is EIF: any source should be forwarded to the mapped port.
+    let reply = dc.run_sync(move || {
+        let sock =
+            std::net::UdpSocket::bind("0.0.0.0:0").context("cgnat external reachable udp bind")?;
+        sock.set_read_timeout(Some(Duration::from_secs(2)))?;
+        sock.send_to(b"HELLO", mapped)?;
+        let mut buf = [0u8; 512];
+        let (n, _) = sock.recv_from(&mut buf)?;
+        Ok(String::from_utf8_lossy(&buf[..n]).to_string())
+    })?;
+    assert!(
+        reply.starts_with("OBSERVED "),
+        "CGNAT (EIF) should forward unsolicited inbound to mapped port, got: {reply:?}"
+    );
+    Ok(())
+}
+
+/// CGNAT port mapping is endpoint-independent: same external port for
+/// two different reflectors.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn cgnat_port_mapping_eim() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+    let dc1 = lab.add_router("dc1").build().await?;
+    let dc2 = lab.add_router("dc2").build().await?;
+    let isp = lab.add_router("isp").nat(Nat::Cgnat).build().await?;
+    let home = lab
+        .add_router("home")
+        .upstream(isp.id())
+        .nat(Nat::Home)
+        .build()
+        .await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", home.id(), None)
+        .build()
+        .await?;
+
+    let dc1_ip = dc1.uplink_ip().context("no dc1 uplink ip")?;
+    let dc2_ip = dc2.uplink_ip().context("no dc2 uplink ip")?;
+    let r1 = SocketAddr::new(IpAddr::V4(dc1_ip), 20_060);
+    let r2 = SocketAddr::new(IpAddr::V4(dc2_ip), 20_061);
+    let _r1 = dc1.spawn_reflector(r1).await?;
+    let _r2 = dc2.spawn_reflector(r2).await?;
+
+    let o1 = dev.probe_udp_mapping(r1)?;
+    let o2 = dev.probe_udp_mapping(r2)?;
+
+    assert_eq!(
+        o1.port(),
+        o2.port(),
+        "CGNAT (EIM) must preserve external port across destinations: r1={} r2={}",
+        o1.port(),
+        o2.port()
+    );
+    Ok(())
+}
+
 /// V6 masquerade NAT: external v6 address differs from device's private v6.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
