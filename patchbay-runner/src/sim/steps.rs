@@ -59,7 +59,7 @@ pub(crate) fn step_device(step: &Step) -> Option<&str> {
     }
 }
 
-const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(300);
+const DEFAULT_CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()> {
     // Check sim deadline before each step.
