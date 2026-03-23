@@ -1568,28 +1568,36 @@ fn rewrite_counted_refs(s: &str, idx: usize, counts: &HashMap<String, usize>) ->
 }
 
 /// Rewrite counted device references in cmd and requires fields of a step.
+/// Rewrite bare `name.capture` references (used in `requires`) for counted devices.
+fn rewrite_counted_bare_ref(s: &str, idx: usize, counts: &HashMap<String, usize>) -> String {
+    if let Some(dot) = s.find('.') {
+        let prefix = &s[..dot];
+        if let Some(&count) = counts.get(prefix) {
+            let mapped = idx % count;
+            return format!("{prefix}-{mapped}{}", &s[dot..]);
+        }
+    }
+    s.to_string()
+}
+
 fn rewrite_step_counted_refs(step: &mut Step, idx: usize, counts: &HashMap<String, usize>) {
     match step {
-        Step::Run {
-            cmd, requires, ..
-        } => {
+        Step::Run { cmd, requires, .. } => {
             for part in cmd.iter_mut() {
                 *part = rewrite_counted_refs(part, idx, counts);
             }
             for req in requires.iter_mut() {
-                *req = rewrite_counted_refs(req, idx, counts);
+                *req = rewrite_counted_bare_ref(req, idx, counts);
             }
         }
-        Step::Spawn {
-            cmd, requires, ..
-        } => {
+        Step::Spawn { cmd, requires, .. } => {
             if let Some(cmd) = cmd {
                 for part in cmd.iter_mut() {
                     *part = rewrite_counted_refs(part, idx, counts);
                 }
             }
             for req in requires.iter_mut() {
-                *req = rewrite_counted_refs(req, idx, counts);
+                *req = rewrite_counted_bare_ref(req, idx, counts);
             }
         }
         Step::GenFile { content, .. } => {
@@ -2086,6 +2094,58 @@ mod tests {
             assert_eq!(step_device(&g.step), Some(format!("peer-{i}")).as_deref());
             assert_eq!(step_id(&g.step), Some(format!("ping-{i}")).as_deref());
         }
+    }
+
+    #[test]
+    fn expand_counted_steps_rewrites_capture_refs() {
+        let wrap = |step| Guarded { when: None, step };
+        // 2 providers, 4 fetchers — fetchers should get round-robin refs
+        let steps = vec![wrap(Step::Spawn {
+            id: "fetcher".to_string(),
+            device: Some("fetcher".to_string()),
+            cmd: Some(vec![
+                "transfer".to_string(),
+                "fetch".to_string(),
+                "${provider.endpoint_id}".to_string(),
+                "--remote-direct-address".to_string(),
+                "${provider.direct_addr}".to_string(),
+            ]),
+            env: HashMap::new(),
+            parser: crate::sim::Parser::Text,
+            ready_after: None,
+            captures: HashMap::new(),
+            requires: vec!["provider.ready".to_string()], // bare format, no ${}
+            results: None,
+        })];
+        let mut counts = HashMap::new();
+        counts.insert("fetcher".to_string(), 4);
+        counts.insert("provider".to_string(), 2);
+        let expanded = expand_counted_steps(steps, &counts);
+        assert_eq!(expanded.len(), 4);
+
+        for (i, g) in expanded.iter().enumerate() {
+            let provider_idx = i % 2;
+            if let Step::Spawn { cmd, requires, .. } = &g.step {
+                let cmd = cmd.as_ref().unwrap();
+                assert_eq!(cmd[2], format!("${{provider-{provider_idx}.endpoint_id}}"));
+                assert_eq!(cmd[4], format!("${{provider-{provider_idx}.direct_addr}}"));
+                assert_eq!(requires[0], format!("provider-{provider_idx}.ready"));
+            } else {
+                panic!("expected Spawn step");
+            }
+        }
+    }
+
+    #[test]
+    fn rewrite_counted_refs_leaves_non_counted_alone() {
+        let mut counts = HashMap::new();
+        counts.insert("provider".to_string(), 2);
+        // Non-counted device refs should be left untouched
+        let result = rewrite_counted_refs("${relay.addr}", 0, &counts);
+        assert_eq!(result, "${relay.addr}");
+        // Counted device refs should be rewritten
+        let result = rewrite_counted_refs("${provider.endpoint_id}", 3, &counts);
+        assert_eq!(result, "${provider-1.endpoint_id}"); // 3 % 2 = 1
     }
 
     /// Sim with a short timeout and a spawn+wait-for that never completes.
