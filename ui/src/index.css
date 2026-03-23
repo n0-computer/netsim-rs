@@ -789,3 +789,86 @@ tbody td {
     font-size: 0.85em;
     color: var(--text-muted);
 }
+
+/* ── Pushed runs index (/runs) ── */
+.pushed-runs-index {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+.pushed-runs-index h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: 1.5rem;
+}
+.pushed-run-entry {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 0.5rem;
+    background: var(--surface);
+    color: var(--text);
+    text-decoration: none;
+    cursor: pointer;
+}
+.pushed-run-entry:hover {
+    border-color: var(--accent);
+    text-decoration: none;
+}
+.pushed-run-project {
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 120px;
+}
+.pushed-run-meta {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+}
+.pushed-run-badge {
+    display: inline-block;
+    padding: 0.1rem 0.5rem;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    color: var(--accent);
+}
+.pushed-run-sha {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.pushed-run-pr-link {
+    color: var(--accent);
+    text-decoration: none;
+}
+.pushed-run-pr-link:hover {
+    text-decoration: underline;
+}
+.pushed-run-title {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+}
+.pushed-run-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+}
+.pushed-run-date {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+.pushed-run-arrow {
+    color: var(--accent);
+    font-size: 0.875rem;
+}

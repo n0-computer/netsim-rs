@@ -210,7 +210,8 @@ struct AppState {
 fn build_router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/", get(index_html))
-        .route("/runs", get(runs_index_html))
+        .route("/runs", get(index_html))
+        .route("/api/pushed-runs", get(get_pushed_runs))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/state", get(get_run_state))
@@ -328,6 +329,15 @@ async fn get_runs(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::OK,
         [("content-type", "application/json")],
         serde_json::to_string(&runs).unwrap_or_else(|_| "[]".to_string()),
+    )
+}
+
+async fn get_pushed_runs(State(state): State<AppState>) -> impl IntoResponse {
+    let entries = discover_pushed_runs(&state.base);
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
     )
 }
 
@@ -825,6 +835,9 @@ pub struct RunManifest {
     /// Human-readable run title/label.
     #[serde(default)]
     pub title: Option<String>,
+    /// Overall test status (e.g. `"success"`, `"failure"`).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 const RUN_JSON: &str = "run.json";
@@ -888,106 +901,6 @@ fn discover_pushed_runs(run_dir: &Path) -> Vec<RunIndexEntry> {
     }
     entries.sort_by(|a, b| b.path.cmp(&a.path));
     entries
-}
-
-async fn runs_index_html(State(state): State<AppState>) -> Html<String> {
-    let entries = discover_pushed_runs(&state.base);
-
-    let mut html = String::from(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>patchbay runs</title>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-         background: #0d1117; color: #c9d1d9; padding: 2rem; max-width: 1000px; margin: 0 auto; }
-  h1 { margin-bottom: 1.5rem; color: #f0f6fc; font-size: 1.5rem; }
-  .run { padding: 0.75rem 1rem; border: 1px solid #21262d; border-radius: 6px;
-         margin-bottom: 0.5rem; display: flex; align-items: center; gap: 1rem;
-         background: #161b22; }
-  .run:hover { border-color: #388bfd; }
-  .run:target { border-color: #388bfd; background: #1c2333; }
-  .project { font-weight: 600; color: #58a6ff; min-width: 120px; }
-  .meta { flex: 1; font-size: 0.875rem; color: #8b949e; }
-  .meta a { color: #58a6ff; text-decoration: none; }
-  .meta a:hover { text-decoration: underline; }
-  .date { font-size: 0.8rem; color: #484f58; }
-  .view-link { color: #58a6ff; text-decoration: none; font-size: 0.875rem; white-space: nowrap; }
-  .view-link:hover { text-decoration: underline; }
-  .empty { color: #484f58; padding: 2rem; text-align: center; }
-  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 3px;
-           font-size: 0.75rem; background: #1f6feb33; color: #58a6ff; }
-</style>
-</head>
-<body>
-<h1>patchbay runs</h1>
-"#,
-    );
-
-    if entries.is_empty() {
-        html.push_str(r#"<div class="empty">No runs yet. Push results using the API.</div>"#);
-    } else {
-        for entry in &entries {
-            html.push_str(&format!(
-                r#"<div class="run" id="{}">"#,
-                html_escape(&entry.path)
-            ));
-            html.push_str(&format!(
-                r#"<span class="project">{}</span>"#,
-                html_escape(&entry.project)
-            ));
-
-            html.push_str(r#"<div class="meta">"#);
-            if let Some(m) = &entry.manifest {
-                if let Some(branch) = &m.branch {
-                    html.push_str(&format!(
-                        r#"<span class="badge">{}</span> "#,
-                        html_escape(branch)
-                    ));
-                }
-                if let Some(commit) = &m.commit {
-                    let short = &commit[..commit.len().min(7)];
-                    html.push_str(&format!("<code>{short}</code> "));
-                }
-                if let Some(pr) = m.pr {
-                    if let Some(url) = &m.pr_url {
-                        html.push_str(&format!(r#"<a href="{}">PR #{pr}</a> "#, html_escape(url)));
-                    } else {
-                        html.push_str(&format!("PR #{pr} "));
-                    }
-                }
-                if let Some(title) = &m.title {
-                    html.push_str(&html_escape(title));
-                }
-            }
-            html.push_str("</div>");
-
-            if let Some(date) = &entry.date {
-                html.push_str(&format!(r#"<span class="date">{date}</span>"#));
-            }
-
-            // Deep-link into the UI invocation view
-            html.push_str(&format!(
-                r#" <a class="view-link" href="/#/inv/{}">View &rarr;</a>"#,
-                html_escape(&entry.path)
-            ));
-
-            html.push_str("</div>\n");
-        }
-    }
-
-    html.push_str("</body></html>");
-    Html(html)
-}
-
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
