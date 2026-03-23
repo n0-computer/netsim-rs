@@ -30,12 +30,11 @@ fn extract_matrix(root: &mut toml::value::Table) -> Result<Option<MatrixDef>> {
     };
 
     // Extract [matrix.params.*] before iterating axes.
-    let params: AxisParams =
-        if let Some(params_val) = matrix.remove("params") {
-            parse_params_table(params_val)?
-        } else {
-            HashMap::new()
-        };
+    let params: AxisParams = if let Some(params_val) = matrix.remove("params") {
+        parse_params_table(params_val)?
+    } else {
+        HashMap::new()
+    };
 
     // Remaining keys are axes: each must be an array of strings.
     let mut axes: Vec<(String, Vec<String>)> = Vec::new();
@@ -77,9 +76,7 @@ struct MatrixDef {
 /// baseline = { latency = "0", rate = "0" }
 /// impaired = { latency = "200", rate = "4000" }
 /// ```
-fn parse_params_table(
-    val: Value,
-) -> Result<AxisParams> {
+fn parse_params_table(val: Value) -> Result<AxisParams> {
     let Value::Table(axes) = val else {
         bail!("`[matrix.params]` must be a table");
     };
