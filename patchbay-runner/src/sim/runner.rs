@@ -1580,17 +1580,50 @@ fn rewrite_counted_bare_ref(s: &str, idx: usize, counts: &HashMap<String, usize>
     s.to_string()
 }
 
+/// Rewrite capture keys in `StepResults` for counted devices.
+///
+/// Results keys like `"fetcher.size"` (set during template expansion) need to become
+/// `"fetcher-0.size"` when the step is expanded for a counted device.
+fn rewrite_results_counted_refs(
+    results: &mut StepResults,
+    idx: usize,
+    counts: &HashMap<String, usize>,
+) {
+    let rewrite = |opt: &mut Option<String>| {
+        if let Some(ref mut key) = opt {
+            *key = rewrite_counted_bare_ref(key, idx, counts);
+        }
+    };
+    rewrite(&mut results.duration);
+    rewrite(&mut results.up_bytes);
+    rewrite(&mut results.down_bytes);
+    rewrite(&mut results.latency_ms);
+}
+
 fn rewrite_step_counted_refs(step: &mut Step, idx: usize, counts: &HashMap<String, usize>) {
     match step {
-        Step::Run { cmd, requires, .. } => {
+        Step::Run {
+            cmd,
+            requires,
+            results,
+            ..
+        } => {
             for part in cmd.iter_mut() {
                 *part = rewrite_counted_refs(part, idx, counts);
             }
             for req in requires.iter_mut() {
                 *req = rewrite_counted_bare_ref(req, idx, counts);
             }
+            if let Some(res) = results {
+                rewrite_results_counted_refs(res, idx, counts);
+            }
         }
-        Step::Spawn { cmd, requires, .. } => {
+        Step::Spawn {
+            cmd,
+            requires,
+            results,
+            ..
+        } => {
             if let Some(cmd) = cmd {
                 for part in cmd.iter_mut() {
                     *part = rewrite_counted_refs(part, idx, counts);
@@ -1598,6 +1631,10 @@ fn rewrite_step_counted_refs(step: &mut Step, idx: usize, counts: &HashMap<Strin
             }
             for req in requires.iter_mut() {
                 *req = rewrite_counted_bare_ref(req, idx, counts);
+            }
+            // Rewrite results capture keys (e.g. "fetcher.size" → "fetcher-0.size")
+            if let Some(res) = results {
+                rewrite_results_counted_refs(res, idx, counts);
             }
         }
         Step::GenFile { content, .. } => {
