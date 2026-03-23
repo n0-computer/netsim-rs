@@ -790,15 +790,8 @@ tbody td {
     color: var(--text-muted);
 }
 
-/* ── Pushed runs index (/runs) ── */
-.pushed-runs-index {
-    max-width: 1000px;
-    margin: 0 auto;
-    padding: 2rem;
-}
-.pushed-runs-index h1 {
-    font-size: 1.25rem;
-    font-weight: 600;
+/* ── Pushed run entries ── */
+.pushed-runs-section {
     margin-bottom: 1.5rem;
 }
 .pushed-run-entry {

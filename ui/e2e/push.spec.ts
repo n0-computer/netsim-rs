@@ -111,15 +111,13 @@ test('push run results and view via deep link', async ({ page }) => {
     })
     expect(noAuthRes.status).toBe(401)
 
-    // Step 7: Verify the /api/pushed-runs endpoint returns manifest data.
-    const pushedRunsRes = await fetch(`${SERVE_URL}/api/pushed-runs`)
-    expect(pushedRunsRes.status).toBe(200)
-    const pushedRuns = await pushedRunsRes.json() as Array<{ project: string; manifest: Record<string, unknown> | null }>
-    expect(pushedRuns.length).toBeGreaterThan(0)
-    expect(pushedRuns[0].project).toBe('test-project')
-    expect(pushedRuns[0].manifest).toBeTruthy()
-    expect(pushedRuns[0].manifest!.branch).toBe('feat/test')
-    expect(pushedRuns[0].manifest!.pr).toBe(42)
+    // Step 7: Verify /api/runs includes manifest data from run.json.
+    const allRunsRes = await fetch(`${SERVE_URL}/api/runs`)
+    const allRuns = await allRunsRes.json() as Array<{ name: string; manifest?: Record<string, unknown> | null }>
+    const withManifest = allRuns.find((r) => r.manifest)
+    expect(withManifest).toBeTruthy()
+    expect(withManifest!.manifest!.branch).toBe('feat/test')
+    expect(withManifest!.manifest!.pr).toBe(42)
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')

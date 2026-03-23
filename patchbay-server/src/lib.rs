@@ -66,10 +66,16 @@ pub struct RunInfo {
     pub path: PathBuf,
     /// Human-readable label from `state.json`, if available.
     pub label: Option<String>,
-    /// Lab status from `state.json` (e.g. `"running"`, `"stopping"`).
+    /// Lab lifecycle status from `state.json` (e.g. `"running"`, `"finished"`).
+    ///
+    /// This is the per-sim lab state, not the CI test outcome — see
+    /// [`RunManifest::test_outcome`] for the overall pass/fail from CI.
     pub status: Option<String>,
     /// Invocation group (first path component for nested runs, `None` for flat/direct).
     pub invocation: Option<String>,
+    /// CI manifest from `run.json` in the invocation directory, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest: Option<RunManifest>,
 }
 
 /// Maximum directory depth to scan for run directories.
@@ -94,11 +100,25 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
             label,
             status,
             invocation: None,
+            manifest: read_run_json(base),
         }]);
     }
 
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
+
+    // Attach run.json manifests from invocation directories.
+    let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
+        std::collections::HashMap::new();
+    for run in &mut runs {
+        let inv = run.invocation.clone().unwrap_or_else(|| run.name.clone());
+        let manifest = manifest_cache
+            .entry(inv.clone())
+            .or_insert_with(|| read_run_json(&base.join(&inv)))
+            .clone();
+        run.manifest = manifest;
+    }
+
     runs.sort_by(|a, b| b.name.cmp(&a.name));
     Ok(runs)
 }
@@ -148,6 +168,7 @@ fn scan_runs_recursive(
                 label,
                 status,
                 invocation,
+                manifest: None, // populated after scan
             });
         } else {
             scan_runs_recursive(root, &path, depth + 1, runs)?;
@@ -211,7 +232,6 @@ fn build_router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/", get(index_html))
         .route("/runs", get(index_html))
-        .route("/api/pushed-runs", get(get_pushed_runs))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/state", get(get_run_state))
@@ -329,15 +349,6 @@ async fn get_runs(State(state): State<AppState>) -> impl IntoResponse {
         StatusCode::OK,
         [("content-type", "application/json")],
         serde_json::to_string(&runs).unwrap_or_else(|_| "[]".to_string()),
-    )
-}
-
-async fn get_pushed_runs(State(state): State<AppState>) -> impl IntoResponse {
-    let entries = discover_pushed_runs(&state.base);
-    (
-        StatusCode::OK,
-        [("content-type", "application/json")],
-        serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()),
     )
 }
 
@@ -835,9 +846,13 @@ pub struct RunManifest {
     /// Human-readable run title/label.
     #[serde(default)]
     pub title: Option<String>,
-    /// Overall test status (e.g. `"success"`, `"failure"`).
-    #[serde(default)]
-    pub status: Option<String>,
+    /// Overall CI test outcome (e.g. `"success"`, `"failure"`).
+    ///
+    /// This is the result of the CI test step, not the lab lifecycle status.
+    /// The lab lifecycle status lives in `state.json` as `RunInfo::status`
+    /// and tracks per-sim states like "running" or "finished".
+    #[serde(default, alias = "status")]
+    pub test_outcome: Option<String>,
 }
 
 const RUN_JSON: &str = "run.json";
@@ -845,62 +860,6 @@ const RUN_JSON: &str = "run.json";
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
     serde_json::from_str(&text).ok()
-}
-
-// ── Runs index page ─────────────────────────────────────────────────
-
-/// Metadata for a run entry on the index page.
-#[derive(Serialize)]
-struct RunIndexEntry {
-    /// Relative path within run_dir.
-    path: String,
-    /// Project name (first path component).
-    project: String,
-    /// run.json manifest if present.
-    manifest: Option<RunManifest>,
-    /// Timestamp from directory name.
-    date: Option<String>,
-}
-
-/// Discover pushed runs for the index page.
-/// Structure: run_dir/{project}-{date}-{uuid}/...
-fn discover_pushed_runs(run_dir: &Path) -> Vec<RunIndexEntry> {
-    let mut entries = Vec::new();
-    let Ok(dirs) = fs::read_dir(run_dir) else {
-        return entries;
-    };
-    for dir_entry in dirs.flatten() {
-        if !dir_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let name = dir_entry.file_name().to_string_lossy().to_string();
-        let manifest = read_run_json(&dir_entry.path());
-        // Extract project from dirname: {project}-YYYYMMDD_HHMMSS-{uuid}
-        // Find the date portion (first occurrence of YYYYMMDD_)
-        let project = name
-            .find(|c: char| c.is_ascii_digit())
-            .and_then(|i| {
-                if i > 0 {
-                    Some(name[..i - 1].to_string())
-                } else {
-                    None
-                }
-            })
-            .or_else(|| manifest.as_ref().map(|m| m.project.clone()))
-            .unwrap_or_else(|| name.clone());
-        let date = name
-            .find(|c: char| c.is_ascii_digit())
-            .and_then(|i| name.get(i..i + 15))
-            .map(|s| s.to_string());
-        entries.push(RunIndexEntry {
-            path: name,
-            project,
-            manifest,
-            date,
-        });
-    }
-    entries.sort_by(|a, b| b.path.cmp(&a.path));
-    entries
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────

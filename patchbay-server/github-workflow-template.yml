@@ -57,7 +57,7 @@ jobs:
             "pr": ${{ github.event.pull_request.number || 'null' }},
             "pr_url": "${{ github.event.pull_request.html_url || '' }}",
             "title": "${{ github.event.pull_request.title || github.event.head_commit.message || '' }}",
-            "status": "$TEST_STATUS",
+            "test_outcome": "$TEST_STATUS",
             "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           }
           MANIFEST

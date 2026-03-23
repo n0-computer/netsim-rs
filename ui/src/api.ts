@@ -3,12 +3,26 @@ import type { CombinedResults, SimResults } from './types'
 
 const API = '/api'
 
+/** Manifest from run.json, included with pushed CI runs. */
+export interface RunManifest {
+  project: string
+  branch?: string | null
+  commit?: string | null
+  pr?: number | null
+  pr_url?: string | null
+  created_at?: string | null
+  title?: string | null
+  /** CI test outcome (e.g. "success", "failure"). Not the lab lifecycle status. */
+  test_outcome?: string | null
+}
+
 /** Metadata for a single Lab run directory. */
 export interface RunInfo {
   name: string
   label: string | null
   status: string | null
   invocation: string | null
+  manifest?: RunManifest | null
 }
 
 /** A log file within a run directory. */
@@ -91,36 +105,6 @@ export async function fetchResults(run: string): Promise<SimResults | null> {
 /** Base URL for fetching files within a run directory. */
 export function runFilesBase(run: string): string {
   return `${API}/runs/${encodeURIComponent(run)}/files/`
-}
-
-/** Manifest from run.json, included with pushed CI runs. */
-export interface RunManifest {
-  project: string
-  branch?: string | null
-  commit?: string | null
-  pr?: number | null
-  pr_url?: string | null
-  created_at?: string | null
-  title?: string | null
-  status?: string | null
-}
-
-/** Entry for a pushed run directory. */
-export interface PushedRunEntry {
-  path: string
-  project: string
-  manifest: RunManifest | null
-  date: string | null
-}
-
-export async function fetchPushedRuns(): Promise<PushedRunEntry[]> {
-  try {
-    const res = await fetch(`${API}/pushed-runs`)
-    if (!res.ok) return []
-    return (await res.json()) as PushedRunEntry[]
-  } catch {
-    return []
-  }
 }
 
 export async function fetchCombinedResults(

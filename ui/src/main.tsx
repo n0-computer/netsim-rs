@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
 import App from './App'
 import RunsIndex from './RunsIndex'
-import PushedRunsIndex from './PushedRunsIndex'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -11,7 +10,6 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <HashRouter>
       <Routes>
         <Route path="/" element={<RunsIndex />} />
-        <Route path="/runs" element={<PushedRunsIndex />} />
         <Route path="/run/*" element={<App mode="run" />} />
         <Route path="/inv/*" element={<App mode="inv" />} />
         <Route path="*" element={<Navigate to="/" replace />} />
