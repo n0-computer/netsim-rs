@@ -12,7 +12,10 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use patchbay::check_caps;
+#[cfg(feature = "serve")]
 use patchbay_server::DEFAULT_UI_BIND;
+#[cfg(not(feature = "serve"))]
+const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -83,6 +86,7 @@ enum Command {
         project_root: Option<PathBuf>,
     },
     /// Serve embedded devtools UI over HTTP for a lab output directory.
+    #[cfg(feature = "serve")]
     Serve {
         /// Output directory containing lab run subdirectories.
         ///
@@ -142,7 +146,7 @@ async fn tokio_main() -> Result<()> {
             no_build,
             verbose,
             open,
-            bind,
+            bind: _bind,
             project_root,
             timeout,
         } => {
@@ -151,16 +155,21 @@ async fn tokio_main() -> Result<()> {
                 .transpose()
                 .context("invalid --timeout value")?;
             if open {
-                let bind_addr = bind.clone();
-                let work = work_dir.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = patchbay_server::serve(work, &bind_addr).await {
-                        tracing::error!("server error: {e}");
-                    }
-                });
-                println!("patchbay: http://{bind}/");
-                let url = format!("http://{bind}/");
-                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                #[cfg(feature = "serve")]
+                {
+                    let bind_addr = _bind.clone();
+                    let work = work_dir.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = patchbay_server::serve(work, &bind_addr).await {
+                            tracing::error!("server error: {e}");
+                        }
+                    });
+                    println!("patchbay: http://{_bind}/");
+                    let url = format!("http://{_bind}/");
+                    let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                }
+                #[cfg(not(feature = "serve"))]
+                bail!("--open requires the `serve` feature");
             }
             let project_root = match project_root {
                 Some(p) => p,
@@ -206,6 +215,7 @@ async fn tokio_main() -> Result<()> {
             )
             .await
         }
+        #[cfg(feature = "serve")]
         Command::Serve {
             outdir,
             testdir,
@@ -279,6 +289,7 @@ struct PatchbayConfig {
 /// Runs `cargo metadata` to find the target directory, then appends
 /// `testdir-current`. This matches the convention used by the `testdir`
 /// crate when running tests natively.
+#[cfg(feature = "serve")]
 fn resolve_testdir_native() -> Result<PathBuf> {
     let output = ProcessCommand::new("cargo")
         .args(["metadata", "--format-version=1", "--no-deps"])
