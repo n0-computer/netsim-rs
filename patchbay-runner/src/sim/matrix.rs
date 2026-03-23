@@ -14,6 +14,9 @@ use toml::Value;
 /// A single matrix combination: maps placeholder names to replacement strings.
 type SubstMap = HashMap<String, String>;
 
+/// Per-axis parameter overrides: `axis_name -> variant_value -> { key -> value }`.
+type AxisParams = HashMap<String, HashMap<String, HashMap<String, String>>>;
+
 /// Extract the `[matrix]` table from a TOML value tree, returning the axis
 /// definitions and per-axis params. The `[matrix]` key is removed from `root`.
 ///
@@ -27,7 +30,7 @@ fn extract_matrix(root: &mut toml::value::Table) -> Result<Option<MatrixDef>> {
     };
 
     // Extract [matrix.params.*] before iterating axes.
-    let params: HashMap<String, HashMap<String, HashMap<String, String>>> =
+    let params: AxisParams =
         if let Some(params_val) = matrix.remove("params") {
             parse_params_table(params_val)?
         } else {
@@ -64,7 +67,7 @@ struct MatrixDef {
     /// Ordered axes: `[(name, [value, ...])]`.
     axes: Vec<(String, Vec<String>)>,
     /// Per-axis params: `axis_name -> { variant_value -> { param_key -> param_value } }`.
-    params: HashMap<String, HashMap<String, HashMap<String, String>>>,
+    params: AxisParams,
 }
 
 /// Parse `[matrix.params]` which maps axis names to tables of variant params.
@@ -76,7 +79,7 @@ struct MatrixDef {
 /// ```
 fn parse_params_table(
     val: Value,
-) -> Result<HashMap<String, HashMap<String, HashMap<String, String>>>> {
+) -> Result<AxisParams> {
     let Value::Table(axes) = val else {
         bail!("`[matrix.params]` must be a table");
     };
