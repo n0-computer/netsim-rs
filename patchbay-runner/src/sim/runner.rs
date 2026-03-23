@@ -1457,6 +1457,7 @@ fn expand_counted_steps(steps: Vec<Guarded>, counts: &HashMap<String, usize>) ->
                     if let Some(id) = step_id(&cloned).map(|s| s.to_string()) {
                         set_step_id(&mut cloned, format!("{id}{suffix}"));
                     }
+                    rewrite_step_counted_refs(&mut cloned, idx, counts);
                     out.push(Guarded {
                         when: g.when.clone(),
                         step: cloned,
@@ -1543,6 +1544,58 @@ fn expand_assert_checks(
         Some(expanded)
     } else {
         None
+    }
+}
+
+/// Rewrite `${counted_device.capture}` → `${counted_device-{idx}.capture}` in a string.
+///
+/// During counted expansion, when a step for device index `idx` references captures from
+/// another counted device (e.g. `${provider.endpoint_id}`), we need to rewrite those
+/// references to the indexed form (e.g. `${provider-0.endpoint_id}`).
+///
+/// For round-robin mapping when counts differ, uses modulo: `idx % other_count`.
+fn rewrite_counted_refs(s: &str, idx: usize, counts: &HashMap<String, usize>) -> String {
+    let mut result = s.to_string();
+    for (name, &count) in counts {
+        let pattern = format!("${{{name}.");
+        if result.contains(&pattern) {
+            let mapped = idx % count;
+            let replacement = format!("${{{name}-{mapped}.");
+            result = result.replace(&pattern, &replacement);
+        }
+    }
+    result
+}
+
+/// Rewrite counted device references in cmd and requires fields of a step.
+fn rewrite_step_counted_refs(step: &mut Step, idx: usize, counts: &HashMap<String, usize>) {
+    match step {
+        Step::Run {
+            cmd, requires, ..
+        } => {
+            for part in cmd.iter_mut() {
+                *part = rewrite_counted_refs(part, idx, counts);
+            }
+            for req in requires.iter_mut() {
+                *req = rewrite_counted_refs(req, idx, counts);
+            }
+        }
+        Step::Spawn {
+            cmd, requires, ..
+        } => {
+            if let Some(cmd) = cmd {
+                for part in cmd.iter_mut() {
+                    *part = rewrite_counted_refs(part, idx, counts);
+                }
+            }
+            for req in requires.iter_mut() {
+                *req = rewrite_counted_refs(req, idx, counts);
+            }
+        }
+        Step::GenFile { content, .. } => {
+            *content = rewrite_counted_refs(content, idx, counts);
+        }
+        _ => {}
     }
 }
 
