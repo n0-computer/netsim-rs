@@ -313,10 +313,10 @@ pub async fn prepare_sims(
         None => std::env::current_dir().context("resolve current directory for build root")?,
     };
     let run_root = prepare_run_root(&work_dir)?;
+    build_prepare_assets_for_run(&sims, &build_root, &run_root, no_build).await?;
     let assembled =
         assemble_binaries_for_run(&sims, &run_root, &binary_overrides, &build_root, no_build)
             .await?;
-    build_prepare_assets_for_run(&sims, &build_root, &run_root, no_build).await?;
     println!(
         "prepared {} simulations and {} binaries under {}",
         sims.len(),
