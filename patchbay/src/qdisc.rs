@@ -7,23 +7,66 @@ const SPAWN_RETRIES: u32 = 3;
 /// Parameters for `tc netem` impairment.
 ///
 /// All fields default to zero (no impairment). Set only the fields you need.
+/// Fields accept both native TOML types and string representations
+/// (e.g. `latency_ms = 200` and `latency_ms = "200"` are equivalent).
+/// This enables matrix variable substitution in sim TOML files.
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct LinkLimits {
     /// Rate limit in kbit/s (0 = unlimited).
+    #[serde(deserialize_with = "coerce::u32_or_string")]
     pub rate_kbit: u32,
     /// Packet loss percentage (0.0–100.0).
+    #[serde(deserialize_with = "coerce::f32_or_string")]
     pub loss_pct: f32,
     /// One-way latency in milliseconds.
+    #[serde(deserialize_with = "coerce::u32_or_string")]
     pub latency_ms: u32,
     /// Jitter in milliseconds (uniform ±jitter around latency).
+    #[serde(deserialize_with = "coerce::u32_or_string")]
     pub jitter_ms: u32,
     /// Packet reordering percentage (0.0–100.0).
+    #[serde(deserialize_with = "coerce::f32_or_string")]
     pub reorder_pct: f32,
     /// Packet duplication percentage (0.0–100.0).
+    #[serde(deserialize_with = "coerce::f32_or_string")]
     pub duplicate_pct: f32,
     /// Bit-error corruption percentage (0.0–100.0).
+    #[serde(deserialize_with = "coerce::f32_or_string")]
     pub corrupt_pct: f32,
+}
+
+/// Serde helpers that accept both native types and string representations.
+mod coerce {
+    use serde::{Deserialize, Deserializer};
+
+    pub(super) fn u32_or_string<'de, D: Deserializer<'de>>(de: D) -> Result<u32, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Val {
+            Num(u32),
+            Str(String),
+        }
+        match Val::deserialize(de)? {
+            Val::Num(n) => Ok(n),
+            Val::Str(s) if s.is_empty() => Ok(0),
+            Val::Str(s) => s.parse().map_err(serde::de::Error::custom),
+        }
+    }
+
+    pub(super) fn f32_or_string<'de, D: Deserializer<'de>>(de: D) -> Result<f32, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Val {
+            Num(f32),
+            Str(String),
+        }
+        match Val::deserialize(de)? {
+            Val::Num(n) => Ok(n),
+            Val::Str(s) if s.is_empty() => Ok(0.0),
+            Val::Str(s) => s.parse().map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 /// Applies netem impairment on `ifname`. Caller must already be in the target ns.

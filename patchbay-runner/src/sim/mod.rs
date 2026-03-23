@@ -1,6 +1,7 @@
 pub mod build;
 pub mod capture;
 pub mod env;
+pub mod matrix;
 pub mod progress;
 pub mod report;
 pub mod runner;
@@ -127,13 +128,42 @@ pub struct StepGroupDef {
 
 /// Top-level `[[step]]` entry.
 ///
-/// `#[serde(untagged)]` tries `UseTemplate` first (succeeds when `use` key is
-/// present), then falls back to `Concrete`.
-#[derive(Deserialize, Clone)]
-#[serde(untagged)]
+/// Deserialized from a raw TOML table. The `when` field (if present) is
+/// extracted before the step is parsed into a [`Step`] enum.
+#[derive(Clone)]
 pub enum StepEntry {
     UseTemplate(UseStep),
-    Concrete(Step),
+    Concrete { when: Option<String>, step: Step },
+}
+
+impl<'de> Deserialize<'de> for StepEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let mut table = toml::value::Table::deserialize(deserializer)?;
+
+        // Extract `when` before trying to parse the step.
+        let when = table.remove("when").and_then(|v| match v {
+            toml::Value::String(s) => Some(s),
+            toml::Value::Boolean(b) => Some(b.to_string()),
+            _ => None,
+        });
+
+        // Try UseTemplate first (has `use` key).
+        if table.contains_key("use") {
+            let use_step: UseStep = toml::Value::Table(table)
+                .try_into()
+                .map_err(serde::de::Error::custom)?;
+            return Ok(StepEntry::UseTemplate(use_step));
+        }
+
+        // Fall back to Concrete step.
+        let step: Step = toml::Value::Table(table)
+            .try_into()
+            .map_err(serde::de::Error::custom)?;
+        Ok(StepEntry::Concrete { when, step })
+    }
 }
 
 /// Call-site fields for `use = "template-or-group-name"`.
@@ -170,6 +200,24 @@ pub struct StepResults {
     pub down_bytes: Option<String>,
     /// Capture key for latency in milliseconds.
     pub latency_ms: Option<String>,
+}
+
+/// A step with an optional `when` guard.
+///
+/// Steps with `when = "false"` are skipped during execution.
+/// Any other value (or absent) means the step runs normally.
+/// This is used with matrix expansion to conditionally include steps.
+#[derive(Clone)]
+pub struct Guarded {
+    pub when: Option<String>,
+    pub step: Step,
+}
+
+impl Guarded {
+    /// Returns `true` if this step should be skipped.
+    pub fn is_skipped(&self) -> bool {
+        self.when.as_deref() == Some("false")
+    }
 }
 
 /// One step in the sim sequence (after template/group expansion).

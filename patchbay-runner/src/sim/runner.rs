@@ -28,8 +28,8 @@ use crate::sim::{
     },
     steps::{execute_step, join_pump, step_action, step_device, step_id},
     topology::load_topology,
-    BinarySpec, PrepareSpec, SimFile, Step, StepEntry, StepGroupDef, StepResults, StepTemplateDef,
-    UseStep,
+    BinarySpec, Guarded, PrepareSpec, SimFile, Step, StepEntry, StepGroupDef, StepResults,
+    StepTemplateDef, UseStep,
 };
 
 // ─────────────────────────────────────────────
@@ -214,7 +214,7 @@ pub async fn run_sims(
         progress.updated_at = format_timestamp(SystemTime::now());
         write_progress(&run_root, &progress).await?;
 
-        let outcome = run_single_sim(
+        let variant_outcomes = run_single_sim(
             sim,
             run_root.clone(),
             Arc::clone(&assembled_binary_paths),
@@ -222,20 +222,26 @@ pub async fn run_sims(
             sim_timeout,
         )
         .await?;
-        sim_dir_names.push(outcome.sim_dir_name.clone());
-        if let Some(item) = progress.simulations.get_mut(idx) {
-            item.status = outcome.summary.status.clone();
-            item.sim_dir = Some(outcome.summary.sim_dir.clone());
-            item.runtime_ms = Some(outcome.summary.runtime_ms);
-            item.sim_json = Some(format!("{}/sim.json", outcome.summary.sim_dir));
-            item.sim = outcome.summary.sim.clone();
-            item.error = summarized_sim_error(&outcome.summary);
-        }
-        progress.completed = outcomes.len() + 1;
-        if outcome.success {
-            progress.ok += 1;
-        } else {
-            progress.error += 1;
+        for outcome in variant_outcomes {
+            sim_dir_names.push(outcome.sim_dir_name.clone());
+            // Update progress for the original sim entry (first variant wins).
+            if let Some(item) = progress.simulations.get_mut(idx) {
+                if item.status == "running" || item.status == "pending" {
+                    item.status = outcome.summary.status.clone();
+                    item.sim_dir = Some(outcome.summary.sim_dir.clone());
+                    item.runtime_ms = Some(outcome.summary.runtime_ms);
+                    item.sim_json = Some(format!("{}/sim.json", outcome.summary.sim_dir));
+                    item.sim = outcome.summary.sim.clone();
+                    item.error = summarized_sim_error(&outcome.summary);
+                }
+            }
+            progress.completed = outcomes.len() + 1;
+            if outcome.success {
+                progress.ok += 1;
+            } else {
+                progress.error += 1;
+            }
+            outcomes.push(outcome);
         }
         progress.current_sim = progress
             .simulations
@@ -244,7 +250,6 @@ pub async fn run_sims(
             .map(|s| s.sim.clone());
         progress.updated_at = format_timestamp(SystemTime::now());
         write_progress(&run_root, &progress).await?;
-        outcomes.push(outcome);
         write_combined_results_for_runs(&run_root, &sim_dir_names)
             .await
             .context("write incremental combined results")?;
@@ -327,43 +332,23 @@ async fn run_single_sim(
     assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
     verbose: bool,
     sim_timeout: Option<Duration>,
-) -> Result<SimRunOutcome> {
-    let started_at = SystemTime::now();
-    let started_at_str = format_timestamp(started_at);
-    let started_instant = Instant::now();
+) -> Result<Vec<SimRunOutcome>> {
     let fallback_sim_name = sim_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("sim")
         .to_string();
 
-    let parsed_sim = match std::fs::read_to_string(&sim_path) {
-        Ok(text) => match toml::from_str::<SimFile>(&text) {
-            Ok(sim) => sim,
-            Err(err) => {
-                return finalize_failed_sim(
-                    &run_root,
-                    &sim_path,
-                    &fallback_sim_name,
-                    started_at_str,
-                    started_instant.elapsed(),
-                    SimFailureInfo {
-                        phase: "parse-sim".to_string(),
-                        message: err.to_string(),
-                        step: None,
-                    },
-                    base_setup_summary(&sim_path),
-                )
-                .await;
-            }
-        },
+    // Parse TOML to value tree, expand matrix, then deserialize each variant.
+    let text = match std::fs::read_to_string(&sim_path) {
+        Ok(t) => t,
         Err(err) => {
-            return finalize_failed_sim(
+            let outcome = finalize_failed_sim(
                 &run_root,
                 &sim_path,
                 &fallback_sim_name,
-                started_at_str,
-                started_instant.elapsed(),
+                format_timestamp(SystemTime::now()),
+                Duration::ZERO,
                 SimFailureInfo {
                     phase: "read-sim".to_string(),
                     message: err.to_string(),
@@ -371,23 +356,116 @@ async fn run_single_sim(
                 },
                 base_setup_summary(&sim_path),
             )
+            .await?;
+            return Ok(vec![outcome]);
+        }
+    };
+
+    let root_table = match toml::from_str::<toml::value::Table>(&text) {
+        Ok(t) => t,
+        Err(err) => {
+            let outcome = finalize_failed_sim(
+                &run_root,
+                &sim_path,
+                &fallback_sim_name,
+                format_timestamp(SystemTime::now()),
+                Duration::ZERO,
+                SimFailureInfo {
+                    phase: "parse-sim".to_string(),
+                    message: err.to_string(),
+                    step: None,
+                },
+                base_setup_summary(&sim_path),
+            )
+            .await?;
+            return Ok(vec![outcome]);
+        }
+    };
+
+    let expanded_tables = match crate::sim::matrix::expand_matrix(root_table) {
+        Ok(t) => t,
+        Err(err) => {
+            let outcome = finalize_failed_sim(
+                &run_root,
+                &sim_path,
+                &fallback_sim_name,
+                format_timestamp(SystemTime::now()),
+                Duration::ZERO,
+                SimFailureInfo {
+                    phase: "matrix-expand".to_string(),
+                    message: err.to_string(),
+                    step: None,
+                },
+                base_setup_summary(&sim_path),
+            )
+            .await?;
+            return Ok(vec![outcome]);
+        }
+    };
+
+    let mut all_outcomes = Vec::new();
+    for table in expanded_tables {
+        let outcome = run_single_sim_variant(
+            &sim_path,
+            &fallback_sim_name,
+            table,
+            &run_root,
+            Arc::clone(&assembled_binary_paths),
+            verbose,
+            sim_timeout,
+        )
+        .await?;
+        all_outcomes.push(outcome);
+    }
+    Ok(all_outcomes)
+}
+
+async fn run_single_sim_variant(
+    sim_path: &Path,
+    fallback_sim_name: &str,
+    table: toml::value::Table,
+    run_root: &Path,
+    assembled_binary_paths: Arc<HashMap<String, PathBuf>>,
+    verbose: bool,
+    sim_timeout: Option<Duration>,
+) -> Result<SimRunOutcome> {
+    let started_at = SystemTime::now();
+    let started_at_str = format_timestamp(started_at);
+    let started_instant = Instant::now();
+
+    let parsed_sim: SimFile = match toml::Value::Table(table).try_into() {
+        Ok(sim) => sim,
+        Err(err) => {
+            return finalize_failed_sim(
+                run_root,
+                sim_path,
+                fallback_sim_name,
+                started_at_str,
+                started_instant.elapsed(),
+                SimFailureInfo {
+                    phase: "parse-sim".to_string(),
+                    message: err.to_string(),
+                    step: None,
+                },
+                base_setup_summary(sim_path),
+            )
             .await;
         }
     };
 
     let sim_name = if parsed_sim.sim.name.is_empty() {
-        fallback_sim_name.clone()
+        fallback_sim_name.to_string()
     } else {
         parsed_sim.sim.name.clone()
     };
-    let setup = setup_summary_from_sim(&sim_path, &parsed_sim);
-    let run_work_dir = prepare_sim_dir(&run_root, &sim_name)?;
+    let setup = setup_summary_from_sim(sim_path, &parsed_sim);
+    let run_work_dir = prepare_sim_dir(run_root, &sim_name)?;
     tokio::fs::create_dir_all(&run_work_dir)
         .await
         .context("create work dir")?;
 
     let execute = execute_single_sim(
-        &sim_path,
+        sim_path,
         &run_work_dir,
         &sim_name,
         parsed_sim,
@@ -766,13 +844,17 @@ async fn execute_single_sim(
     let steps = expand_counted_steps(steps, &counts);
 
     // ── Execute steps ────────────────────────────────────────────────────
-    for (idx, step) in steps.iter().enumerate() {
-        if let Err(err) = execute_step(&mut state, step).await {
+    for (idx, g) in steps.iter().enumerate() {
+        if g.is_skipped() {
+            tracing::debug!(action = step_action(&g.step), when = ?g.when, "step: skipped (when=false)");
+            continue;
+        }
+        if let Err(err) = execute_step(&mut state, &g.step).await {
             let step_info = StepFailureInfo {
                 index: idx,
-                action: step_action(step).to_string(),
-                id: step_id(step).map(|s| s.to_string()),
-                device: step_device(step).map(|s| s.to_string()),
+                action: step_action(&g.step).to_string(),
+                id: step_id(&g.step).map(|s| s.to_string()),
+                device: step_device(&g.step).map(|s| s.to_string()),
             };
             return Err(err).context(format!(
                 "step-failed:{}",
@@ -1359,34 +1441,40 @@ fn device_counts(topo: &LabConfig) -> HashMap<String, usize> {
 ///
 /// For a device `"peer"` with `count = 3`, a step targeting `"peer"` is expanded
 /// to three steps targeting `"peer-0"`, `"peer-1"`, `"peer-2"`, with id suffixed similarly.
-fn expand_counted_steps(steps: Vec<Step>, counts: &HashMap<String, usize>) -> Vec<Step> {
+fn expand_counted_steps(steps: Vec<Guarded>, counts: &HashMap<String, usize>) -> Vec<Guarded> {
     if counts.is_empty() {
         return steps;
     }
     let mut out = Vec::with_capacity(steps.len());
-    for step in steps {
-        let dev = step_device(&step).map(|s| s.to_string());
+    for g in steps {
+        let dev = step_device(&g.step).map(|s| s.to_string());
         if let Some(ref dev_name) = dev {
             if let Some(&n) = counts.get(dev_name) {
                 for idx in 0..n {
-                    let mut cloned = step.clone();
+                    let mut cloned = g.step.clone();
                     let suffix = format!("-{idx}");
                     set_step_device(&mut cloned, format!("{dev_name}{suffix}"));
                     if let Some(id) = step_id(&cloned).map(|s| s.to_string()) {
                         set_step_id(&mut cloned, format!("{id}{suffix}"));
                     }
-                    out.push(cloned);
+                    out.push(Guarded {
+                        when: g.when.clone(),
+                        step: cloned,
+                    });
                 }
                 continue;
             }
         }
         // WaitFor: expand if the id matches a counted device (convention: id == device name).
-        if let Step::WaitFor { ref id, .. } = step {
+        if let Step::WaitFor { ref id, .. } = g.step {
             if let Some(&n) = counts.get(id.as_str()) {
                 for idx in 0..n {
-                    let mut cloned = step.clone();
+                    let mut cloned = g.step.clone();
                     set_step_id(&mut cloned, format!("{id}-{idx}"));
-                    out.push(cloned);
+                    out.push(Guarded {
+                        when: g.when.clone(),
+                        step: cloned,
+                    });
                 }
                 continue;
             }
@@ -1395,18 +1483,21 @@ fn expand_counted_steps(steps: Vec<Step>, counts: &HashMap<String, usize>) -> Ve
         if let Step::Assert {
             ref check,
             ref checks,
-        } = step
+        } = g.step
         {
             let expanded = expand_assert_checks(check, checks, counts);
             if let Some(expanded_checks) = expanded {
-                out.push(Step::Assert {
-                    check: None,
-                    checks: expanded_checks,
+                out.push(Guarded {
+                    when: g.when.clone(),
+                    step: Step::Assert {
+                        check: None,
+                        checks: expanded_checks,
+                    },
                 });
                 continue;
             }
         }
-        out.push(step);
+        out.push(g);
     }
     out
 }
@@ -1486,7 +1577,7 @@ pub(crate) fn expand_steps(
     templates: &HashMap<String, StepTemplateDef>,
     groups: &HashMap<String, StepGroupDef>,
     _sim_path: &Path,
-) -> Result<Vec<Step>> {
+) -> Result<Vec<Guarded>> {
     // First pass: expand groups.
     let mut flat: Vec<StepEntry> = Vec::new();
     for entry in entries {
@@ -1532,13 +1623,19 @@ pub(crate) fn expand_steps(
                         };
                         flat.push(StepEntry::UseTemplate(use_step_inner));
                     } else {
+                        // Extract `when` before deserializing the step.
+                        let when = table.remove("when").and_then(|v| match v {
+                            toml::Value::String(s) => Some(s),
+                            toml::Value::Boolean(b) => Some(b.to_string()),
+                            _ => None,
+                        });
                         let step =
                             toml::Value::Table(table)
                                 .try_into::<Step>()
                                 .with_context(|| {
                                     format!("parse group step in '{}'", use_step.use_name)
                                 })?;
-                        flat.push(StepEntry::Concrete(step));
+                        flat.push(StepEntry::Concrete { when, step });
                     }
                 }
             }
@@ -1546,11 +1643,11 @@ pub(crate) fn expand_steps(
         }
     }
 
-    // Second pass: expand templates.
-    let mut steps: Vec<Step> = Vec::new();
+    // Second pass: expand templates and extract `when` guards.
+    let mut steps: Vec<Guarded> = Vec::new();
     for entry in flat {
         match entry {
-            StepEntry::Concrete(step) => steps.push(step),
+            StepEntry::Concrete { when, step } => steps.push(Guarded { when, step }),
             StepEntry::UseTemplate(use_step) => {
                 let tpl = templates.get(&use_step.use_name).ok_or_else(|| {
                     anyhow!(
@@ -1562,7 +1659,7 @@ pub(crate) fn expand_steps(
                 })?;
                 let step = merge_use_step(use_step, tpl)
                     .with_context(|| format!("expanding template '{}'", tpl.name))?;
-                steps.push(step);
+                steps.push(Guarded { when: None, step });
             }
         }
     }
@@ -1884,18 +1981,21 @@ mod tests {
 
     #[test]
     fn expand_counted_steps_expands_assert() {
-        let steps = vec![Step::Assert {
-            check: None,
-            checks: vec![
-                "fetcher.size matches [0-9]+".to_string(),
-                "other.val == ok".to_string(),
-            ],
+        let steps = vec![Guarded {
+            when: None,
+            step: Step::Assert {
+                check: None,
+                checks: vec![
+                    "fetcher.size matches [0-9]+".to_string(),
+                    "other.val == ok".to_string(),
+                ],
+            },
         }];
         let mut counts = HashMap::new();
         counts.insert("fetcher".to_string(), 3);
         let expanded = expand_counted_steps(steps, &counts);
         assert_eq!(expanded.len(), 1);
-        if let Step::Assert { check, checks } = &expanded[0] {
+        if let Step::Assert { check, checks } = &expanded[0].step {
             assert!(check.is_none());
             assert_eq!(checks.len(), 4); // 3 fetcher + 1 other
             assert_eq!(checks[0], "fetcher-0.size matches [0-9]+");
@@ -1909,8 +2009,9 @@ mod tests {
 
     #[test]
     fn expand_counted_steps_expands_device() {
+        let wrap = |step| Guarded { when: None, step };
         let steps = vec![
-            Step::Run {
+            wrap(Step::Run {
                 id: Some("ping".to_string()),
                 device: "peer".to_string(),
                 cmd: vec!["ping".to_string()],
@@ -1919,18 +2020,18 @@ mod tests {
                 captures: HashMap::new(),
                 requires: vec![],
                 results: None,
-            },
-            Step::Wait {
+            }),
+            wrap(Step::Wait {
                 duration: "1s".to_string(),
-            },
+            }),
         ];
         let mut counts = HashMap::new();
         counts.insert("peer".to_string(), 3);
         let expanded = expand_counted_steps(steps, &counts);
         assert_eq!(expanded.len(), 4); // 3 run + 1 wait
-        for (i, step) in expanded[..3].iter().enumerate() {
-            assert_eq!(step_device(step), Some(format!("peer-{i}")).as_deref());
-            assert_eq!(step_id(step), Some(format!("ping-{i}")).as_deref());
+        for (i, g) in expanded[..3].iter().enumerate() {
+            assert_eq!(step_device(&g.step), Some(format!("peer-{i}")).as_deref());
+            assert_eq!(step_id(&g.step), Some(format!("ping-{i}")).as_deref());
         }
     }
 
