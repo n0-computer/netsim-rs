@@ -75,18 +75,49 @@ fn setup_namespace_thread(
     crate::ns_tracing::install_namespace_subscriber(log_name, run_dir.map(|p| p.as_path()))
 }
 
-/// Private mount namespace + optional DNS overlay bind-mounts.
+/// Private mount namespace + remount `/proc` + optional DNS overlay bind-mounts.
 /// Called on every thread that enters a namespace (sync, async, user, blocking pool).
+///
+/// We always create a private mount namespace and remount `/proc` so that
+/// `/proc/net/route` (and other `/proc/net/*` files) reflect *this* network
+/// namespace's state instead of the host's. Without this, libraries that read
+/// `/proc/net/route` (e.g. netwatch) get the host's default route interface.
 fn apply_mount_overlay(overlay: Option<&DnsOverlay>) {
-    if overlay.is_some() {
-        if let Err(e) = unshare(CloneFlags::CLONE_NEWNS) {
-            tracing::warn!(
-                "unshare(CLONE_NEWNS) failed: {e} — DNS overlay bind-mounts may affect the host"
-            );
-        }
+    if let Err(e) = unshare(CloneFlags::CLONE_NEWNS) {
+        tracing::warn!(
+            "unshare(CLONE_NEWNS) failed: {e} — /proc and DNS overlays may show host data"
+        );
+    } else {
+        fixup_proc_net();
     }
     if let Some(o) = overlay {
         o.apply();
+    }
+}
+
+/// Bind-mount `/proc/thread-self/net` over `/proc/net` so that
+/// `/proc/net/route` (and other `/proc/net/*` files) reflect *this thread's*
+/// network namespace instead of the process's original one.
+///
+/// On Linux, `/proc/net` is a symlink to `self/net` which resolves to the
+/// *thread group leader's* network namespace, not the calling thread's. After
+/// `setns(CLONE_NEWNET)`, only `/proc/thread-self/net` reflects the new
+/// namespace. This bind-mount makes the standard `/proc/net/route` path work
+/// for libraries like `netwatch` that don't know about `thread-self`.
+fn fixup_proc_net() {
+    // First remove the symlink so we can mount over it
+    let ret = unsafe {
+        libc::mount(
+            c"/proc/thread-self/net".as_ptr(),
+            c"/proc/net".as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        tracing::warn!("bind-mount /proc/thread-self/net -> /proc/net failed: {err}");
     }
 }
 
@@ -240,9 +271,10 @@ impl Worker {
                     let ns_fd = open_current_thread_netns_fd()?;
                     let mut builder = tokio::runtime::Builder::new_current_thread();
                     builder.enable_all();
-                    if let Some(overlay) = thread_opts.dns_overlay.clone() {
-                        builder.on_thread_start(move || apply_mount_overlay(Some(&overlay)));
-                    }
+                    let overlay_for_threads = thread_opts.dns_overlay.clone();
+                    builder.on_thread_start(move || {
+                        apply_mount_overlay(overlay_for_threads.as_ref())
+                    });
                     let rt = builder.build().context("build tokio runtime")?;
                     Ok((ns_fd, rt))
                 })();

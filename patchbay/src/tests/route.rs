@@ -214,3 +214,47 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
     );
     Ok(())
 }
+
+/// /proc/net/route inside a device namespace must reflect the namespace's
+/// routing table, not the host's. Without a private /proc mount, netwatch
+/// reads the host's default route interface (e.g. enp7s0) instead of eth0,
+/// causing iroh to bind sockets to a non-existent interface after link flaps.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn proc_net_route_shows_namespace_routes() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+    let isp = lab.add_router("isp1").build().await?;
+    let home = lab
+        .add_router("home1")
+        .upstream(isp.id())
+        .nat(Nat::Home)
+        .build()
+        .await?;
+    let dev = lab
+        .add_device("dev1")
+        .iface("eth0", home.id(), None)
+        .build()
+        .await?;
+
+    let route_content = dev.run_sync(|| {
+        std::fs::read_to_string("/proc/net/route").context("read /proc/net/route")
+    })?;
+
+    // The namespace must contain eth0 with a default route.
+    assert!(
+        route_content.contains("eth0"),
+        "/proc/net/route should contain eth0 but got:\n{route_content}"
+    );
+
+    // No host interfaces should leak into the namespace.
+    for line in route_content.lines().skip(1) {
+        let iface = line.split_ascii_whitespace().next().unwrap_or("");
+        assert!(
+            iface == "eth0" || iface == "lo" || iface.is_empty(),
+            "unexpected host interface '{iface}' in namespace /proc/net/route:\n{route_content}"
+        );
+    }
+
+    Ok(())
+}
