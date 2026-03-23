@@ -12,6 +12,9 @@ covers every field.
 [[extends]]          # optional: inherit from a shared defaults file
 file = "..."
 
+[matrix]             # optional: generate multiple sims via Cartesian product
+topo = ["1to1", "1to3"]
+
 [sim]                # simulation metadata
 name     = "..."
 topology = "..."
@@ -34,6 +37,95 @@ topology = "..."
 
 Inline topology tables (`[[router]]`, `[device.*]`, `[region.*]`) can also
 appear directly in the sim file instead of referencing an external topology.
+
+An optional `[matrix]` table generates multiple simulations from one file via
+Cartesian product expansion. See [`[matrix]`](#matrix) below.
+
+---
+
+## `[matrix]`
+
+Defines axes whose Cartesian product generates multiple simulation variants
+from a single TOML file. Each axis is an array of string values. Placeholders
+of the form `${matrix.<key>}` in string values throughout the file are
+replaced with the corresponding axis value for each variant.
+
+Files without a `[matrix]` table produce exactly one simulation, unchanged.
+
+### Basic usage
+
+```toml
+[matrix]
+topo = ["1to1", "1to3", "1to5"]
+
+[sim]
+name     = "iroh-${matrix.topo}-baseline"
+topology = "${matrix.topo}-public"
+```
+
+This produces three simulations. `${matrix.topo}` is replaced with each value
+in order.
+
+### Multi-axis expansion
+
+Multiple axes produce the Cartesian product of all values:
+
+```toml
+[matrix]
+topo = ["1to1", "1to3"]
+cond = ["baseline", "impaired"]
+```
+
+This produces four simulations (2 x 2). Each combination of `topo` and `cond`
+generates one variant.
+
+### Params
+
+When a matrix axis needs more than one substitution value per variant, use
+`[matrix.params.<axis>]`. Each key in the params table corresponds to an axis
+value and maps to a table of additional placeholder values:
+
+```toml
+[matrix]
+cond = ["baseline", "impaired"]
+
+[matrix.params.cond]
+baseline = { latency = "0", rate = "0", impaired = "false" }
+impaired = { latency = "200", rate = "4000", impaired = "true" }
+```
+
+When `cond = "impaired"`, the placeholders resolve as follows:
+`${matrix.cond}` becomes `impaired`, `${matrix.latency}` becomes `200`,
+`${matrix.rate}` becomes `4000`, and `${matrix.impaired}` becomes `true`.
+Param keys are flattened into the `${matrix.*}` namespace alongside the axis
+value itself.
+
+All param values are strings. Fields that expect numbers (like `latency_ms` in
+link conditions) accept both native TOML numbers and string representations,
+so `latency_ms = "200"` and `latency_ms = 200` are equivalent.
+
+### Conditional steps with `when`
+
+Steps can include a `when` field to conditionally skip execution based on a
+matrix variable. A step with `when = "false"` is skipped; any other value
+(or no `when` field) means the step runs normally:
+
+```toml
+[[step]]
+when      = "${matrix.impaired}"
+action    = "set-link-condition"
+device    = "fetcher"
+condition = { latency_ms = "${matrix.latency}", rate_kbit = "${matrix.rate}" }
+```
+
+In the `baseline` variant (`impaired = "false"`), this step is skipped. In the
+`impaired` variant (`impaired = "true"`), it runs and applies the condition.
+
+### Interaction with extends
+
+Matrix expansion runs after extends are loaded. An `[[extends]]` file can
+contribute templates, groups, and binaries; the `[matrix]` table in the main
+sim file then expands the merged result.
 
 ---
 
@@ -193,6 +285,7 @@ These fields apply to most or all step types.
 | `device`  | string          | Name of the network namespace to run the command in. |
 | `env`     | table           | Extra environment variables, merged with any template `env`. |
 | `requires`| array of strings| Capture keys to wait for before this step starts. Format: `"step_id.capture_name"`. Blocks until all are resolved. |
+| `when`    | string          | Conditional guard. If `"false"`, the step is skipped. Any other value or absent means run. Typically set via `${matrix.*}` substitution. |
 
 ### Counted device expansion
 
@@ -478,6 +571,10 @@ device interface `impair` fields in the topology.
 impair = { latency_ms = 100, jitter_ms = 10, loss_pct = 0.5, rate_kbit = 10000 }
 ```
 
+All numeric fields also accept string representations (`latency_ms = "100"` is
+equivalent to `latency_ms = 100`). This enables matrix variable substitution
+in link condition tables.
+
 | Field          | Type   | Default | Description |
 |----------------|--------|---------|-------------|
 | `rate_kbit`    | u32    | 0       | Rate limit in kbit/s (0 = unlimited). |
@@ -500,6 +597,7 @@ Supported in `cmd`, `args`, `env` values, `content` (gen-file), and `san`
 | `${binary.<name>}`           | Resolved filesystem path to the named binary. |
 | `$NETSIM_IP_<DEVICE>`        | IP address of the device (name uppercased, non-alphanumeric characters replaced with `_`). |
 | `${step_id.capture_name}`    | Latest value of the named capture. Blocks until the capture resolves. |
+| `${matrix.<key>}`            | Matrix axis value or param. Substituted at load time before deserialization. See [`[matrix]`](#matrix). |
 
 ---
 
