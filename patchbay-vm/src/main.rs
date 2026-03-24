@@ -15,9 +15,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use patchbay_server::DEFAULT_UI_BIND;
-
 use common::{RunVmArgs, TestVmArgs};
+use patchbay_server::DEFAULT_UI_BIND;
 
 /// VM backend selection.
 #[derive(Clone, Debug, ValueEnum)]

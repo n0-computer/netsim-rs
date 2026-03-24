@@ -8,14 +8,17 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use crate::common::{
-    self, abspath, assemble_guest_build_overrides, build_and_collect_test_binaries,
-    cargo_target_dir, default_musl_target, ensure_guest_runner_binary, env_or, force_kill_pid,
-    is_arm64_host, kill_pid, log_msg, need_cmd, pid_alive, read_pid, remove_if_exists,
-    run_checked, sanitize_filename, fnv1a64, shell_join, stage_test_binaries, to_guest_sim_path,
-    RunVmArgs, TestVmArgs, GUEST_PREPARE_SCRIPT,
+
+use crate::{
+    common::{
+        self, abspath, assemble_guest_build_overrides, build_and_collect_test_binaries,
+        cargo_target_dir, default_musl_target, ensure_guest_runner_binary, env_or, fnv1a64,
+        force_kill_pid, is_arm64_host, kill_pid, log_msg, need_cmd, pid_alive, read_pid,
+        remove_if_exists, run_checked, sanitize_filename, shell_join, stage_test_binaries,
+        to_guest_sim_path, RunVmArgs, TestVmArgs, GUEST_PREPARE_SCRIPT,
+    },
+    util::stage_binary_overrides,
 };
-use crate::util::stage_binary_overrides;
 
 // ---------------------------------------------------------------------------
 // QEMU-specific constants
@@ -495,7 +498,8 @@ fn down(vm: &VmConfig) -> Result<()> {
 }
 
 fn run_in_guest(vm: &VmConfig, args: &RunVmArgs) -> Result<()> {
-    let guest_exe = ensure_guest_runner_binary(&vm.work_dir, &vm.target_dir, &args.patchbay_version)?;
+    let guest_exe =
+        ensure_guest_runner_binary(&vm.work_dir, &vm.target_dir, &args.patchbay_version)?;
     let auto_build_overrides = assemble_guest_build_overrides(&vm.target_dir, args)?;
     let staged_overrides = stage_binary_overrides(
         &args.binary_overrides,

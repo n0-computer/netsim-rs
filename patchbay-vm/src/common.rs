@@ -128,11 +128,7 @@ pub fn ensure_guest_runner_binary(
     Ok("/work/.patchbay-bin/patchbay".to_string())
 }
 
-fn resolve_vm_runner_binary(
-    work_dir: &Path,
-    _target_dir: &Path,
-    version: &str,
-) -> Result<PathBuf> {
+fn resolve_vm_runner_binary(work_dir: &Path, _target_dir: &Path, version: &str) -> Result<PathBuf> {
     match std::env::consts::OS {
         "linux" | "macos" => {
             if let Some(path) = version.strip_prefix("path:") {
@@ -278,10 +274,7 @@ fn build_musl_from_git_ref(work_dir: &Path, git_ref: &str) -> Result<PathBuf> {
 }
 
 /// Assemble `--binary` overrides for binaries that need building on the host.
-pub fn assemble_guest_build_overrides(
-    target_dir: &Path,
-    args: &RunVmArgs,
-) -> Result<Vec<String>> {
+pub fn assemble_guest_build_overrides(target_dir: &Path, args: &RunVmArgs) -> Result<Vec<String>> {
     let user_override_names = parse_binary_overrides(&args.binary_overrides)?
         .into_keys()
         .collect::<std::collections::HashSet<_>>();

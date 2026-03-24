@@ -13,13 +13,15 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::common::{
-    self, abspath, assemble_guest_build_overrides, build_and_collect_test_binaries,
-    cargo_target_dir, default_musl_target, ensure_guest_runner_binary, env_or, log_msg,
-    need_cmd, run_checked, stage_test_binaries, to_guest_sim_path, RunVmArgs, TestVmArgs,
-    GUEST_PREPARE_SCRIPT,
+use crate::{
+    common::{
+        self, abspath, assemble_guest_build_overrides, build_and_collect_test_binaries,
+        cargo_target_dir, default_musl_target, ensure_guest_runner_binary, env_or, log_msg,
+        need_cmd, run_checked, stage_test_binaries, to_guest_sim_path, RunVmArgs, TestVmArgs,
+        GUEST_PREPARE_SCRIPT,
+    },
+    util::stage_binary_overrides,
 };
-use crate::util::stage_binary_overrides;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -132,10 +134,7 @@ pub fn status_cmd() -> Result<()> {
     let cfg = ContainerConfig::from_defaults()?;
     println!("backend: container");
     println!("container-name: {}", cfg.name);
-    println!(
-        "running: {}",
-        if is_running(&cfg)? { "yes" } else { "no" }
-    );
+    println!("running: {}", if is_running(&cfg)? { "yes" } else { "no" });
     if cfg.runtime_file().exists() {
         println!("runtime: {}", cfg.runtime_file().display());
         let text = std::fs::read_to_string(cfg.runtime_file())?;
@@ -288,13 +287,9 @@ fn down(cfg: &ContainerConfig) -> Result<()> {
         return Ok(());
     }
     log(&format!("stopping {}", cfg.name));
-    let _ = Command::new("container")
-        .args(["stop", &cfg.name])
-        .status();
+    let _ = Command::new("container").args(["stop", &cfg.name]).status();
     // Remove the stopped container so the name can be reused.
-    let _ = Command::new("container")
-        .args(["rm", &cfg.name])
-        .status();
+    let _ = Command::new("container").args(["rm", &cfg.name]).status();
     common::remove_if_exists(&cfg.runtime_file())?;
     log(&format!("{} stopped", cfg.name));
     Ok(())
@@ -351,10 +346,7 @@ fn start_container(cfg: &ContainerConfig) -> Result<()> {
     // Mount work dir (read-write) at /work.
     cmd.args([
         "--mount",
-        &format!(
-            "type=bind,source={},target=/work",
-            cfg.work_dir.display()
-        ),
+        &format!("type=bind,source={},target=/work", cfg.work_dir.display()),
     ]);
 
     cmd.arg(&cfg.image);
