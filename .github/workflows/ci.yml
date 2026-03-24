@@ -52,6 +52,10 @@ jobs:
         with:
           components: clippy
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Build patchbay-vm
@@ -126,7 +130,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y iperf3
 
       - name: Enable unprivileged user namespaces
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Build Rust (bins + test targets)
         run: cargo build --workspace --all-targets
