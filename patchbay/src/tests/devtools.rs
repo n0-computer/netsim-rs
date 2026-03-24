@@ -165,3 +165,66 @@ async fn simple_lab_for_e2e() -> Result<()> {
 
     Ok(())
 }
+
+/// Verify that events emitted via `spawn` (async worker) are not lost when
+/// `run_sync` (sync worker) also emits events on the same device.
+///
+/// Regression test: the sync worker used to install its own tracing subscriber,
+/// creating a new events.jsonl file that truncated the async worker's output.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn run_sync_preserves_async_events() -> Result<()> {
+    check_caps()?;
+    let tmp =
+        std::env::temp_dir().join(format!("patchbay-test-sync-events-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&tmp);
+    let lab = Lab::with_opts(
+        LabOpts::default()
+            .outdir(OutDir::Exact(tmp.clone()))
+            .label("sync-events"),
+    )
+    .await?;
+
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id(), None)
+        .build()
+        .await?;
+
+    // Emit an event via the async worker (spawn).
+    dev.spawn(|_| async {
+        tracing::info!(target: "patchbay::_events::AsyncEvent", msg = "from_async");
+        Ok::<(), anyhow::Error>(())
+    })?
+    .await
+    .context("spawn panicked")??;
+
+    // Emit an event via the sync worker (run_sync).
+    dev.run_sync(|| {
+        tracing::info!(target: "patchbay::_events::SyncEvent", msg = "from_sync");
+        Ok::<(), anyhow::Error>(())
+    })?;
+
+    let run_dir = lab.run_dir().map(|p| p.to_path_buf());
+    drop(dev);
+    drop(dc);
+    drop(lab);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let run_dir = run_dir.expect("outdir should be set");
+    let events_file = consts::node_file(consts::KIND_DEVICE, "dev", consts::EVENTS_JSONL_EXT);
+    let events = std::fs::read_to_string(run_dir.join(&events_file))
+        .with_context(|| format!("read {events_file}"))?;
+
+    assert!(
+        events.contains("AsyncEvent"),
+        "events.jsonl should contain the async worker's event, got:\n{events}"
+    );
+    assert!(
+        events.contains("SyncEvent"),
+        "events.jsonl should contain the sync worker's event, got:\n{events}"
+    );
+
+    Ok(())
+}

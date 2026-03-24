@@ -26,7 +26,7 @@ use crate::netlink::Netlink;
 // ─────────────────────────────────────────────
 
 /// Per-namespace options: DNS overlay + run output directory for tracing.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default, derive_more::Debug)]
 pub(crate) struct NamespaceOpts {
     /// DNS overlay paths for bind-mounting `/etc/hosts` and `/etc/resolv.conf`.
     pub dns_overlay: Option<DnsOverlay>,
@@ -35,6 +35,10 @@ pub(crate) struct NamespaceOpts {
     /// Log file prefix like `"device.client"` or `"router.home"`.
     /// Used to name `{prefix}.tracing.jsonl` and `{prefix}.events.jsonl`.
     pub log_prefix: Option<String>,
+    /// Pre-existing tracing dispatch to reuse instead of creating a new subscriber.
+    /// Set on the sync worker so it shares the async worker's file handles.
+    #[debug(skip)]
+    pub tracing_dispatch: Option<tracing::Dispatch>,
 }
 
 /// DNS overlay paths for bind-mounting `/etc/hosts` and `/etc/resolv.conf`.
@@ -68,11 +72,17 @@ fn setup_namespace_thread(
     opts: &NamespaceOpts,
 ) -> Option<tracing::subscriber::DefaultGuard> {
     apply_mount_overlay(opts.dns_overlay.as_ref());
-    // Only install file-writing tracing when log_prefix is set (routers/devices).
-    // The root namespace (IX) has no log_prefix and should not create tracing files.
-    let run_dir = opts.log_prefix.as_ref().and(opts.run_dir.as_ref());
-    let log_name = opts.log_prefix.as_deref().unwrap_or("ns");
-    crate::ns_tracing::install_namespace_subscriber(log_name, run_dir.map(|p| p.as_path()))
+    if let Some(dispatch) = &opts.tracing_dispatch {
+        // Reuse the async worker's dispatch so both workers share the same
+        // file handles and avoid truncation/interleaving of log files.
+        Some(tracing::dispatcher::set_default(dispatch))
+    } else {
+        // Only install file-writing tracing when log_prefix is set (routers/devices).
+        // The root namespace (IX) has no log_prefix and should not create tracing files.
+        let run_dir = opts.log_prefix.as_ref().and(opts.run_dir.as_ref());
+        let log_name = opts.log_prefix.as_deref().unwrap_or("ns");
+        crate::ns_tracing::install_namespace_subscriber(log_name, run_dir.map(|p| p.as_path()))
+    }
 }
 
 /// Private mount namespace + remount `/proc` + optional DNS overlay bind-mounts.
@@ -243,12 +253,17 @@ struct Worker {
     async_join: Mutex<Option<thread::JoinHandle<()>>>,
     sync_worker: Mutex<Option<SyncWorker>>,
     opts: NamespaceOpts,
+    /// The tracing dispatch from the async worker, shared with the sync worker.
+    tracing_dispatch: tracing::Dispatch,
 }
 
 /// Sent back from the async worker thread after namespace creation.
 struct WorkerInit {
     ns_fd: File,
     rt_handle: tokio::runtime::Handle,
+    /// The tracing dispatch installed on the async worker thread,
+    /// so the sync worker can reuse it instead of creating a new one.
+    tracing_dispatch: tracing::Dispatch,
 }
 
 impl Worker {
@@ -286,6 +301,9 @@ impl Worker {
                         // Install tracing subscriber for this namespace thread.
                         // The guard lives until the thread exits, ensuring proper flush.
                         let _tracing_guard = setup_namespace_thread(&ns_name, &thread_opts);
+                        // Capture the thread-default dispatch so the sync worker can
+                        // reuse it — sharing file handles avoids truncation/interleaving.
+                        let tracing_dispatch = tracing::dispatcher::get_default(|d| d.clone());
                         let fd = match ns_fd.try_clone() {
                             Ok(fd) => fd,
                             Err(e) => {
@@ -296,6 +314,7 @@ impl Worker {
                         let _ = init_tx.send(Ok(WorkerInit {
                             ns_fd: fd,
                             rt_handle: rt.handle().clone(),
+                            tracing_dispatch,
                         }));
                         rt.block_on(cancel2.cancelled());
                         debug!("async worker shutting down");
@@ -331,6 +350,7 @@ impl Worker {
             async_join: Mutex::new(Some(join)),
             sync_worker: Mutex::new(None),
             opts,
+            tracing_dispatch: init.tracing_dispatch,
         })
     }
 
@@ -360,12 +380,9 @@ impl Worker {
         let mut guard = self.sync_worker.lock().expect("sync worker mutex poisoned");
         if guard.is_none() {
             let span = debug_span!(parent: &self.parent_span, "sync", ns = %self.ns);
-            *guard = Some(SyncWorker::spawn(
-                &self.ns,
-                &self.ns_fd,
-                span,
-                self.opts.clone(),
-            )?);
+            let mut opts = self.opts.clone();
+            opts.tracing_dispatch = Some(self.tracing_dispatch.clone());
+            *guard = Some(SyncWorker::spawn(&self.ns, &self.ns_fd, span, opts)?);
         }
         Ok(guard.as_ref().unwrap().tx.clone())
     }
@@ -438,6 +455,7 @@ impl NetnsManager {
             dns_overlay,
             run_dir: self.run_dir.clone(),
             log_prefix,
+            tracing_dispatch: None,
         };
         let worker = Worker::spawn(name, self.parent_span.clone(), opts)?;
         self.workers
