@@ -2,6 +2,8 @@
 /target
 /log-*
 /.qemu-vm
+/.container-vm
+/.tmp
 /.netsim-work
 /resources
 /docs/book

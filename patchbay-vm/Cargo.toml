@@ -1,8 +1,8 @@
 [package]
 name = "patchbay-vm"
 version = "0.1.0"
-description = "QEMU VM wrapper for running patchbay simulations on macOS"
-keywords = ["network", "simulation", "qemu", "vm"]
+description = "VM wrapper for running patchbay simulations (QEMU or Apple container backend)"
+keywords = ["network", "simulation", "qemu", "vm", "container"]
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
