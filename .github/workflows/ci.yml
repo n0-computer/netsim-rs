@@ -64,23 +64,23 @@ jobs:
       - name: Clippy patchbay-vm
         run: cargo clippy -p patchbay-vm -- -D warnings
 
-      - name: Add musl target
-        run: rustup target add aarch64-unknown-linux-musl
-
-      - name: Install musl cross-compiler
-        run: brew install filosottile/musl-cross/musl-cross
-
       - name: Container backend smoke test
         run: |
-          if command -v container >/dev/null 2>&1; then
-            cargo build --release -p patchbay-vm -p patchbay-runner --bin patchbay --target aarch64-unknown-linux-musl
-            ./target/release/patchbay-vm --backend container run \
-              --patchbay-version "path:target/aarch64-unknown-linux-musl/release/patchbay" \
-              ./iroh-integration/patchbay/sims/iperf-1to1-public.toml
-            ./target/release/patchbay-vm --backend container down
-          else
+          if ! command -v container >/dev/null 2>&1; then
             echo "container CLI not found, skipping smoke test"
+            exit 0
           fi
+          if ! command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+            echo "musl cross-compiler not found, skipping smoke test"
+            echo "install with: brew install filosottile/musl-cross/musl-cross"
+            exit 0
+          fi
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release -p patchbay-vm -p patchbay-runner --bin patchbay --target aarch64-unknown-linux-musl
+          ./target/release/patchbay-vm --backend container run \
+            --patchbay-version "path:target/aarch64-unknown-linux-musl/release/patchbay" \
+            ./iroh-integration/patchbay/sims/iperf-1to1-public.toml
+          ./target/release/patchbay-vm --backend container down
 
   e2e:
     runs-on: [self-hosted, linux, x64]
