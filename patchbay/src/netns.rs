@@ -272,9 +272,8 @@ impl Worker {
                     let mut builder = tokio::runtime::Builder::new_current_thread();
                     builder.enable_all();
                     let overlay_for_threads = thread_opts.dns_overlay.clone();
-                    builder.on_thread_start(move || {
-                        apply_mount_overlay(overlay_for_threads.as_ref())
-                    });
+                    builder
+                        .on_thread_start(move || apply_mount_overlay(overlay_for_threads.as_ref()));
                     let rt = builder.build().context("build tokio runtime")?;
                     Ok((ns_fd, rt))
                 })();

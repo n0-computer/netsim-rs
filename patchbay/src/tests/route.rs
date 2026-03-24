@@ -237,9 +237,8 @@ async fn proc_net_route_shows_namespace_routes() -> Result<()> {
         .build()
         .await?;
 
-    let route_content = dev.run_sync(|| {
-        std::fs::read_to_string("/proc/net/route").context("read /proc/net/route")
-    })?;
+    let route_content = dev
+        .run_sync(|| std::fs::read_to_string("/proc/net/route").context("read /proc/net/route"))?;
 
     // The namespace must contain eth0 with a default route.
     assert!(
