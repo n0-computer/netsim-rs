@@ -21,7 +21,7 @@ export interface RunInfo {
   name: string
   label: string | null
   status: string | null
-  invocation: string | null
+  batch: string | null
   manifest?: RunManifest | null
 }
 
@@ -108,11 +108,11 @@ export function runFilesBase(run: string): string {
 }
 
 export async function fetchCombinedResults(
-  invocation: string,
+  batch: string,
 ): Promise<CombinedResults | null> {
   try {
     const res = await fetch(
-      `${API}/invocations/${encodeURIComponent(invocation)}/combined-results`,
+      `${API}/batches/${encodeURIComponent(batch)}/combined-results`,
     )
     if (!res.ok) return null
     return (await res.json()) as CombinedResults

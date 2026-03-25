@@ -35,51 +35,51 @@ type Tab = 'topology' | 'logs' | 'timeline' | 'perf' | 'sims'
 
 type Selection =
   | { kind: 'run'; name: string }
-  | { kind: 'invocation'; name: string }
+  | { kind: 'batch'; name: string }
 
 function selectionKey(s: Selection | null): string {
   if (!s) return ''
-  return s.kind === 'invocation' ? `inv:${s.name}` : s.name
+  return s.kind === 'batch' ? `batch:${s.name}` : s.name
 }
 
 function selectionPath(s: Selection | null): string {
   if (!s) return '/'
-  return s.kind === 'invocation' ? `/inv/${s.name}` : `/run/${s.name}`
+  return s.kind === 'batch' ? `/batch/${s.name}` : `/run/${s.name}`
 }
 
-// ── Invocation grouping ────────────────────────────────────────────
+// ── Batch grouping ─────────────────────────────────────────────────
 
-interface InvocationGroup {
-  invocation: string
+interface BatchGroup {
+  batch: string
   runs: RunInfo[]
 }
 
-function groupByInvocation(runs: RunInfo[]): { groups: InvocationGroup[]; ungrouped: RunInfo[] } {
+function groupByBatch(runs: RunInfo[]): { groups: BatchGroup[]; ungrouped: RunInfo[] } {
   const grouped = new Map<string, RunInfo[]>()
   const ungrouped: RunInfo[] = []
   for (const r of runs) {
-    if (r.invocation) {
-      let list = grouped.get(r.invocation)
+    if (r.batch) {
+      let list = grouped.get(r.batch)
       if (!list) {
         list = []
-        grouped.set(r.invocation, list)
+        grouped.set(r.batch, list)
       }
       list.push(r)
     } else {
       ungrouped.push(r)
     }
   }
-  const groups: InvocationGroup[] = []
-  for (const [invocation, groupRuns] of grouped) {
-    groups.push({ invocation, runs: groupRuns })
+  const groups: BatchGroup[] = []
+  for (const [batch, groupRuns] of grouped) {
+    groups.push({ batch, runs: groupRuns })
   }
   return { groups, ungrouped }
 }
 
-/** Short display label for a run within an invocation group. */
+/** Short display label for a run within a batch group. */
 function simLabel(run: RunInfo): string {
-  if (run.invocation && run.name.startsWith(run.invocation + '/')) {
-    return run.label ?? run.name.slice(run.invocation.length + 1)
+  if (run.batch && run.name.startsWith(run.batch + '/')) {
+    return run.label ?? run.name.slice(run.batch.length + 1)
   }
   return run.label ?? run.name
 }
@@ -168,21 +168,22 @@ function applyEvent(state: LabState, event: LabEvent): LabState {
 
 // ── Unified App ────────────────────────────────────────────────────
 
-export default function App({ mode }: { mode: 'run' | 'inv' }) {
+export default function App({ mode }: { mode: 'run' | 'batch' }) {
   const location = useLocation()
   const navigate = useNavigate()
 
   // Derive selection from the URL path.
-  // Route is /run/* or /inv/* so everything after the prefix is the name.
-  const nameFromUrl = location.pathname.slice(mode === 'run' ? 5 : 5) // "/run/" or "/inv/" = 5 chars
+  // Route is /run/* or /batch/* so everything after the prefix is the name.
+  const prefixLen = mode === 'run' ? '/run/'.length : '/batch/'.length
+  const nameFromUrl = location.pathname.slice(prefixLen)
   const selection: Selection | null = nameFromUrl
-    ? { kind: mode === 'inv' ? 'invocation' : 'run', name: nameFromUrl }
+    ? { kind: mode === 'batch' ? 'batch' : 'run', name: nameFromUrl }
     : null
 
   const selectedRun = selection?.kind === 'run' ? selection.name : null
-  const selectedInvocation = selection?.kind === 'invocation' ? selection.name : null
+  const selectedBatch = selection?.kind === 'batch' ? selection.name : null
 
-  const [tab, setTab] = useState<Tab>(mode === 'inv' ? 'sims' : 'topology')
+  const [tab, setTab] = useState<Tab>(mode === 'batch' ? 'sims' : 'topology')
 
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
@@ -249,22 +250,22 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
     return () => { dead = true }
   }, [selectedRun])
 
-  // ── Load combined results when an invocation is selected ──
+  // ── Load combined results when a batch is selected ──
 
   useEffect(() => {
-    if (!selectedInvocation) {
+    if (!selectedBatch) {
       setCombinedResults(null)
       return
     }
 
     let dead = false
-    fetchCombinedResults(selectedInvocation).then((results) => {
+    fetchCombinedResults(selectedBatch).then((results) => {
       if (dead) return
       setCombinedResults(results)
     })
 
     return () => { dead = true }
-  }, [selectedInvocation])
+  }, [selectedBatch])
 
   // ── SSE for live updates (only when run is "running") ──
 
@@ -314,16 +315,16 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
 
   const base = selectedRun ? runFilesBase(selectedRun) : ''
   const isSimView = selection?.kind === 'run'
-  const isInvocationView = selection?.kind === 'invocation'
+  const isBatchView = selection?.kind === 'batch'
 
-  // Runs belonging to the current invocation
-  const invocationRuns = isInvocationView
-    ? runs.filter((r) => r.invocation === selectedInvocation)
+  // Runs belonging to the current batch
+  const batchRuns = isBatchView
+    ? runs.filter((r) => r.batch === selectedBatch)
     : []
 
   const availableTabs: Tab[] = isSimView
     ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : [])]
-    : isInvocationView
+    : isBatchView
       ? ['sims', ...(combinedResults ? (['perf'] as Tab[]) : [])]
       : []
 
@@ -338,14 +339,14 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
   const logsForTabs = logList.map((l) => ({ node: l.node, kind: l.kind, path: l.path }))
 
   // Group runs for the selector
-  const { groups, ungrouped } = groupByInvocation(runs)
+  const { groups, ungrouped } = groupByBatch(runs)
 
   // ── Render ──
 
   return (
     <div className="app">
       <div className="topbar">
-        <h1><a href="#/" style={{ color: 'inherit', textDecoration: 'none' }}>patchbay</a></h1>
+        <h1><a href="/" style={{ color: 'inherit', textDecoration: 'none' }}>patchbay</a></h1>
         <select
           value={selectionKey(selection)}
           onChange={(e) => {
@@ -354,8 +355,8 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
               navigate('/')
               return
             }
-            if (val.startsWith('inv:')) {
-              navigate(`/inv/${val.slice(4)}`)
+            if (val.startsWith('batch:')) {
+              navigate(`/batch/${val.slice(6)}`)
             } else {
               navigate(`/run/${val}`)
             }
@@ -363,9 +364,9 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
         >
           <option value="">select run</option>
           {groups.map((g) => (
-            <optgroup key={g.invocation} label={g.invocation}>
+            <optgroup key={g.batch} label={g.batch}>
               {g.runs.length > 1 && (
-                <option value={`inv:${g.invocation}`}>
+                <option value={`batch:${g.batch}`}>
                   combined ({g.runs.length} sims)
                 </option>
               )}
@@ -439,14 +440,14 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
           <TimelineTab base={base} logs={logsForTabs} labEvents={labEvents} onJumpToLog={handleJumpToLog} />
         )}
 
-        {tab === 'sims' && isInvocationView && (
+        {tab === 'sims' && isBatchView && (
           <div className="sims-list">
-            <h2>{selectedInvocation}</h2>
-            {invocationRuns.length === 0 && <div className="empty">No sims found.</div>}
-            {invocationRuns.map((r) => (
+            <h2>{selectedBatch}</h2>
+            {batchRuns.length === 0 && <div className="empty">No sims found.</div>}
+            {batchRuns.map((r) => (
               <a
                 key={r.name}
-                href={`#/run/${r.name}`}
+                href={`/run/${r.name}`}
                 className="run-entry"
                 onClick={(e) => { e.preventDefault(); navigate(`/run/${r.name}`) }}
               >
@@ -458,7 +459,7 @@ export default function App({ mode }: { mode: 'run' | 'inv' }) {
         )}
 
         {tab === 'perf' && isSimView && <PerfTab results={simResults} />}
-        {tab === 'perf' && isInvocationView && <PerfTab results={null} combined={combinedResults} onSimSelect={(sim) => navigate(`/run/${sim}`)} />}
+        {tab === 'perf' && isBatchView && <PerfTab results={null} combined={combinedResults} onSimSelect={(sim) => navigate(`/run/${sim}`)} />}
       </div>
     </div>
   )

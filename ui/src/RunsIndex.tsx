@@ -3,32 +3,32 @@ import { Link, useNavigate } from 'react-router-dom'
 import { fetchRuns } from './api'
 import type { RunInfo, RunManifest } from './api'
 
-interface InvocationGroup {
-  invocation: string
+interface BatchGroup {
+  batch: string
   runs: RunInfo[]
   manifest: RunManifest | null
 }
 
-function groupByInvocation(runs: RunInfo[]): { groups: InvocationGroup[]; ungrouped: RunInfo[] } {
+function groupByBatch(runs: RunInfo[]): { groups: BatchGroup[]; ungrouped: RunInfo[] } {
   const grouped = new Map<string, RunInfo[]>()
   const ungrouped: RunInfo[] = []
   for (const r of runs) {
-    if (r.invocation) {
-      let list = grouped.get(r.invocation)
+    if (r.batch) {
+      let list = grouped.get(r.batch)
       if (!list) {
         list = []
-        grouped.set(r.invocation, list)
+        grouped.set(r.batch, list)
       }
       list.push(r)
     } else {
       ungrouped.push(r)
     }
   }
-  const groups: InvocationGroup[] = []
-  for (const [invocation, groupRuns] of grouped) {
+  const groups: BatchGroup[] = []
+  for (const [batch, groupRuns] of grouped) {
     // Use manifest from the first run that has one.
     const manifest = groupRuns.find((r) => r.manifest)?.manifest ?? null
-    groups.push({ invocation, runs: groupRuns, manifest })
+    groups.push({ batch, runs: groupRuns, manifest })
   }
   return { groups, ungrouped }
 }
@@ -44,7 +44,7 @@ function formatDate(raw: string): string {
   return `${y}-${mo}-${d} ${h}:${mi}:${s}`
 }
 
-/** Extract date portion from invocation name like "project-YYYYMMDD_HHMMSS-uuid". */
+/** Extract date portion from batch name like "project-YYYYMMDD_HHMMSS-uuid". */
 function extractDate(name: string): string | null {
   const m = name.match(/(\d{8}_\d{6})/)
   return m ? m[1] : null
@@ -62,16 +62,16 @@ export default function RunsIndex() {
     return () => clearInterval(id)
   }, [])
 
-  const { groups, ungrouped } = groupByInvocation(runs)
+  const { groups, ungrouped } = groupByBatch(runs)
 
   // Auto-navigate: if there's only one run, go directly to it.
-  // If there's only one invocation group, go to it.
+  // If there's only one batch group, go to it.
   useEffect(() => {
     if (!loaded || runs.length === 0) return
     if (runs.length === 1) {
       navigate(`/run/${runs[0].name}`, { replace: true })
     } else if (groups.length === 1 && ungrouped.length === 0) {
-      navigate(`/inv/${groups[0].invocation}`, { replace: true })
+      navigate(`/batch/${groups[0].batch}`, { replace: true })
     }
   }, [loaded, runs, groups, ungrouped, navigate])
 
@@ -81,14 +81,14 @@ export default function RunsIndex() {
       {runs.length === 0 && loaded && <div className="empty">No runs found.</div>}
 
       {groups.map((g) => (
-        <div key={g.invocation} className="run-group">
+        <div key={g.batch} className="run-group">
           {g.manifest ? (
             <ManifestGroupHeader group={g} />
           ) : (
             <div className="run-group-header">
-              <span className="run-group-name">{g.invocation}</span>
+              <span className="run-group-name">{g.batch}</span>
               {g.runs.length > 1 && (
-                <Link to={`/inv/${g.invocation}`} className="run-link combined">
+                <Link to={`/batch/${g.batch}`} className="run-link combined">
                   combined ({g.runs.length} sims)
                 </Link>
               )}
@@ -106,15 +106,15 @@ export default function RunsIndex() {
   )
 }
 
-function ManifestGroupHeader({ group }: { group: InvocationGroup }) {
+function ManifestGroupHeader({ group }: { group: BatchGroup }) {
   const m = group.manifest!
   const outcome = m.test_outcome
   const statusIcon = outcome === 'success' ? '\u2705' : outcome === 'failure' ? '\u274c' : null
-  const date = extractDate(group.invocation)
+  const date = extractDate(group.batch)
 
   return (
-    <Link to={`/inv/${group.invocation}`} className="pushed-run-entry">
-      <span className="pushed-run-project">{m.project || group.invocation}</span>
+    <Link to={`/batch/${group.batch}`} className="pushed-run-entry">
+      <span className="pushed-run-project">{m.project || group.batch}</span>
       <div className="pushed-run-meta">
         {m.branch && <span className="pushed-run-badge">{m.branch}</span>}
         {m.commit && <code className="pushed-run-sha">{m.commit.slice(0, 7)}</code>}
@@ -141,8 +141,8 @@ function ManifestGroupHeader({ group }: { group: InvocationGroup }) {
 }
 
 function RunEntry({ run, grouped }: { run: RunInfo; grouped?: boolean }) {
-  const label = grouped && run.invocation && run.name.startsWith(run.invocation + '/')
-    ? run.label ?? run.name.slice(run.invocation.length + 1)
+  const label = grouped && run.batch && run.name.startsWith(run.batch + '/')
+    ? run.label ?? run.name.slice(run.batch.length + 1)
     : run.label ?? run.name
 
   return (

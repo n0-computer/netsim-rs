@@ -156,11 +156,11 @@ interface PerfTabProps {
 }
 
 export default function PerfTab({ results, combined, onSimSelect }: PerfTabProps) {
-  // Combined / invocation view
+  // Combined / batch view
   if (combined) {
     const { runs } = combined
     if (runs.length === 0) {
-      return <div className="empty">no combined results for this invocation</div>
+      return <div className="empty">no combined results for this batch</div>
     }
 
     const detailRows = runs.flatMap((run) =>

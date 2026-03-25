@@ -71,12 +71,12 @@ test('runner sim produces viewable UI output', async ({ page }) => {
   }
 })
 
-test('multi-sim invocation shows grouped selector and combined results', async ({ page }) => {
+test('multi-sim batch shows grouped selector and combined results', async ({ page }) => {
   test.setTimeout(4 * 60 * 1000)
   const workDir = mkdtempSync(`${tmpdir()}/patchbay-runner-e2e-multi-`)
   let serveProc: ChildProcess | null = null
   try {
-    // Run both sims in a single invocation.
+    // Run both sims in a single batch.
     execFileSync(
       PATCHBAY_BIN,
       ['run', '--work-dir', workDir, PING_TOML, IPERF_TOML],
@@ -99,7 +99,7 @@ test('multi-sim invocation shows grouped selector and combined results', async (
     await page.goto(UI_URL)
     await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
 
-    // The selector should have an optgroup (invocation) with both sims.
+    // The selector should have an optgroup (batch) with both sims.
     const selector = page.locator('select')
     await expect(selector).toBeVisible()
     await expect(selector.locator('optgroup')).toBeAttached()
@@ -111,7 +111,7 @@ test('multi-sim invocation shows grouped selector and combined results', async (
     await expect(combinedOption).toBeAttached()
     await selector.selectOption({ label: await combinedOption.innerText() })
 
-    // Switch to perf tab — invocation view defaults to sims list.
+    // Switch to perf tab — batch view defaults to sims list.
     await page.getByRole('button', { name: 'perf' }).click()
     // Perf tab should show summary and detail tables with both sims.
     await expect(page.getByText('summary')).toBeVisible({ timeout: 5_000 })

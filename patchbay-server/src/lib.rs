@@ -71,9 +71,9 @@ pub struct RunInfo {
     /// This is the per-sim lab state, not the CI test outcome — see
     /// [`RunManifest::test_outcome`] for the overall pass/fail from CI.
     pub status: Option<String>,
-    /// Invocation group (first path component for nested runs, `None` for flat/direct).
-    pub invocation: Option<String>,
-    /// CI manifest from `run.json` in the invocation directory, if present.
+    /// Batch group (first path component for nested runs, `None` for flat/direct).
+    pub batch: Option<String>,
+    /// CI manifest from `run.json` in the batch directory, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<RunManifest>,
 }
@@ -99,7 +99,7 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
             path: base.to_path_buf(),
             label,
             status,
-            invocation: None,
+            batch: None,
             manifest: read_run_json(base),
         }]);
     }
@@ -107,11 +107,11 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
-    // Attach run.json manifests from invocation directories.
+    // Attach run.json manifests from batch directories.
     let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
-        let inv = run.invocation.clone().unwrap_or_else(|| run.name.clone());
+        let inv = run.batch.clone().unwrap_or_else(|| run.name.clone());
         let manifest = manifest_cache
             .entry(inv.clone())
             .or_insert_with(|| read_run_json(&base.join(&inv)))
@@ -155,9 +155,9 @@ fn scan_runs_recursive(
                 .to_string_lossy()
                 .into_owned();
             let (label, status) = read_run_metadata(&path);
-            // Derive invocation from the first path component (the timestamped
+            // Derive batch from the first path component (the timestamped
             // directory) when the run is nested more than one level deep.
-            let invocation = name
+            let batch = name
                 .split('/')
                 .next()
                 .filter(|first| *first != name)
@@ -167,7 +167,7 @@ fn scan_runs_recursive(
                 path,
                 label,
                 status,
-                invocation,
+                batch,
                 manifest: None, // populated after scan
             });
         } else {
@@ -232,6 +232,10 @@ fn build_router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/", get(index_html))
         .route("/runs", get(index_html))
+        // SPA fallback: serve index.html for client-side routes.
+        .route("/run/{*rest}", get(index_html))
+        .route("/batch/{*rest}", get(index_html))
+        .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/state", get(get_run_state))
@@ -241,8 +245,13 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
         .route(
+            "/api/batches/{name}/combined-results",
+            get(get_batch_combined),
+        )
+        // Legacy alias — keep for backward-compat (links shared on Discord).
+        .route(
             "/api/invocations/{name}/combined-results",
-            get(get_invocation_combined),
+            get(get_batch_combined),
         );
     if state.push.is_some() {
         r = r.route("/api/push/{project}", post(push_run));
@@ -549,8 +558,8 @@ async fn get_run_file(
     serve_file(&file_path).await
 }
 
-/// Serve `combined-results.json` from an invocation directory.
-async fn get_invocation_combined(
+/// Serve `combined-results.json` from a batch directory.
+async fn get_batch_combined(
     AxPath(name): AxPath<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
@@ -922,12 +931,12 @@ async fn push_run(
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
 
-    // run_name is the invocation name (first path component for all sims inside)
+    // run_name is the batch name (first path component for all sims inside)
     let result = serde_json::json!({
         "ok": true,
         "project": project,
         "run": run_name,
-        "invocation": run_name,
+        "batch": run_name,
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())

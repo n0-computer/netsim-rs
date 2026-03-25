@@ -74,21 +74,21 @@ test('push run results and view via deep link', async ({ page }) => {
       body: tarGz,
     })
     expect(pushRes.status).toBe(200)
-    const pushBody = await pushRes.json() as { ok: boolean; invocation: string; project: string }
+    const pushBody = await pushRes.json() as { ok: boolean; batch: string; project: string }
     expect(pushBody.ok).toBe(true)
     expect(pushBody.project).toBe('test-project')
-    expect(pushBody.invocation).toBeTruthy()
+    expect(pushBody.batch).toBeTruthy()
 
     // Step 4: Verify the run appears in the API.
     const runsRes = await fetch(`${SERVE_URL}/api/runs`)
-    const runs = await runsRes.json() as Array<{ name: string; invocation: string | null }>
+    const runs = await runsRes.json() as Array<{ name: string; batch: string | null }>
     expect(runs.length).toBeGreaterThan(0)
-    // All runs should share the same invocation (the push dir name).
-    const inv = runs[0].invocation
-    expect(inv).toBe(pushBody.invocation)
+    // All runs should share the same batch (the push dir name).
+    const batch = runs[0].batch
+    expect(batch).toBe(pushBody.batch)
 
     // Step 5: Open the deep link and verify the UI shows the run.
-    await page.goto(`${SERVE_URL}/#/inv/${pushBody.invocation}`)
+    await page.goto(`${SERVE_URL}/batch/${pushBody.batch}`)
 
     // The topbar should show "patchbay".
     await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()

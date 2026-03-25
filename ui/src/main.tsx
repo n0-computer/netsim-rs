@@ -1,19 +1,27 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import App from './App'
 import RunsIndex from './RunsIndex'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <HashRouter>
+    <BrowserRouter>
       <Routes>
         <Route path="/" element={<RunsIndex />} />
         <Route path="/run/*" element={<App mode="run" />} />
-        <Route path="/inv/*" element={<App mode="inv" />} />
+        <Route path="/batch/*" element={<App mode="batch" />} />
+        {/* Legacy redirect: /inv/:name → /batch/:name */}
+        <Route path="/inv/*" element={<InvRedirect />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </HashRouter>
+    </BrowserRouter>
   </React.StrictMode>
 )
+
+/** Redirect legacy /inv/* paths to /batch/*. */
+function InvRedirect() {
+  const rest = window.location.pathname.slice('/inv/'.length)
+  return <Navigate to={`/batch/${rest}`} replace />
+}

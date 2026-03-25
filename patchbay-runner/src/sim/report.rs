@@ -278,7 +278,7 @@ pub async fn write_combined_results_for_runs(work_root: &Path, run_names: &[Stri
     Ok(())
 }
 
-/// Print a concise per-sim summary for one invocation run.
+/// Print a concise per-sim summary for one batch run.
 pub fn print_run_summary_table_for_runs(work_root: &Path, run_names: &[String]) -> Result<()> {
     let runs = load_runs(work_root, run_names)?;
     if runs.is_empty() {
