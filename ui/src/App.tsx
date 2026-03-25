@@ -23,13 +23,12 @@ import {
   runFilesBase,
 } from './api'
 import type { RunInfo, LogEntry } from './api'
-import LogsTab from './components/LogsTab'
 import PerfTab from './components/PerfTab'
-import TimelineTab from './components/TimelineTab'
-import TopologyGraph from './components/TopologyGraph'
-import NodeDetail from './components/NodeDetail'
+import RunView from './components/RunView'
+import type { RunTab } from './components/RunView'
+import CompareView from './components/CompareView'
 
-type Tab = 'topology' | 'logs' | 'timeline' | 'perf' | 'sims'
+type Tab = 'topology' | 'logs' | 'timeline' | 'perf' | 'metrics' | 'sims'
 
 // ── Selection model ────────────────────────────────────────────────
 
@@ -168,22 +167,24 @@ function applyEvent(state: LabState, event: LabEvent): LabState {
 
 // ── Unified App ────────────────────────────────────────────────────
 
-export default function App({ mode }: { mode: 'run' | 'batch' }) {
+export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
   const location = useLocation()
   const navigate = useNavigate()
 
   // Derive selection from the URL path.
-  // Route is /run/* or /batch/* so everything after the prefix is the name.
-  const prefixLen = mode === 'run' ? '/run/'.length : '/batch/'.length
+  // Route is /run/*, /batch/*, or /compare/* so everything after the prefix is the name.
+  const prefixes: Record<string, string> = { run: '/run/', batch: '/batch/', compare: '/compare/' }
+  const prefixLen = prefixes[mode]?.length ?? '/run/'.length
   const nameFromUrl = location.pathname.slice(prefixLen)
+  const effectiveKind = mode === 'compare' ? 'batch' : mode
   const selection: Selection | null = nameFromUrl
-    ? { kind: mode === 'batch' ? 'batch' : 'run', name: nameFromUrl }
+    ? { kind: effectiveKind === 'batch' ? 'batch' : 'run', name: nameFromUrl }
     : null
 
   const selectedRun = selection?.kind === 'run' ? selection.name : null
   const selectedBatch = selection?.kind === 'batch' ? selection.name : null
 
-  const [tab, setTab] = useState<Tab>(mode === 'batch' ? 'sims' : 'topology')
+  const [tab, setTab] = useState<Tab>(mode === 'batch' || mode === 'compare' ? 'sims' : 'topology')
 
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
@@ -201,12 +202,8 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
   const [simResults, setSimResults] = useState<SimResults | null>(null)
   const [combinedResults, setCombinedResults] = useState<CombinedResults | null>(null)
 
-  // Topology selection
-  const [selectedNode, setSelectedNode] = useState<string | null>(null)
-  const [selectedKind, setSelectedKind] = useState<'router' | 'device' | 'ix'>('router')
-
-  // Cross-tab log jump
-  const [logJump, setLogJump] = useState<{ node: string; path: string; timeLabel: string; nonce: number } | null>(null)
+  // Compare manifest detection for batch view
+  const [hasCompareManifest, setHasCompareManifest] = useState(false)
 
   // ── Poll runs list ──
 
@@ -267,6 +264,26 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
     return () => { dead = true }
   }, [selectedBatch])
 
+  // ── Check for compare manifest (summary.json) in batch ──
+
+  useEffect(() => {
+    if (!selectedBatch) {
+      setHasCompareManifest(false)
+      return
+    }
+
+    let dead = false
+    fetch(`${runFilesBase(selectedBatch)}summary.json`, { method: 'HEAD' })
+      .then((res) => {
+        if (!dead) setHasCompareManifest(res.ok)
+      })
+      .catch(() => {
+        if (!dead) setHasCompareManifest(false)
+      })
+
+    return () => { dead = true }
+  }, [selectedBatch])
+
   // ── SSE for live updates (only when run is "running") ──
 
   useEffect(() => {
@@ -299,21 +316,8 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [])
 
-  // ── Callbacks ──
-
-  const handleNodeSelect = useCallback((name: string, kind: 'router' | 'device' | 'ix') => {
-    setSelectedNode(name)
-    setSelectedKind(kind)
-  }, [])
-
-  const handleJumpToLog = useCallback((target: { node: string; path: string; timeLabel: string }) => {
-    setTab('logs')
-    setLogJump({ ...target, nonce: Date.now() })
-  }, [])
-
   // ── Derived ──
 
-  const base = selectedRun ? runFilesBase(selectedRun) : ''
   const isSimView = selection?.kind === 'run'
   const isBatchView = selection?.kind === 'batch'
 
@@ -322,8 +326,9 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
     ? runs.filter((r) => r.batch === selectedBatch)
     : []
 
+  const hasMetricsLogs = logList.some(l => l.kind === 'metrics')
   const availableTabs: Tab[] = isSimView
-    ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : [])]
+    ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : []), ...(hasMetricsLogs ? (['metrics'] as Tab[]) : [])]
     : isBatchView
       ? ['sims', ...(combinedResults ? (['perf'] as Tab[]) : [])]
       : []
@@ -334,9 +339,6 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
       setTab(availableTabs[0])
     }
   }, [availableTabs, tab])
-
-  // Map LogEntry to SimLogEntry shape for LogsTab/TimelineTab compatibility
-  const logsForTabs = logList.map((l) => ({ node: l.node, kind: l.kind, path: l.path }))
 
   // Group runs for the selector
   const { groups, ungrouped } = groupByBatch(runs)
@@ -395,72 +397,59 @@ export default function App({ mode }: { mode: 'run' | 'batch' }) {
         )}
       </div>
 
-      <div className="tabs">
-        {availableTabs.map((t) => (
-          <button
-            key={t}
-            className={`tab-btn${tab === t ? ' active' : ''}`}
-            onClick={() => setTab(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      {isSimView && selectedRun && (
+        <RunView
+          run={runs.find((r) => r.name === selectedRun) ?? { name: selectedRun, label: null, status: null, batch: null }}
+          state={labState}
+          events={labEvents}
+          logs={logList}
+          results={simResults}
+          activeTab={tab as RunTab}
+          onTabChange={(t) => setTab(t)}
+        />
+      )}
 
-      <div className="tab-content" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        {tab === 'topology' && labState && (
-          <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-            <div style={{ flex: 1 }}>
-              <TopologyGraph state={labState} selectedNode={selectedNode} onNodeSelect={handleNodeSelect} />
-            </div>
-            {selectedNode && (
-              <div
-                style={{
-                  width: 360,
-                  borderLeft: '1px solid var(--border)',
-                  overflow: 'auto',
-                  padding: 12,
-                  background: 'var(--surface)',
-                }}
+      {isBatchView && hasCompareManifest && (
+        <CompareView batchName={selectedBatch!} />
+      )}
+
+      {isBatchView && !hasCompareManifest && (
+        <>
+          <div className="tabs">
+            {availableTabs.map((t) => (
+              <button
+                key={t}
+                className={`tab-btn${tab === t ? ' active' : ''}`}
+                onClick={() => setTab(t)}
               >
-                <NodeDetail state={labState} selectedNode={selectedNode} selectedKind={selectedKind} />
-              </div>
-            )}
-          </div>
-        )}
-        {tab === 'topology' && !labState && isSimView && (
-          <div className="empty">Loading lab state...</div>
-        )}
-
-        {tab === 'logs' && selectedRun && (
-          <LogsTab base={base} logs={logsForTabs} jumpTarget={logJump} />
-        )}
-
-        {tab === 'timeline' && selectedRun && (
-          <TimelineTab base={base} logs={logsForTabs} labEvents={labEvents} onJumpToLog={handleJumpToLog} />
-        )}
-
-        {tab === 'sims' && isBatchView && (
-          <div className="sims-list">
-            <h2>{selectedBatch}</h2>
-            {batchRuns.length === 0 && <div className="empty">No sims found.</div>}
-            {batchRuns.map((r) => (
-              <a
-                key={r.name}
-                href={`/run/${r.name}`}
-                className="run-entry"
-                onClick={(e) => { e.preventDefault(); navigate(`/run/${r.name}`) }}
-              >
-                <span className="run-entry-label">{simLabel(r)}</span>
-                {r.status && <span className="run-entry-status">{r.status}</span>}
-              </a>
+                {t}
+              </button>
             ))}
           </div>
-        )}
 
-        {tab === 'perf' && isSimView && <PerfTab results={simResults} />}
-        {tab === 'perf' && isBatchView && <PerfTab results={null} combined={combinedResults} onSimSelect={(sim) => navigate(`/run/${sim}`)} />}
-      </div>
+          <div className="tab-content" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+            {tab === 'sims' && (
+              <div className="sims-list">
+                <h2>{selectedBatch}</h2>
+                {batchRuns.length === 0 && <div className="empty">No sims found.</div>}
+                {batchRuns.map((r) => (
+                  <a
+                    key={r.name}
+                    href={`/run/${r.name}`}
+                    className="run-entry"
+                    onClick={(e) => { e.preventDefault(); navigate(`/run/${r.name}`) }}
+                  >
+                    <span className="run-entry-label">{simLabel(r)}</span>
+                    {r.status && <span className="run-entry-status">{r.status}</span>}
+                  </a>
+                ))}
+              </div>
+            )}
+
+            {tab === 'perf' && <PerfTab results={null} combined={combinedResults} onSimSelect={(sim) => navigate(`/run/${sim}`)} />}
+          </div>
+        </>
+      )}
     </div>
   )
 }
