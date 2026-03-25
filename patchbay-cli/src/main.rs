@@ -40,7 +40,7 @@ enum Command {
         sims: Vec<PathBuf>,
 
         /// Work directory for logs, binaries, and results.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
 
         /// Binary override in `<name>:<mode>:<value>` form.
@@ -77,7 +77,7 @@ enum Command {
         #[arg()]
         sims: Vec<PathBuf>,
         /// Work directory for caches and prepared outputs.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         /// Binary override in `<name>:<mode>:<value>` form.
         #[arg(long = "binary")]
@@ -97,7 +97,7 @@ enum Command {
         /// Output directory containing lab run subdirectories.
         ///
         /// Ignored when `--testdir` is set.
-        #[arg(default_value = ".patchbay-work")]
+        #[arg(default_value = ".patchbay/work")]
         outdir: PathBuf,
         /// Serve `<cargo-target-dir>/testdir-current` instead of a path.
         ///
@@ -116,7 +116,7 @@ enum Command {
         /// Sim TOML or topology TOML file path.
         input: PathBuf,
         /// Work directory for inspect session metadata.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
     },
     /// Run a command inside a node namespace from an inspect session.
@@ -127,7 +127,7 @@ enum Command {
         #[arg(long)]
         inspect: Option<String>,
         /// Work directory containing inspect session metadata.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         /// Command and args to execute in the node namespace.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
@@ -227,7 +227,7 @@ enum VmCommand {
     Run {
         #[arg(required = true)]
         sims: Vec<PathBuf>,
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         #[arg(long = "binary")]
         binary_overrides: Vec<String>,
@@ -244,7 +244,7 @@ enum VmCommand {
     },
     /// Serve embedded UI + work directory over HTTP.
     Serve {
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         /// Serve `<work-dir>/binaries/tests/testdir-current` instead of work_dir.
         #[arg(long, default_value_t = false)]
@@ -493,29 +493,14 @@ async fn tokio_main() -> Result<()> {
 /// Dispatch VM subcommands to the patchbay-vm library.
 #[cfg(feature = "vm")]
 async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Result<()> {
-    let backend = patchbay_vm::resolve_backend(backend);
+    let ops = patchbay_vm::resolve_ops(backend);
 
     match command {
-        VmCommand::Up { recreate } => match backend {
-            patchbay_vm::Backend::Container => patchbay_vm::container::up_cmd(recreate),
-            _ => patchbay_vm::qemu::up_cmd(recreate),
-        },
-        VmCommand::Down => match backend {
-            patchbay_vm::Backend::Container => patchbay_vm::container::down_cmd(),
-            _ => patchbay_vm::qemu::down_cmd(),
-        },
-        VmCommand::Status => match backend {
-            patchbay_vm::Backend::Container => patchbay_vm::container::status_cmd(),
-            _ => patchbay_vm::qemu::status_cmd(),
-        },
-        VmCommand::Cleanup => match backend {
-            patchbay_vm::Backend::Container => patchbay_vm::container::cleanup_cmd(),
-            _ => patchbay_vm::qemu::cleanup_cmd(),
-        },
-        VmCommand::Ssh { cmd } => match backend {
-            patchbay_vm::Backend::Container => patchbay_vm::container::exec_cmd_cli(cmd),
-            _ => patchbay_vm::qemu::ssh_cmd_cli(cmd),
-        },
+        VmCommand::Up { recreate } => ops.up(recreate),
+        VmCommand::Down => ops.down(),
+        VmCommand::Status => ops.status(),
+        VmCommand::Cleanup => ops.cleanup(),
+        VmCommand::Ssh { cmd } => ops.exec(cmd),
         VmCommand::Run {
             sims,
             work_dir,
@@ -546,10 +531,7 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
                 recreate,
                 patchbay_version,
             };
-            let res = match backend {
-                patchbay_vm::Backend::Container => patchbay_vm::container::run_sims(args),
-                _ => patchbay_vm::qemu::run_sims_in_vm(args),
-            };
+            let res = ops.run_sims(args);
             if open && res.is_ok() {
                 println!("run finished; server still running (Ctrl-C to exit)");
                 loop {
@@ -590,35 +572,22 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
             lib,
             no_fail_fast,
             recreate,
-            mut cargo_args,
+            cargo_args,
         } => {
-            if let Some(j) = jobs {
-                cargo_args.extend(["--jobs".into(), j.to_string()]);
-            }
-            for f in features {
-                cargo_args.extend(["--features".into(), f]);
-            }
-            if release {
-                cargo_args.push("--release".into());
-            }
-            if lib {
-                cargo_args.push("--lib".into());
-            }
-            if no_fail_fast {
-                cargo_args.push("--no-fail-fast".into());
-            }
-            let args = patchbay_vm::TestVmArgs {
+            let test_args = test::TestArgs {
                 filter,
-                target,
+                ignored: false,
+                ignored_only: false,
                 packages,
                 tests,
-                recreate,
-                cargo_args,
+                jobs,
+                features,
+                release,
+                lib,
+                no_fail_fast,
+                extra_args: cargo_args,
             };
-            match backend {
-                patchbay_vm::Backend::Container => patchbay_vm::container::run_tests(args),
-                _ => patchbay_vm::qemu::run_tests_in_vm(args),
-            }
+            ops.run_tests(test_args.into_vm_args(target, recreate))
         }
     }
 }

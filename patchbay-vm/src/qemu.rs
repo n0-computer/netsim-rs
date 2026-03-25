@@ -24,7 +24,7 @@ use crate::{
 // QEMU-specific constants
 // ---------------------------------------------------------------------------
 
-const VM_STATE_DIR: &str = ".qemu-vm";
+const VM_STATE_DIR: &str = ".patchbay/vm";
 const DEFAULT_VM_NAME: &str = "patchbay-vm";
 const DEFAULT_IMAGE_URL_X86: &str =
     "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2";
@@ -160,7 +160,7 @@ impl VmConfig {
             Ok(dir) => dir,
             Err(_) => cwd.join("target"),
         };
-        let default_work = cwd.join(".patchbay-work");
+        let default_work = cwd.join(".patchbay/work");
 
         Ok(Self {
             vm_name: env_or("QEMU_VM_NAME", DEFAULT_VM_NAME),
