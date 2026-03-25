@@ -46,7 +46,7 @@ pub fn cleanup_worktree(tree_dir: &Path) -> Result<()> {
 }
 
 fn sanitize_ref(r: &str) -> String {
-    r.replace('/', "_").replace('\\', "_")
+    r.replace(['/', '\\'], "_")
 }
 
 // ── Test comparison ──
@@ -100,9 +100,6 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
     let mut results = Vec::new();
     for line in output.lines() {
         let line = line.trim();
-        if !line.starts_with("test ") {
-            continue;
-        }
         // "test path::to::test ... ok"
         // "test path::to::test ... FAILED"
         // "test path::to::test ... ignored"
@@ -136,13 +133,7 @@ pub fn run_tests_in_dir(
     cmd.arg("test");
 
     // Add RUSTFLAGS
-    let existing = std::env::var("RUSTFLAGS").unwrap_or_default();
-    let rustflags = if existing.is_empty() {
-        "--cfg patchbay_test".to_string()
-    } else {
-        format!("{existing} --cfg patchbay_test")
-    };
-    cmd.env("RUSTFLAGS", &rustflags);
+    cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
 
     for p in packages {
         cmd.arg("-p").arg(p);
@@ -171,6 +162,17 @@ pub fn run_tests_in_dir(
     Ok((results, combined))
 }
 
+fn test_index(results: &[TestResult]) -> std::collections::HashMap<&str, &TestResult> {
+    results.iter().map(|r| (r.name.as_str(), r)).collect()
+}
+
+fn merged_names(left: &[TestResult], right: &[TestResult]) -> Vec<String> {
+    let mut names: Vec<String> = left.iter().chain(right.iter()).map(|r| r.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Compare two sets of test results.
 pub fn compare_results(
     _left_ref: &str,
@@ -178,9 +180,8 @@ pub fn compare_results(
     left: &[TestResult],
     right: &[TestResult],
 ) -> CompareSummary {
-    use std::collections::HashMap;
-    let left_map: HashMap<&str, &TestResult> = left.iter().map(|r| (r.name.as_str(), r)).collect();
-    let right_map: HashMap<&str, &TestResult> = right.iter().map(|r| (r.name.as_str(), r)).collect();
+    let left_map = test_index(left);
+    let right_map = test_index(right);
 
     let left_pass = left.iter().filter(|r| r.status == TestStatus::Pass).count();
     let left_fail = left.iter().filter(|r| r.status == TestStatus::Fail).count();
@@ -189,11 +190,9 @@ pub fn compare_results(
 
     let mut fixes = 0;
     let mut regressions = 0;
-    // All test names from both sides
-    let mut all_names: Vec<&str> = left_map.keys().chain(right_map.keys()).copied().collect();
-    all_names.sort();
-    all_names.dedup();
+    let all_names = merged_names(left, right);
     for name in &all_names {
+        let name = name.as_str();
         let ls = left_map.get(name).map(|r| r.status);
         let rs = right_map.get(name).map(|r| r.status);
         match (ls, rs) {
@@ -227,7 +226,6 @@ pub fn compare_results(
 
 /// Print a comparison summary table.
 pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], summary: &CompareSummary) {
-    use std::collections::HashMap;
     println!("\nCompare: {left_ref} \u{2194} {right_ref}\n");
     println!("Tests:        {}/{} pass \u{2192} {}/{} pass",
         summary.left_pass, summary.left_total,
@@ -245,15 +243,14 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
     }
 
     // Per-test table
-    let left_map: HashMap<&str, &TestResult> = left.iter().map(|r| (r.name.as_str(), r)).collect();
-    let right_map: HashMap<&str, &TestResult> = right.iter().map(|r| (r.name.as_str(), r)).collect();
-    let mut all_names: Vec<&str> = left_map.keys().chain(right_map.keys()).copied().collect();
-    all_names.sort();
-    all_names.dedup();
+    let left_map = test_index(left);
+    let right_map = test_index(right);
+    let all_names = merged_names(left, right);
 
     println!("\n{:<50} {:>8} {:>8} {:>10}", "Test", "Left", "Right", "Delta");
     println!("{}", "-".repeat(80));
     for name in &all_names {
+        let name = name.as_str();
         let ls = left_map.get(name).map(|r| r.status);
         let rs = right_map.get(name).map(|r| r.status);
         let ls_str = match ls {
@@ -281,36 +278,4 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
     }
 
     println!("\nScore: {:+} ({} fixes, {} regressions)", summary.score, summary.fixes, summary.regressions);
-}
-
-/// Upload a directory to a patchbay-server instance via tar.gz push.
-///
-/// Uses the existing `POST /api/push/{project}` endpoint. Shells out to
-/// `tar` and `curl` to keep dependencies minimal.
-pub fn upload(dir: &Path, project: &str, url: &str, api_key: &str) -> Result<()> {
-    // tar cz the directory contents
-    let tar = Command::new("tar")
-        .args(["czf", "-", "-C"])
-        .arg(dir)
-        .arg(".")
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .context("failed to spawn tar")?;
-
-    let push_url = format!("{}/api/push/{}", url.trim_end_matches('/'), project);
-    let status = Command::new("curl")
-        .args(["-sf", "--data-binary", "@-"])
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {api_key}"))
-        .arg("-H")
-        .arg("Content-Type: application/gzip")
-        .arg(&push_url)
-        .stdin(tar.stdout.unwrap())
-        .status()
-        .context("failed to run curl")?;
-    if !status.success() {
-        bail!("upload failed (curl exit {})", status.code().unwrap_or(-1));
-    }
-    println!("uploaded to {push_url}");
-    Ok(())
 }

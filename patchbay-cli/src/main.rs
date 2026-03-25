@@ -3,6 +3,9 @@
 mod compare;
 mod init;
 mod test;
+#[cfg(feature = "upload")]
+mod upload;
+mod util;
 
 use std::{
     collections::HashMap,
@@ -330,6 +333,13 @@ enum VmCommand {
     },
 }
 
+fn resolve_project_root(opt: Option<PathBuf>) -> Result<PathBuf> {
+    match opt {
+        Some(p) => Ok(p),
+        None => std::env::current_dir().context("resolve current directory"),
+    }
+}
+
 fn main() -> Result<()> {
     patchbay::init_userns()?;
     tokio_main()
@@ -372,10 +382,7 @@ async fn tokio_main() -> Result<()> {
                 #[cfg(not(feature = "serve"))]
                 bail!("--open requires the `serve` feature");
             }
-            let project_root = match project_root {
-                Some(p) => p,
-                None => std::env::current_dir().context("resolve current directory")?,
-            };
+            let project_root = resolve_project_root(project_root)?;
             let sims = resolve_sim_args(sims, &project_root)?;
             let res = sim::run_sims(
                 sims,
@@ -402,10 +409,7 @@ async fn tokio_main() -> Result<()> {
             no_build,
             project_root,
         } => {
-            let project_root = match project_root {
-                Some(p) => p,
-                None => std::env::current_dir().context("resolve current directory")?,
-            };
+            let project_root = resolve_project_root(project_root)?;
             let sims = resolve_sim_args(sims, &project_root)?;
             sim::prepare_sims(
                 sims,
@@ -591,7 +595,10 @@ async fn tokio_main() -> Result<()> {
             if !dir.exists() {
                 bail!("directory does not exist: {}", dir.display());
             }
-            compare::upload(&dir, &project, &url, &api_key)
+            #[cfg(feature = "upload")]
+            { upload::upload(&dir, &project, &url, &api_key) }
+            #[cfg(not(feature = "upload"))]
+            { let _ = (&dir, &project, &url, &api_key); bail!("upload support not compiled in (enable the `upload` feature)") }
         }
         #[cfg(feature = "vm")]
         Command::Vm { command, backend } => dispatch_vm(command, backend).await,

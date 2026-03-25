@@ -44,13 +44,7 @@ pub fn run_native(args: TestArgs) -> Result<()> {
     }
 
     // Add RUSTFLAGS with cfg(patchbay_test)
-    let existing_rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
-    let rustflags = if existing_rustflags.is_empty() {
-        "--cfg patchbay_test".to_string()
-    } else {
-        format!("{existing_rustflags} --cfg patchbay_test")
-    };
-    cmd.env("RUSTFLAGS", &rustflags);
+    cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
 
     // Package selectors
     for p in &args.packages {

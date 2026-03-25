@@ -384,17 +384,19 @@ impl NsWriterSubscriber {
         let meta = event.metadata();
         let target = meta.target();
 
+        // Record fields once for all paths.
+        let mut visitor = JsonFieldVisitor::new();
+        event.record(&mut visitor);
+
         // Write to .metrics.jsonl — only patchbay::_metrics target.
         if target == "patchbay::_metrics" {
-            let mut visitor = JsonFieldVisitor::new();
-            event.record(&mut visitor);
             let metrics_map = if let Some(serde_json::Value::String(json_str)) =
                 visitor.fields.get("metrics_json")
             {
                 serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json_str)
                     .unwrap_or_default()
             } else {
-                let mut m = visitor.fields.clone();
+                let mut m = visitor.fields;
                 m.remove("message");
                 m
             };
@@ -418,19 +420,18 @@ impl NsWriterSubscriber {
 
         // Write to .events.jsonl — only _events:: targets.
         if let Some(kind) = target.split_once("_events::").map(|(_, k)| k) {
-            let mut visitor = JsonFieldVisitor::new();
-            event.record(&mut visitor);
-            visitor.fields.remove("message");
-            visitor.fields.insert(
+            let mut events_fields = visitor.fields.clone();
+            events_fields.remove("message");
+            events_fields.insert(
                 "kind".to_string(),
                 serde_json::Value::String(kind.to_string()),
             );
-            visitor.fields.insert(
+            events_fields.insert(
                 "timestamp".to_string(),
                 serde_json::Value::String(timestamp.clone()),
             );
             if let Ok(mut w) = self.events_writer.lock() {
-                let _ = serde_json::to_writer(&mut *w, &visitor.fields);
+                let _ = serde_json::to_writer(&mut *w, &events_fields);
                 let _ = w.write_all(b"\n");
                 let _ = w.flush();
             }
@@ -439,8 +440,6 @@ impl NsWriterSubscriber {
         // Write to .tracing.jsonl — matching tracing-subscriber's JSON format:
         // {"timestamp":"...","level":"INFO","fields":{"message":"...","key":"val"},"target":"mod::path"}
         if self.file_filter.would_enable(target, meta.level()) || target.contains("_events::") {
-            let mut visitor = JsonFieldVisitor::new();
-            event.record(&mut visitor);
             let mut obj = serde_json::Map::new();
             obj.insert(
                 "timestamp".to_string(),

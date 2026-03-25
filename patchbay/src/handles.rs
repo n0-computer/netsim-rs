@@ -38,6 +38,21 @@ use crate::{
     netlink::Netlink,
 };
 
+/// Record a metric via the given tracing dispatch.
+pub(crate) fn record_metric(dispatch: &tracing::Dispatch, key: &str, value: f64) {
+    let mut map = serde_json::Map::new();
+    if let Some(n) = serde_json::Number::from_f64(value) {
+        map.insert(key.to_string(), serde_json::Value::Number(n));
+    }
+    let json = serde_json::to_string(&map).unwrap_or_default();
+    let _guard = tracing::dispatcher::set_default(dispatch);
+    tracing::event!(
+        target: "patchbay::_metrics",
+        tracing::Level::INFO,
+        metrics_json = %json,
+    );
+}
+
 async fn reconcile_radriven_default_v6_routes(
     lab: &Arc<LabInner>,
     router: NodeId,
@@ -209,17 +224,7 @@ impl Device {
 
     /// Record a single metric.
     pub fn record(&self, key: &str, value: f64) {
-        let mut map = serde_json::Map::new();
-        if let Some(n) = serde_json::Number::from_f64(value) {
-            map.insert(key.to_string(), serde_json::Value::Number(n));
-        }
-        let json = serde_json::to_string(&map).unwrap_or_default();
-        let _guard = tracing::dispatcher::set_default(&self.dispatch);
-        tracing::event!(
-            target: "patchbay::_metrics",
-            tracing::Level::INFO,
-            metrics_json = %json,
-        );
+        record_metric(&self.dispatch, key, value);
     }
 
     /// Returns a builder for recording multiple metrics at once.
@@ -1011,17 +1016,7 @@ impl Router {
 
     /// Record a single metric.
     pub fn record(&self, key: &str, value: f64) {
-        let mut map = serde_json::Map::new();
-        if let Some(n) = serde_json::Number::from_f64(value) {
-            map.insert(key.to_string(), serde_json::Value::Number(n));
-        }
-        let json = serde_json::to_string(&map).unwrap_or_default();
-        let _guard = tracing::dispatcher::set_default(&self.dispatch);
-        tracing::event!(
-            target: "patchbay::_metrics",
-            tracing::Level::INFO,
-            metrics_json = %json,
-        );
+        record_metric(&self.dispatch, key, value);
     }
 
     /// Returns a builder for recording multiple metrics at once.

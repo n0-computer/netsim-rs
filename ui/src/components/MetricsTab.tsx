@@ -75,7 +75,7 @@ export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[
         </thead>
         <tbody>
           {series.map((s, i) => (
-            <tr key={i}>
+            <tr key={`${s.device}:${s.key}`}>
               <td><code>{s.key}</code></td>
               <td>{s.device}</td>
               <td>{s.values[s.values.length - 1]?.v.toFixed(2)}</td>

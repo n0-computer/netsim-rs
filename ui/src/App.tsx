@@ -340,6 +340,9 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
     }
   }, [availableTabs, tab])
 
+  // Resolved run info for the selected run
+  const selectedRunInfo = isSimView ? runs.find((r) => r.name === selectedRun) ?? null : null
+
   // Group runs for the selector
   const { groups, ungrouped } = groupByBatch(runs)
 
@@ -385,9 +388,9 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
             </option>
           ))}
         </select>
-        {isSimView && runs.find((r) => r.name === selectedRun) && (
+        {isSimView && selectedRunInfo && (
           <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-            {runs.find((r) => r.name === selectedRun)?.status ?? ''}
+            {selectedRunInfo.status ?? ''}
           </span>
         )}
         {labState && (
@@ -399,7 +402,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
 
       {isSimView && selectedRun && (
         <RunView
-          run={runs.find((r) => r.name === selectedRun) ?? { name: selectedRun, label: null, status: null, batch: null }}
+          run={selectedRunInfo ?? { name: selectedRun, label: null, status: null, batch: null }}
           state={labState}
           events={labEvents}
           logs={logList}

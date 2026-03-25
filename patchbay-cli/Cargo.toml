@@ -22,14 +22,23 @@ patchbay-server = { path = "../patchbay-server", optional = true }
 patchbay-utils = { path = "../patchbay-utils" }
 ctor = "0.6"
 nix = { version = "0.30", features = ["signal", "process"] }
+flate2 = "1"
 open = "5"
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tar = "0.4"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "process"] }
 toml = "1.0"
 tracing = "0.1"
 
 [features]
-default = ["serve", "vm"]
+default = ["serve", "upload", "vm"]
 serve = ["dep:patchbay-server"]
+upload = ["dep:reqwest"]
 vm = ["dep:patchbay-vm"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ version }/patchbay-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"

@@ -67,7 +67,7 @@ export default function CompareView({ batchName }: { batchName: string }) {
             </tr>
           </thead>
           <tbody>
-            {Array.from(allTests.entries()).sort().map(([name, { left, right }]) => {
+            {Array.from(allTests.entries()).sort(([a], [b]) => a.localeCompare(b)).map(([name, { left, right }]) => {
               let delta = ''
               let color = ''
               if (left === 'fail' && right === 'pass') { delta = 'fixed'; color = 'var(--green)' }

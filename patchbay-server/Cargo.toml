@@ -31,3 +31,8 @@ uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 axum-server = "0.7"
 rustls = "0.23"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/{ version }/patchbay-serve-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
