@@ -1,6 +1,8 @@
 //! Unified CLI entrypoint for patchbay simulations (native and VM).
 
+mod compare;
 mod init;
+mod test;
 
 use std::{
     collections::HashMap,
@@ -128,6 +130,61 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
     },
+    /// Run tests (delegates to cargo test on native, VM test flow on VM).
+    Test {
+        /// Test name filter.
+        #[arg()]
+        filter: Option<String>,
+
+        /// Include ignored tests.
+        #[arg(long)]
+        ignored: bool,
+
+        /// Run only ignored tests.
+        #[arg(long)]
+        ignored_only: bool,
+
+        /// Package to test.
+        #[arg(short = 'p', long = "package")]
+        packages: Vec<String>,
+
+        /// Test target name.
+        #[arg(long = "test")]
+        tests: Vec<String>,
+
+        /// Number of build jobs.
+        #[arg(short = 'j', long)]
+        jobs: Option<u32>,
+
+        /// Features to enable.
+        #[arg(short = 'F', long)]
+        features: Vec<String>,
+
+        /// Build in release mode.
+        #[arg(long)]
+        release: bool,
+
+        /// Test only library.
+        #[arg(long)]
+        lib: bool,
+
+        /// Don't stop on first failure.
+        #[arg(long)]
+        no_fail_fast: bool,
+
+        /// Force VM backend.
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+        vm: Option<String>,
+
+        /// Extra args passed to cargo and test binaries.
+        #[arg(last = true)]
+        extra_args: Vec<String>,
+    },
+    /// Compare test or sim results across git refs.
+    Compare {
+        #[command(subcommand)]
+        command: CompareCommand,
+    },
     /// VM management and simulation execution.
     #[cfg(feature = "vm")]
     Vm {
@@ -136,6 +193,47 @@ enum Command {
         /// Which VM backend to use.
         #[arg(long, default_value = "auto", global = true)]
         backend: patchbay_vm::Backend,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompareCommand {
+    /// Compare test results between git refs.
+    Test {
+        /// Test name filter.
+        #[arg()]
+        filter: Option<String>,
+
+        /// First git ref (compare against worktree if only one given).
+        #[arg(long = "ref", required = true)]
+        left_ref: String,
+
+        /// Second git ref (if omitted, compare left_ref against current worktree).
+        #[arg(long = "ref2")]
+        right_ref: Option<String>,
+
+        #[arg(long)]
+        ignored: bool,
+        #[arg(long)]
+        ignored_only: bool,
+        #[arg(short = 'p', long = "package")]
+        packages: Vec<String>,
+        #[arg(long = "test")]
+        tests: Vec<String>,
+    },
+    /// Compare sim results between git refs.
+    Run {
+        /// Sim TOML files or directories.
+        #[arg(required = true)]
+        sims: Vec<PathBuf>,
+
+        /// First git ref.
+        #[arg(long = "ref", required = true)]
+        left_ref: String,
+
+        /// Second git ref.
+        #[arg(long = "ref2")]
+        right_ref: Option<String>,
     },
 }
 
@@ -330,6 +428,150 @@ async fn tokio_main() -> Result<()> {
             work_dir,
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
+        Command::Test {
+            filter,
+            ignored,
+            ignored_only,
+            packages,
+            tests,
+            jobs,
+            features,
+            release,
+            lib,
+            no_fail_fast,
+            vm,
+            extra_args,
+        } => {
+            let test_args = test::TestArgs {
+                filter: filter.clone(),
+                ignored,
+                ignored_only,
+                packages: packages.clone(),
+                tests: tests.clone(),
+                jobs,
+                features: features.clone(),
+                release,
+                lib,
+                no_fail_fast,
+                extra_args: extra_args.clone(),
+            };
+
+            #[cfg(feature = "vm")]
+            if let Some(vm_backend) = vm {
+                // Delegate to VM test flow
+                let backend = match vm_backend.as_str() {
+                    "auto" => patchbay_vm::resolve_backend(patchbay_vm::Backend::Auto),
+                    "qemu" => patchbay_vm::Backend::Qemu,
+                    "container" => patchbay_vm::Backend::Container,
+                    other => bail!("unknown VM backend: {other}"),
+                };
+                let target = patchbay_vm::default_test_target();
+                let mut cargo_args = Vec::new();
+                if let Some(j) = jobs {
+                    cargo_args.extend(["--jobs".into(), j.to_string()]);
+                }
+                for f in &features {
+                    cargo_args.extend(["--features".into(), f.clone()]);
+                }
+                if release {
+                    cargo_args.push("--release".into());
+                }
+                if lib {
+                    cargo_args.push("--lib".into());
+                }
+                if no_fail_fast {
+                    cargo_args.push("--no-fail-fast".into());
+                }
+                cargo_args.extend(extra_args);
+
+                let vm_args = patchbay_vm::TestVmArgs {
+                    filter,
+                    target,
+                    packages,
+                    tests,
+                    recreate: false,
+                    cargo_args,
+                };
+                return match backend {
+                    patchbay_vm::Backend::Container => {
+                        patchbay_vm::container::run_tests(vm_args)
+                    }
+                    _ => patchbay_vm::qemu::run_tests_in_vm(vm_args),
+                };
+            }
+            #[cfg(not(feature = "vm"))]
+            if vm.is_some() {
+                bail!("VM support not compiled (enable the `vm` feature)");
+            }
+
+            // Native
+            test::run_native(test_args)
+        }
+        Command::Compare { command } => {
+            let cwd = std::env::current_dir().context("get cwd")?;
+            match command {
+                CompareCommand::Test {
+                    filter, left_ref, right_ref, ignored, ignored_only, packages, tests,
+                } => {
+                    let right_label = right_ref.as_deref().unwrap_or("worktree");
+                    println!("patchbay compare test: {} \u{2194} {}", left_ref, right_label);
+
+                    // Set up worktrees
+                    let left_dir = compare::setup_worktree(&left_ref, &cwd)?;
+                    let right_dir = if let Some(ref r) = right_ref {
+                        compare::setup_worktree(r, &cwd)?
+                    } else {
+                        cwd.clone()
+                    };
+
+                    // Run tests sequentially
+                    println!("Running tests in {} ...", left_ref);
+                    let (left_results, _left_output) = compare::run_tests_in_dir(
+                        &left_dir, &filter, ignored, ignored_only, &packages, &tests,
+                    )?;
+
+                    println!("Running tests in {} ...", right_label);
+                    let (right_results, _right_output) = compare::run_tests_in_dir(
+                        &right_dir, &filter, ignored, ignored_only, &packages, &tests,
+                    )?;
+
+                    // Compare
+                    let summary = compare::compare_results(&left_ref, right_label, &left_results, &right_results);
+                    compare::print_summary(&left_ref, right_label, &left_results, &right_results, &summary);
+
+                    // Write manifest
+                    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+                    let compare_dir = cwd.join(".patchbay/work").join(format!("compare-{ts}"));
+                    std::fs::create_dir_all(&compare_dir)?;
+                    let manifest = compare::CompareManifest {
+                        left_ref: left_ref.clone(),
+                        right_ref: right_label.to_string(),
+                        timestamp: ts,
+                        left_results,
+                        right_results,
+                        summary,
+                    };
+                    let manifest_path = compare_dir.join("summary.json");
+                    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+                    println!("\nManifest: {}", manifest_path.display());
+
+                    // Cleanup worktrees
+                    compare::cleanup_worktree(&left_dir)?;
+                    if right_ref.is_some() {
+                        compare::cleanup_worktree(&right_dir)?;
+                    }
+
+                    if manifest.summary.regressions > 0 {
+                        bail!("{} regressions detected", manifest.summary.regressions);
+                    }
+                    Ok(())
+                }
+                CompareCommand::Run { sims: _, left_ref: _, right_ref: _ } => {
+                    // TODO: implement compare run (sim comparison)
+                    bail!("compare run is not yet implemented");
+                }
+            }
+        }
         #[cfg(feature = "vm")]
         Command::Vm { command, backend } => dispatch_vm(command, backend).await,
     }
