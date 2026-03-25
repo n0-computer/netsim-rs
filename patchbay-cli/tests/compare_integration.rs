@@ -62,10 +62,12 @@ fn compare_detects_regression() {
     git(dir, &["commit", "-m", "regressing"]);
     git(dir, &["tag", "v2"]);
 
-    // Run compare
+    // Run compare with PATCHBAY_OUTDIR so the fixture's Lab writes metrics
+    let lab_outdir = dir.join("lab-output");
     let patchbay_bin = env!("CARGO_BIN_EXE_patchbay");
     let output = Command::new(patchbay_bin)
         .args(["compare", "test", "--ref", "v1", "--ref2", "v2"])
+        .env("PATCHBAY_OUTDIR", &lab_outdir)
         .current_dir(dir)
         .output()
         .unwrap();
@@ -154,4 +156,56 @@ fn compare_detects_regression() {
             "worktrees should be cleaned up, found: {remaining:?}"
         );
     }
+
+    // Validate metrics.jsonl from the fixture's Lab output.
+    // The udp_counter test calls sender.record("packet_count", N).
+    // With PATCHBAY_OUTDIR set, the Lab writes device.sender.metrics.jsonl.
+    if lab_outdir.exists() {
+        let metrics_files: Vec<_> = walkdir(&lab_outdir)
+            .into_iter()
+            .filter(|p| p.file_name().map_or(false, |f| f.to_string_lossy().ends_with(".metrics.jsonl")))
+            .collect();
+        assert!(
+            !metrics_files.is_empty(),
+            "expected metrics.jsonl files in {}, found none",
+            lab_outdir.display()
+        );
+
+        // At least one metrics file should contain packet_count
+        let mut found_packet_count = false;
+        for path in &metrics_files {
+            let content = std::fs::read_to_string(path).unwrap();
+            for line in content.lines() {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(m) = val.get("m").and_then(|m| m.as_object()) {
+                        if let Some(count) = m.get("packet_count").and_then(|v| v.as_f64()) {
+                            found_packet_count = true;
+                            // v1 has PACKET_COUNT=5, v2 has PACKET_COUNT=2
+                            assert!(
+                                count == 5.0 || count == 2.0,
+                                "unexpected packet_count value: {count}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_packet_count, "no packet_count metric found in metrics files");
+    }
+}
+
+/// Recursively collect all file paths under a directory.
+fn walkdir(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walkdir(&path));
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
 }
