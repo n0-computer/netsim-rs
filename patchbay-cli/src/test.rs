@@ -1,5 +1,6 @@
 //! Test command implementation.
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -18,17 +19,13 @@ fn has_nextest() -> bool {
 /// Shared test arguments used by both `patchbay test` and `patchbay compare test`.
 #[derive(Debug, Clone, clap::Args)]
 pub struct TestArgs {
-    /// Test name filter.
-    #[arg()]
-    pub filter: Option<String>,
+    /// Include ignored tests (like `cargo test -- --include-ignored`).
+    #[arg(long)]
+    pub include_ignored: bool,
 
-    /// Include ignored tests.
+    /// Run only ignored tests (like `cargo test -- --ignored`).
     #[arg(long)]
     pub ignored: bool,
-
-    /// Run only ignored tests.
-    #[arg(long)]
-    pub ignored_only: bool,
 
     /// Package to test.
     #[arg(short = 'p', long = "package")]
@@ -58,12 +55,62 @@ pub struct TestArgs {
     #[arg(long)]
     pub no_fail_fast: bool,
 
-    /// Extra args passed to cargo and test binaries.
+    /// Extra args passed after `--` to cargo/test binaries (filter, etc).
     #[arg(last = true)]
     pub extra_args: Vec<String>,
 }
 
 impl TestArgs {
+    /// Build a `cargo test` command with all flags applied.
+    /// Does NOT set stdout/stderr — caller decides piping.
+    pub fn cargo_test_cmd(&self) -> Command {
+        self.cargo_test_cmd_in(None)
+    }
+
+    /// Build a `cargo test` command, optionally running in a specific directory.
+    pub fn cargo_test_cmd_in(&self, dir: Option<&Path>) -> Command {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("test");
+        cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
+        if let Some(d) = dir {
+            cmd.current_dir(d);
+        }
+        for p in &self.packages {
+            cmd.arg("-p").arg(p);
+        }
+        for t in &self.tests {
+            cmd.arg("--test").arg(t);
+        }
+        if let Some(j) = self.jobs {
+            cmd.arg("-j").arg(j.to_string());
+        }
+        for f in &self.features {
+            cmd.arg("-F").arg(f);
+        }
+        if self.release {
+            cmd.arg("--release");
+        }
+        if self.lib {
+            cmd.arg("--lib");
+        }
+        if self.no_fail_fast {
+            cmd.arg("--no-fail-fast");
+        }
+        // Everything after `--`: --ignored/--include-ignored + extra args
+        if self.include_ignored || self.ignored || !self.extra_args.is_empty() {
+            cmd.arg("--");
+            if self.ignored {
+                cmd.arg("--ignored");
+            } else if self.include_ignored {
+                cmd.arg("--include-ignored");
+            }
+            for a in &self.extra_args {
+                cmd.arg(a);
+            }
+        }
+        cmd
+    }
+
     /// Convert to patchbay-vm TestVmArgs.
     #[cfg(feature = "vm")]
     pub fn into_vm_args(self, target: String, recreate: bool) -> patchbay_vm::TestVmArgs {
@@ -85,7 +132,7 @@ impl TestArgs {
         }
         cargo_args.extend(self.extra_args);
         patchbay_vm::TestVmArgs {
-            filter: self.filter,
+            filter: None,
             target,
             packages: self.packages,
             tests: self.tests,
@@ -98,74 +145,47 @@ impl TestArgs {
 /// Run tests natively via cargo test/nextest.
 pub fn run_native(args: TestArgs) -> Result<()> {
     let use_nextest = has_nextest();
-    if !use_nextest {
-        eprintln!("patchbay: cargo-nextest not found, using cargo test (nextest recommended for structured output)");
-    }
-
-    let mut cmd = Command::new("cargo");
-    if use_nextest {
+    let mut cmd = if use_nextest {
+        let mut cmd = Command::new("cargo");
         cmd.arg("nextest").arg("run");
-    } else {
-        cmd.arg("test");
-    }
-
-    // Add RUSTFLAGS with cfg(patchbay_tests)
-    cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
-
-    // Package selectors
-    for p in &args.packages {
-        cmd.arg("-p").arg(p);
-    }
-    for t in &args.tests {
-        cmd.arg("--test").arg(t);
-    }
-    if let Some(j) = args.jobs {
-        cmd.arg("-j").arg(j.to_string());
-    }
-    for f in &args.features {
-        cmd.arg("-F").arg(f);
-    }
-    if args.release {
-        cmd.arg("--release");
-    }
-    if args.lib {
-        cmd.arg("--lib");
-    }
-    if args.no_fail_fast {
-        cmd.arg("--no-fail-fast");
-    }
-
-    // Extra cargo args
-    for a in &args.extra_args {
-        cmd.arg(a);
-    }
-
-    // For cargo test (not nextest), filter and --ignored go after --
-    if use_nextest {
-        if let Some(ref f) = args.filter {
-            cmd.arg("-E").arg(format!("test(/{f}/)"));
+        cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
+        for p in &args.packages {
+            cmd.arg("-p").arg(p);
         }
-        if args.ignored {
+        for t in &args.tests {
+            cmd.arg("--test").arg(t);
+        }
+        if let Some(j) = args.jobs {
+            cmd.arg("-j").arg(j.to_string());
+        }
+        for f in &args.features {
+            cmd.arg("-F").arg(f);
+        }
+        if args.release {
+            cmd.arg("--release");
+        }
+        if args.lib {
+            cmd.arg("--lib");
+        }
+        if args.no_fail_fast {
+            cmd.arg("--no-fail-fast");
+        }
+        if args.include_ignored {
             cmd.arg("--run-ignored").arg("all");
-        } else if args.ignored_only {
+        } else if args.ignored {
             cmd.arg("--run-ignored").arg("ignored-only");
         }
+        // nextest: extra_args go directly (filter is just a positional)
+        for a in &args.extra_args {
+            cmd.arg(a);
+        }
+        cmd
     } else {
-        // cargo test: filter before --, ignored flags after --
-        if let Some(ref f) = args.filter {
-            cmd.arg(f);
-        }
-        if args.ignored || args.ignored_only {
-            cmd.arg("--");
-            if args.ignored_only {
-                cmd.arg("--ignored");
-            } else {
-                cmd.arg("--include-ignored");
-            }
-        }
-    }
+        eprintln!("patchbay: cargo-nextest not found, using cargo test");
+        args.cargo_test_cmd()
+    };
 
-    let status = cmd.status().context("failed to run cargo test")?;
+    let status = cmd.status().context("failed to run tests")?;
     if !status.success() {
         bail!("tests failed (exit code {})", status.code().unwrap_or(-1));
     }
@@ -175,7 +195,6 @@ pub fn run_native(args: TestArgs) -> Result<()> {
 
 /// Copy testdir-current into the work dir if it exists.
 fn copy_testdir_output() {
-    // Try to find target/testdir-current via cargo metadata
     let Ok(output) = Command::new("cargo")
         .args(["metadata", "--format-version=1", "--no-deps"])
         .output()
@@ -199,12 +218,7 @@ fn copy_testdir_output() {
     if dest.exists() {
         let _ = std::fs::remove_dir_all(dest);
     }
-    // Use cp -r since std::fs doesn't have recursive copy
-    let _ = Command::new("cp")
-        .args(["-r"])
-        .arg(&testdir)
-        .arg(dest)
-        .status();
+    let _ = Command::new("cp").args(["-r"]).arg(&testdir).arg(dest).status();
 }
 
 /// Run tests in a VM via patchbay-vm.

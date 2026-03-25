@@ -30,6 +30,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Parser)]
 #[command(name = "patchbay", about = "Run a patchbay simulation")]
 struct Cli {
+    /// Verbose output (stream subcommand output live).
+    #[arg(short = 'v', long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -149,9 +152,6 @@ enum Command {
     },
     /// Compare test or sim results across git refs.
     Compare {
-        /// Stream subcommand output live.
-        #[arg(short = 'v', long, global = true)]
-        verbose: bool,
         #[command(subcommand)]
         command: CompareCommand,
     },
@@ -183,13 +183,13 @@ enum Command {
 #[derive(Subcommand)]
 enum CompareCommand {
     /// Compare test results between git refs.
+    ///
+    /// Usage: patchbay compare test <ref> [ref2] [-- test-filter-and-args]
     Test {
-        /// First git ref (compare against worktree if only one given).
-        #[arg(long = "ref", required = true)]
+        /// Git ref to compare (left side).
         left_ref: String,
 
-        /// Second git ref (if omitted, compare left_ref against current worktree).
-        #[arg(long = "ref2")]
+        /// Second git ref (right side). If omitted, compares against current worktree.
         right_ref: Option<String>,
 
         #[command(flatten)]
@@ -197,17 +197,15 @@ enum CompareCommand {
     },
     /// Compare sim results between git refs.
     Run {
-        /// Sim TOML files or directories.
-        #[arg(required = true)]
-        sims: Vec<PathBuf>,
-
-        /// First git ref.
-        #[arg(long = "ref", required = true)]
+        /// Git ref to compare (left side).
         left_ref: String,
 
-        /// Second git ref.
-        #[arg(long = "ref2")]
+        /// Second git ref (right side).
         right_ref: Option<String>,
+
+        /// Sim TOML files or directories.
+        #[arg(long = "sim", required = true)]
+        sims: Vec<PathBuf>,
     },
 }
 
@@ -422,7 +420,7 @@ async fn tokio_main() -> Result<()> {
             }
             test::run_native(args)
         }
-        Command::Compare { verbose, command } => {
+        Command::Compare { command } => {
             let cwd = std::env::current_dir().context("get cwd")?;
             match command {
                 CompareCommand::Test { left_ref, right_ref, args } => {
@@ -440,12 +438,12 @@ async fn tokio_main() -> Result<()> {
                     // Run tests sequentially
                     println!("Running tests in {} ...", left_ref);
                     let (left_results, _left_output) = compare::run_tests_in_dir(
-                        &left_dir, &args, verbose,
+                        &left_dir, &args, cli.verbose,
                     )?;
 
                     println!("Running tests in {} ...", right_label);
                     let (right_results, _right_output) = compare::run_tests_in_dir(
-                        &right_dir, &args, verbose,
+                        &right_dir, &args, cli.verbose,
                     )?;
 
                     // Compare
@@ -585,9 +583,8 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
             cargo_args,
         } => {
             let test_args = test::TestArgs {
-                filter,
+                include_ignored: false,
                 ignored: false,
-                ignored_only: false,
                 packages,
                 tests,
                 jobs,
@@ -595,7 +592,12 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
                 release,
                 lib,
                 no_fail_fast,
-                extra_args: cargo_args,
+                extra_args: {
+                    let mut args = Vec::new();
+                    if let Some(f) = filter { args.push(f); }
+                    args.extend(cargo_args);
+                    args
+                },
             };
             backend.run_tests(test_args.into_vm_args(target, recreate))
         }

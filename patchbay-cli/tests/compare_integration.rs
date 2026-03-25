@@ -19,13 +19,8 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[test]
-#[ignore] // Requires namespace capabilities + builds from scratch
+#[ignore] // Slow: builds fixture crate from scratch in worktrees
 fn compare_detects_regression() {
-    if patchbay::check_caps().is_err() {
-        eprintln!("skipping: no namespace capabilities");
-        return;
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     let cli_dir = Path::new(env!("CARGO_MANIFEST_DIR"));

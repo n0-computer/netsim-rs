@@ -144,31 +144,9 @@ pub fn run_tests_in_dir(
     args: &crate::test::TestArgs,
     verbose: bool,
 ) -> Result<(Vec<TestResult>, String)> {
-    let mut cmd = Command::new("cargo");
-    cmd.current_dir(dir);
-    cmd.arg("test");
-    cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
-
-    for p in &args.packages {
-        cmd.arg("-p").arg(p);
-    }
-    for t in &args.tests {
-        cmd.arg("--test").arg(t);
-    }
-
-    if let Some(f) = &args.filter {
-        cmd.arg(f);
-    }
-    if args.ignored || args.ignored_only {
-        cmd.arg("--");
-        if args.ignored_only {
-            cmd.arg("--ignored");
-        } else {
-            cmd.arg("--include-ignored");
-        }
-    }
-
     use std::io::BufRead;
+
+    let mut cmd = args.cargo_test_cmd_in(Some(dir));
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().context("spawn cargo test")?;

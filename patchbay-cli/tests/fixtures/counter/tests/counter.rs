@@ -5,13 +5,14 @@
 const PACKET_COUNT: u32 = 5;
 const THRESHOLD: u32 = 3;
 
+#[cfg(target_os = "linux")]
+#[ctor::ctor]
+fn init() {
+    patchbay::init_userns().expect("init_userns");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn udp_counter() -> anyhow::Result<()> {
-    if patchbay::check_caps().is_err() {
-        eprintln!("skipping: no namespace capabilities");
-        return Ok(());
-    }
-
     let outdir = testdir::testdir!();
     let lab = patchbay::Lab::with_opts(
         patchbay::LabOpts::default()
@@ -78,11 +79,6 @@ async fn udp_counter() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn udp_threshold() -> anyhow::Result<()> {
-    if patchbay::check_caps().is_err() {
-        eprintln!("skipping: no namespace capabilities");
-        return Ok(());
-    }
-    // This test passes when PACKET_COUNT >= THRESHOLD, fails otherwise.
     assert!(
         PACKET_COUNT >= THRESHOLD,
         "packet count {} below threshold {}",
