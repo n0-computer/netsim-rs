@@ -1,5 +1,5 @@
 //! Integration test for `patchbay compare test`.
-//! Creates a temp git repo with the counter fixture, makes two commits
+//! Copies the counter fixture into a temp git repo, makes two commits
 //! with different PACKET_COUNT values, and runs compare between them.
 
 use std::path::Path;
@@ -28,50 +28,39 @@ fn compare_detects_regression() {
 
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let patchbay_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let patchbay_crate = patchbay_root.join("patchbay");
+    let cli_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let patchbay_crate = cli_dir.parent().unwrap().join("patchbay");
+    let fixture_dir = cli_dir.join("tests/fixtures/counter");
 
-    // Write workspace
+    // Copy fixture into temp dir, skipping Cargo.lock and target/
+    std::fs::create_dir_all(dir.join("tests")).unwrap();
+    std::fs::copy(fixture_dir.join("tests/counter.rs"), dir.join("tests/counter.rs")).unwrap();
+
+    // Write Cargo.toml with absolute path to patchbay crate
     std::fs::write(
         dir.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"counter\"]\nresolver = \"2\"\n",
-    )
-    .unwrap();
-
-    // Write counter crate
-    let counter_dir = dir.join("counter");
-    std::fs::create_dir_all(counter_dir.join("tests")).unwrap();
-    std::fs::write(
-        counter_dir.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"counter\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
-            [dev-dependencies]\npatchbay = {{ path = \"{}\" }}\n\
-            tokio = {{ version = \"1\", features = [\"rt\", \"macros\", \"net\", \"time\"] }}\n\
-            anyhow = \"1\"\n",
+            "[workspace]\n\n\
+             [package]\nname = \"counter-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
+             [dev-dependencies]\n\
+             patchbay = {{ path = \"{}\" }}\n\
+             tokio = {{ version = \"1\", features = [\"rt\", \"macros\", \"net\", \"time\"] }}\n\
+             anyhow = \"1\"\n",
             patchbay_crate.display()
         ),
     )
     .unwrap();
 
-    // Read fixture source from our fixtures dir
-    let fixture_src = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/counter/tests/counter.rs"),
-    )
-    .unwrap();
-
     // Commit 1: passing (PACKET_COUNT = 5)
-    std::fs::write(counter_dir.join("tests/counter.rs"), &fixture_src).unwrap();
     git(dir, &["init"]);
     git(dir, &["add", "."]);
     git(dir, &["commit", "-m", "passing"]);
     git(dir, &["tag", "v1"]);
 
     // Commit 2: regressing (PACKET_COUNT = 2, below THRESHOLD = 3)
-    let regressed = fixture_src.replace(
-        "const PACKET_COUNT: u32 = 5;",
-        "const PACKET_COUNT: u32 = 2;",
-    );
-    std::fs::write(counter_dir.join("tests/counter.rs"), &regressed).unwrap();
+    let src = std::fs::read_to_string(dir.join("tests/counter.rs")).unwrap();
+    let regressed = src.replace("const PACKET_COUNT: u32 = 5;", "const PACKET_COUNT: u32 = 2;");
+    std::fs::write(dir.join("tests/counter.rs"), regressed).unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "-m", "regressing"]);
     git(dir, &["tag", "v2"]);
@@ -79,16 +68,7 @@ fn compare_detects_regression() {
     // Run compare
     let patchbay_bin = env!("CARGO_BIN_EXE_patchbay");
     let output = Command::new(patchbay_bin)
-        .args([
-            "compare",
-            "test",
-            "--ref",
-            "v1",
-            "--ref2",
-            "v2",
-            "-p",
-            "counter",
-        ])
+        .args(["compare", "test", "--ref", "v1", "--ref2", "v2"])
         .current_dir(dir)
         .output()
         .unwrap();
@@ -109,11 +89,7 @@ fn compare_detects_regression() {
     let compare_dir = std::fs::read_dir(&work)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("compare-")
-        })
+        .find(|e| e.file_name().to_string_lossy().starts_with("compare-"))
         .expect("compare output dir not found");
     let manifest_path = compare_dir.path().join("summary.json");
     let manifest: serde_json::Value =
