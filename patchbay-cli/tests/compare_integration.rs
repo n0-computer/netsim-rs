@@ -32,24 +32,17 @@ fn compare_detects_regression() {
     let patchbay_crate = cli_dir.parent().unwrap().join("patchbay");
     let fixture_dir = cli_dir.join("tests/fixtures/counter");
 
-    // Copy fixture into temp dir, skipping Cargo.lock and target/
+    // Copy fixture files into temp dir
     std::fs::create_dir_all(dir.join("tests")).unwrap();
     std::fs::copy(fixture_dir.join("tests/counter.rs"), dir.join("tests/counter.rs")).unwrap();
 
-    // Write Cargo.toml with absolute path to patchbay crate
-    std::fs::write(
-        dir.join("Cargo.toml"),
-        format!(
-            "[workspace]\n\n\
-             [package]\nname = \"counter-fixture\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n\
-             [dev-dependencies]\n\
-             patchbay = {{ path = \"{}\" }}\n\
-             tokio = {{ version = \"1\", features = [\"rt\", \"macros\", \"net\", \"time\"] }}\n\
-             anyhow = \"1\"\n",
-            patchbay_crate.display()
-        ),
-    )
-    .unwrap();
+    // Copy Cargo.toml and replace the relative patchbay path with absolute
+    let cargo_toml = std::fs::read_to_string(fixture_dir.join("Cargo.toml")).unwrap();
+    let cargo_toml = cargo_toml.replace(
+        "path = \"../../../../patchbay\"",
+        &format!("path = \"{}\"", patchbay_crate.display()),
+    );
+    std::fs::write(dir.join("Cargo.toml"), cargo_toml).unwrap();
 
     // Commit 1: passing (PACKET_COUNT = 5)
     git(dir, &["init"]);
