@@ -185,6 +185,20 @@ enum Command {
         #[command(subcommand)]
         command: CompareCommand,
     },
+    /// Upload a run/compare directory to a patchbay-server instance.
+    Upload {
+        /// Directory to upload (e.g. .patchbay/work/compare-20260325_120000).
+        dir: PathBuf,
+        /// Project name for scoping on the server.
+        #[arg(long, env = "PATCHBAY_PROJECT")]
+        project: String,
+        /// Server URL (e.g. https://patchbay.example.com).
+        #[arg(long, env = "PATCHBAY_URL")]
+        url: String,
+        /// API key for authentication.
+        #[arg(long, env = "PATCHBAY_API_KEY")]
+        api_key: String,
+    },
     /// VM management and simulation execution.
     #[cfg(feature = "vm")]
     Vm {
@@ -547,6 +561,7 @@ async fn tokio_main() -> Result<()> {
                         left_ref: left_ref.clone(),
                         right_ref: right_label.to_string(),
                         timestamp: ts,
+                        project: std::env::var("PATCHBAY_PROJECT").ok(),
                         left_results,
                         right_results,
                         summary,
@@ -571,6 +586,12 @@ async fn tokio_main() -> Result<()> {
                     bail!("compare run is not yet implemented");
                 }
             }
+        }
+        Command::Upload { dir, project, url, api_key } => {
+            if !dir.exists() {
+                bail!("directory does not exist: {}", dir.display());
+            }
+            compare::upload(&dir, &project, &url, &api_key)
         }
         #[cfg(feature = "vm")]
         Command::Vm { command, backend } => dispatch_vm(command, backend).await,

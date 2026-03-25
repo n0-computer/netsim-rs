@@ -71,6 +71,9 @@ pub struct CompareManifest {
     pub left_ref: String,
     pub right_ref: String,
     pub timestamp: String,
+    /// Project name (for CI upload scoping).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     pub left_results: Vec<TestResult>,
     pub right_results: Vec<TestResult>,
     pub summary: CompareSummary,
@@ -278,4 +281,36 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
     }
 
     println!("\nScore: {:+} ({} fixes, {} regressions)", summary.score, summary.fixes, summary.regressions);
+}
+
+/// Upload a directory to a patchbay-server instance via tar.gz push.
+///
+/// Uses the existing `POST /api/push/{project}` endpoint. Shells out to
+/// `tar` and `curl` to keep dependencies minimal.
+pub fn upload(dir: &Path, project: &str, url: &str, api_key: &str) -> Result<()> {
+    // tar cz the directory contents
+    let tar = Command::new("tar")
+        .args(["czf", "-", "-C"])
+        .arg(dir)
+        .arg(".")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn tar")?;
+
+    let push_url = format!("{}/api/push/{}", url.trim_end_matches('/'), project);
+    let status = Command::new("curl")
+        .args(["-sf", "--data-binary", "@-"])
+        .arg("-H")
+        .arg(format!("Authorization: Bearer {api_key}"))
+        .arg("-H")
+        .arg("Content-Type: application/gzip")
+        .arg(&push_url)
+        .stdin(tar.stdout.unwrap())
+        .status()
+        .context("failed to run curl")?;
+    if !status.success() {
+        bail!("upload failed (curl exit {})", status.code().unwrap_or(-1));
+    }
+    println!("uploaded to {push_url}");
+    Ok(())
 }
