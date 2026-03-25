@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: sccache
 
 jobs:
   ci:
@@ -21,9 +22,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-make
       - uses: taiki-e/install-action@nextest
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Install iperf3
         run: sudo apt-get update && sudo apt-get install -y iperf3
@@ -43,16 +42,53 @@ jobs:
       - name: Format
         run: cargo make format-check
 
+  macos-check:
+    runs-on: [self-hosted, macOS, arm64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Build patchbay-vm
+        run: cargo build -p patchbay-vm
+
+      - name: Clippy patchbay-vm
+        run: cargo clippy -p patchbay-vm -- -D warnings
+
+      - name: Container backend smoke test
+        run: |
+          if ! command -v container >/dev/null 2>&1; then
+            echo "container CLI not found, skipping smoke test"
+            exit 0
+          fi
+          if ! command -v aarch64-linux-musl-gcc >/dev/null 2>&1; then
+            echo "musl cross-compiler not found, skipping smoke test"
+            echo "install with: brew install filosottile/musl-cross/musl-cross"
+            exit 0
+          fi
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release -p patchbay-vm -p patchbay-runner --bin patchbay --target aarch64-unknown-linux-musl
+          ./target/release/patchbay-vm --backend container run \
+            --patchbay-version "path:target/aarch64-unknown-linux-musl/release/patchbay" \
+            ./iroh-integration/patchbay/sims/iperf-1to1-public.toml
+          ./target/release/patchbay-vm --backend container down
+
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
+      - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: actions/setup-node@v5
         with:
@@ -68,32 +104,15 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      - name: Get Playwright version
-        id: pw-version
-        working-directory: ui
-        run: echo "version=$(node -e "console.log(require('./node_modules/@playwright/test/package.json').version)")" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/cache@v5
-        id: pw-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ steps.pw-version.outputs.version }}-chromium
-
-      - name: Install Playwright browser
+      - name: Install Playwright browser and system deps
         working-directory: ui
         run: npx playwright install --with-deps chromium
-        if: steps.pw-cache.outputs.cache-hit != 'true'
-
-      - name: Install Playwright system deps
-        working-directory: ui
-        run: npx playwright install-deps chromium
-        if: steps.pw-cache.outputs.cache-hit == 'true'
 
       - name: Install iperf3
         run: sudo apt-get update && sudo apt-get install -y iperf3
 
       - name: Enable unprivileged user namespaces
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Build Rust (bins + test targets)
         run: cargo build --workspace --all-targets
