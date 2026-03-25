@@ -232,6 +232,25 @@ impl Device {
         crate::metrics::MetricsBuilder::new(self.dispatch.clone())
     }
 
+    /// Record all counter/gauge values from an iroh-metrics group.
+    ///
+    /// Iterates the group's metrics and emits each counter or gauge as a
+    /// patchbay metric line. Histograms are skipped.
+    #[cfg(feature = "iroh-metrics")]
+    pub fn record_iroh_metrics(&self, group: &dyn iroh_metrics::MetricsGroup) {
+        let _guard = self.enter_tracing();
+        let mut builder = self.metrics();
+        for item in group.iter() {
+            let value: f64 = match item.value() {
+                iroh_metrics::MetricValue::Counter(v) => v as f64,
+                iroh_metrics::MetricValue::Gauge(v) => v as f64,
+                _ => continue,
+            };
+            builder = builder.record(item.name(), value);
+        }
+        builder.emit();
+    }
+
     /// Returns the node identifier.
     pub fn id(&self) -> NodeId {
         self.id
@@ -1022,6 +1041,25 @@ impl Router {
     /// Returns a builder for recording multiple metrics at once.
     pub fn metrics(&self) -> crate::metrics::MetricsBuilder {
         crate::metrics::MetricsBuilder::new(self.dispatch.clone())
+    }
+
+    /// Record all counter/gauge values from an iroh-metrics group.
+    ///
+    /// Iterates the group's metrics and emits each counter or gauge as a
+    /// patchbay metric line. Histograms are skipped.
+    #[cfg(feature = "iroh-metrics")]
+    pub fn record_iroh_metrics(&self, group: &dyn iroh_metrics::MetricsGroup) {
+        let _guard = self.enter_tracing();
+        let mut builder = self.metrics();
+        for item in group.iter() {
+            let value: f64 = match item.value() {
+                iroh_metrics::MetricValue::Counter(v) => v as f64,
+                iroh_metrics::MetricValue::Gauge(v) => v as f64,
+                _ => continue,
+            };
+            builder = builder.record(item.name(), value);
+        }
+        builder.emit();
     }
 
     /// Returns the node identifier.

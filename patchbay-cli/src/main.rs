@@ -7,8 +7,9 @@ mod test;
 mod upload;
 mod util;
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     time::Duration,
@@ -22,6 +23,8 @@ use patchbay_runner::sim;
 use patchbay_server::DEFAULT_UI_BIND;
 #[cfg(not(feature = "serve"))]
 const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
+#[cfg(feature = "vm")]
+use patchbay_vm::VmOps;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
@@ -112,6 +115,7 @@ enum Command {
         open: bool,
     },
     /// Build topology from sim/topology config for interactive namespace debugging.
+    #[cfg(target_os = "linux")]
     Inspect {
         /// Sim TOML or topology TOML file path.
         input: PathBuf,
@@ -120,6 +124,7 @@ enum Command {
         work_dir: PathBuf,
     },
     /// Run a command inside a node namespace from an inspect session.
+    #[cfg(target_os = "linux")]
     RunIn {
         /// Device or router name from the inspected topology.
         node: String,
@@ -388,7 +393,9 @@ async fn tokio_main() -> Result<()> {
             }
             patchbay_server::serve(dir, &bind).await
         }
+        #[cfg(target_os = "linux")]
         Command::Inspect { input, work_dir } => inspect_command(input, work_dir).await,
+        #[cfg(target_os = "linux")]
         Command::RunIn {
             node,
             inspect,
@@ -655,6 +662,7 @@ fn resolve_testdir_native() -> Result<PathBuf> {
     Ok(PathBuf::from(target_dir).join("testdir-current"))
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InspectSession {
     prefix: String,
@@ -664,18 +672,22 @@ struct InspectSession {
     node_keeper_pids: HashMap<String, u32>,
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_dir(work_dir: &std::path::Path) -> PathBuf {
     work_dir.join("inspect")
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_session_path(work_dir: &std::path::Path, prefix: &str) -> PathBuf {
     inspect_dir(work_dir).join(format!("{prefix}.json"))
 }
 
+#[cfg(target_os = "linux")]
 fn env_key_suffix(name: &str) -> String {
     patchbay::util::sanitize_for_env_key(name)
 }
 
+#[cfg(target_os = "linux")]
 fn load_topology_for_inspect(
     input: &std::path::Path,
 ) -> Result<(patchbay::config::LabConfig, bool)> {
@@ -698,6 +710,7 @@ fn load_topology_for_inspect(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn keeper_commmand() -> ProcessCommand {
     let mut cmd = ProcessCommand::new("sh");
     cmd.args(["-lc", "while :; do sleep 3600; done"])
@@ -707,6 +720,7 @@ fn keeper_commmand() -> ProcessCommand {
     cmd
 }
 
+#[cfg(target_os = "linux")]
 async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     check_caps()?;
 
@@ -788,6 +802,7 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_inspect_ref(inspect: Option<String>) -> Result<String> {
     if let Some(value) = inspect {
         let trimmed = value.trim();
@@ -805,6 +820,7 @@ fn resolve_inspect_ref(inspect: Option<String>) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn load_inspect_session(work_dir: &std::path::Path, inspect_ref: &str) -> Result<InspectSession> {
     let as_path = PathBuf::from(inspect_ref);
     let session_path = if as_path.extension().and_then(|v| v.to_str()) == Some("json")
@@ -820,6 +836,7 @@ fn load_inspect_session(work_dir: &std::path::Path, inspect_ref: &str) -> Result
         .with_context(|| format!("parse inspect session {}", session_path.display()))
 }
 
+#[cfg(target_os = "linux")]
 fn run_in_command(
     node: String,
     inspect: Option<String>,
@@ -865,12 +882,14 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_key_suffix_normalizes_names() {
         assert_eq!(env_key_suffix("relay"), "relay");
         assert_eq!(env_key_suffix("fetcher-1"), "fetcher_1");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_session_path_uses_prefix_json() {
         let base = PathBuf::from("/tmp/patchbay-work");
@@ -878,6 +897,7 @@ mod tests {
         assert!(path.ends_with("inspect/lab-p123.json"));
     }
 
+    #[cfg(target_os = "linux")]
     fn write_temp_file(dir: &Path, rel: &str, body: &str) -> PathBuf {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
@@ -887,6 +907,7 @@ mod tests {
         path
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_loader_detects_sim_input() {
         let root = std::env::temp_dir().join(format!(
@@ -906,6 +927,7 @@ mod tests {
         assert!(is_sim);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_loader_detects_topology_input() {
         let root = std::env::temp_dir().join(format!(

@@ -191,6 +191,7 @@ fn copy_testdir_output() {
 /// Run tests in a VM via patchbay-vm.
 #[cfg(feature = "vm")]
 pub fn run_vm(args: TestArgs, backend: patchbay_vm::Backend) -> anyhow::Result<()> {
+    use patchbay_vm::VmOps;
     let backend = backend.resolve();
     let target = patchbay_vm::default_test_target();
     backend.run_tests(args.into_vm_args(target, false))

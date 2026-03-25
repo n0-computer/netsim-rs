@@ -7,7 +7,6 @@ pub use common::{RunVmArgs, TestVmArgs};
 
 use clap::ValueEnum;
 
-/// VM backend selection.
 #[derive(Clone, Debug, ValueEnum)]
 pub enum Backend {
     /// Auto-detect: prefer `container` on macOS Apple Silicon, fall back to QEMU.
@@ -26,75 +25,83 @@ pub fn default_test_target() -> String {
     }
 }
 
-/// Resolve `Backend::Auto` into a concrete backend.
-pub fn resolve_backend(b: Backend) -> Backend {
-    match b {
-        Backend::Auto => {
-            if std::env::consts::OS == "macos"
-                && std::env::consts::ARCH == "aarch64"
-                && common::command_exists("container").unwrap_or(false)
-            {
-                Backend::Container
-            } else {
-                Backend::Qemu
-            }
-        }
-        other => other,
-    }
+/// VM backend operations.
+pub trait VmOps {
+    fn up(&self, recreate: bool) -> anyhow::Result<()>;
+    fn down(&self) -> anyhow::Result<()>;
+    fn status(&self) -> anyhow::Result<()>;
+    fn cleanup(&self) -> anyhow::Result<()>;
+    fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()>;
+    fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()>;
+    fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()>;
+}
+
+/// QEMU backend.
+pub struct Qemu;
+
+impl VmOps for Qemu {
+    fn up(&self, recreate: bool) -> anyhow::Result<()> { qemu::up_cmd(recreate) }
+    fn down(&self) -> anyhow::Result<()> { qemu::down_cmd() }
+    fn status(&self) -> anyhow::Result<()> { qemu::status_cmd() }
+    fn cleanup(&self) -> anyhow::Result<()> { qemu::cleanup_cmd() }
+    fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()> { qemu::ssh_cmd_cli(cmd) }
+    fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()> { qemu::run_sims_in_vm(args) }
+    fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()> { qemu::run_tests_in_vm(args) }
+}
+
+/// Apple container backend.
+pub struct Container;
+
+impl VmOps for Container {
+    fn up(&self, recreate: bool) -> anyhow::Result<()> { container::up_cmd(recreate) }
+    fn down(&self) -> anyhow::Result<()> { container::down_cmd() }
+    fn status(&self) -> anyhow::Result<()> { container::status_cmd() }
+    fn cleanup(&self) -> anyhow::Result<()> { container::cleanup_cmd() }
+    fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()> { container::exec_cmd_cli(cmd) }
+    fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()> { container::run_sims(args) }
+    fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()> { container::run_tests(args) }
 }
 
 impl Backend {
-    /// Resolve auto-detection and return a concrete backend.
+    /// Resolve `Auto` into a concrete backend.
     pub fn resolve(self) -> Self {
-        resolve_backend(self)
-    }
-
-    pub fn up(&self, recreate: bool) -> anyhow::Result<()> {
         match self {
-            Self::Container => container::up_cmd(recreate),
-            _ => qemu::up_cmd(recreate),
+            Self::Auto => {
+                if std::env::consts::OS == "macos"
+                    && std::env::consts::ARCH == "aarch64"
+                    && common::command_exists("container").unwrap_or(false)
+                {
+                    Self::Container
+                } else {
+                    Self::Qemu
+                }
+            }
+            other => other,
         }
     }
+}
 
-    pub fn down(&self) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::down_cmd(),
-            _ => qemu::down_cmd(),
-        }
+/// Implement VmOps on Backend by delegating to the resolved backend.
+impl VmOps for Backend {
+    fn up(&self, recreate: bool) -> anyhow::Result<()> {
+        match self { Self::Container => Container.up(recreate), _ => Qemu.up(recreate) }
     }
-
-    pub fn status(&self) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::status_cmd(),
-            _ => qemu::status_cmd(),
-        }
+    fn down(&self) -> anyhow::Result<()> {
+        match self { Self::Container => Container.down(), _ => Qemu.down() }
     }
-
-    pub fn cleanup(&self) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::cleanup_cmd(),
-            _ => qemu::cleanup_cmd(),
-        }
+    fn status(&self) -> anyhow::Result<()> {
+        match self { Self::Container => Container.status(), _ => Qemu.status() }
     }
-
-    pub fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::exec_cmd_cli(cmd),
-            _ => qemu::ssh_cmd_cli(cmd),
-        }
+    fn cleanup(&self) -> anyhow::Result<()> {
+        match self { Self::Container => Container.cleanup(), _ => Qemu.cleanup() }
     }
-
-    pub fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::run_sims(args),
-            _ => qemu::run_sims_in_vm(args),
-        }
+    fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()> {
+        match self { Self::Container => Container.exec(cmd), _ => Qemu.exec(cmd) }
     }
-
-    pub fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()> {
-        match self {
-            Self::Container => container::run_tests(args),
-            _ => qemu::run_tests_in_vm(args),
-        }
+    fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()> {
+        match self { Self::Container => Container.run_sims(args), _ => Qemu.run_sims(args) }
+    }
+    fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()> {
+        match self { Self::Container => Container.run_tests(args), _ => Qemu.run_tests(args) }
     }
 }
