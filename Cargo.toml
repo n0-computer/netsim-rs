@@ -7,3 +7,10 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Franz Heinzmann <franz@n0.computer>"]
 repository = "https://github.com/n0-computer/patchbay"
+
+[workspace.dependencies]
+patchbay = { path = "patchbay" }
+patchbay-utils = { path = "patchbay-utils" }
+patchbay-runner = { path = "patchbay-runner" }
+patchbay-vm = { path = "patchbay-vm" }
+patchbay-server = { path = "patchbay-server" }

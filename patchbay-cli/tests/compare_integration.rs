@@ -34,7 +34,11 @@ fn compare_detects_regression() {
 
     // Copy fixture files into temp dir
     std::fs::create_dir_all(dir.join("tests")).unwrap();
-    std::fs::copy(fixture_dir.join("tests/counter.rs"), dir.join("tests/counter.rs")).unwrap();
+    std::fs::copy(
+        fixture_dir.join("tests/counter.rs"),
+        dir.join("tests/counter.rs"),
+    )
+    .unwrap();
 
     // Copy Cargo.toml and replace the relative patchbay path with absolute
     let cargo_toml = std::fs::read_to_string(fixture_dir.join("Cargo.toml")).unwrap();
@@ -77,19 +81,77 @@ fn compare_detects_regression() {
         "expected non-zero exit due to regression"
     );
 
+    // stdout should contain the summary output
+    assert!(stdout.contains("Compare:"), "missing Compare header");
+    assert!(stdout.contains("Score:"), "missing Score line");
+
     // Find and parse the manifest
     let work = dir.join(".patchbay/work");
+    assert!(work.exists(), ".patchbay/work dir not created");
     let compare_dir = std::fs::read_dir(&work)
         .unwrap()
         .filter_map(|e| e.ok())
         .find(|e| e.file_name().to_string_lossy().starts_with("compare-"))
         .expect("compare output dir not found");
     let manifest_path = compare_dir.path().join("summary.json");
+    assert!(manifest_path.exists(), "summary.json not written");
+
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
 
+    // Refs
     assert_eq!(manifest["left_ref"], "v1");
     assert_eq!(manifest["right_ref"], "v2");
-    assert!(manifest["summary"]["regressions"].as_u64().unwrap() >= 1);
-    assert!(manifest["summary"]["score"].as_i64().unwrap() < 0);
+    assert!(manifest["timestamp"].is_string(), "missing timestamp");
+
+    // Left side: both tests pass (PACKET_COUNT=5 >= THRESHOLD=3)
+    let left = &manifest["summary"]["left"];
+    assert_eq!(left["pass"].as_u64().unwrap(), 2, "left should have 2 passes");
+    assert_eq!(left["fail"].as_u64().unwrap(), 0, "left should have 0 failures");
+    assert_eq!(left["total"].as_u64().unwrap(), 2);
+
+    // Right side: udp_threshold fails (PACKET_COUNT=2 < THRESHOLD=3)
+    let right = &manifest["summary"]["right"];
+    assert_eq!(right["pass"].as_u64().unwrap(), 1, "right should have 1 pass");
+    assert_eq!(right["fail"].as_u64().unwrap(), 1, "right should have 1 failure");
+    assert_eq!(right["total"].as_u64().unwrap(), 2);
+
+    // Regression/fix counts
+    let summary = &manifest["summary"];
+    assert_eq!(summary["regressions"].as_u64().unwrap(), 1);
+    assert_eq!(summary["fixes"].as_u64().unwrap(), 0);
+    assert!(summary["score"].as_i64().unwrap() < 0, "score should be negative");
+
+    // Per-test results
+    let left_results = manifest["left_results"].as_array().unwrap();
+    let right_results = manifest["right_results"].as_array().unwrap();
+    assert_eq!(left_results.len(), 2, "should have 2 left test results");
+    assert_eq!(right_results.len(), 2, "should have 2 right test results");
+
+    // Find the threshold test in right results — it should fail
+    let threshold_right = right_results
+        .iter()
+        .find(|r| r["name"].as_str().unwrap().contains("udp_threshold"))
+        .expect("udp_threshold test not found in right results");
+    assert_eq!(threshold_right["status"], "fail");
+
+    // Find the threshold test in left results — it should pass
+    let threshold_left = left_results
+        .iter()
+        .find(|r| r["name"].as_str().unwrap().contains("udp_threshold"))
+        .expect("udp_threshold test not found in left results");
+    assert_eq!(threshold_left["status"], "pass");
+
+    // Worktrees should be cleaned up (no changes = removed)
+    let tree_dir = dir.join(".patchbay/tree");
+    if tree_dir.exists() {
+        let remaining: Vec<_> = std::fs::read_dir(&tree_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            remaining.is_empty(),
+            "worktrees should be cleaned up, found: {remaining:?}"
+        );
+    }
 }
