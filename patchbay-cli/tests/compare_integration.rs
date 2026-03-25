@@ -62,12 +62,10 @@ fn compare_detects_regression() {
     git(dir, &["commit", "-m", "regressing"]);
     git(dir, &["tag", "v2"]);
 
-    // Run compare with PATCHBAY_OUTDIR so the fixture's Lab writes metrics
-    let lab_outdir = dir.join("lab-output");
+    // Run compare
     let patchbay_bin = env!("CARGO_BIN_EXE_patchbay");
     let output = Command::new(patchbay_bin)
         .args(["compare", "test", "--ref", "v1", "--ref2", "v2"])
-        .env("PATCHBAY_OUTDIR", &lab_outdir)
         .current_dir(dir)
         .output()
         .unwrap();
@@ -157,18 +155,35 @@ fn compare_detects_regression() {
         );
     }
 
-    // Validate metrics.jsonl from the fixture's Lab output.
-    // The udp_counter test calls sender.record("packet_count", N).
-    // With PATCHBAY_OUTDIR set, the Lab writes device.sender.metrics.jsonl.
-    if lab_outdir.exists() {
-        let metrics_files: Vec<_> = walkdir(&lab_outdir)
+    // Validate metrics.jsonl from testdir output.
+    // The fixture uses testdir!() so Lab output goes to
+    // <target_dir>/testdir-current/<test>/device.sender.metrics.jsonl
+    // Use cargo metadata to find the target dir in the temp repo.
+    let testdir_current = {
+        let meta_out = Command::new("cargo")
+            .args(["metadata", "--format-version=1", "--no-deps"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let meta: serde_json::Value =
+            serde_json::from_slice(&meta_out.stdout).unwrap_or_default();
+        let target = meta["target_directory"]
+            .as_str()
+            .map(|s| Path::new(s).join("testdir-current"));
+        target.unwrap_or_else(|| dir.join("target/testdir-current"))
+    };
+    if testdir_current.exists() {
+        let metrics_files: Vec<_> = walkdir(&testdir_current)
             .into_iter()
-            .filter(|p| p.file_name().map_or(false, |f| f.to_string_lossy().ends_with(".metrics.jsonl")))
+            .filter(|p| {
+                p.file_name()
+                    .map_or(false, |f| f.to_string_lossy().ends_with(".metrics.jsonl"))
+            })
             .collect();
         assert!(
             !metrics_files.is_empty(),
             "expected metrics.jsonl files in {}, found none",
-            lab_outdir.display()
+            testdir_current.display()
         );
 
         // At least one metrics file should contain packet_count
@@ -180,7 +195,6 @@ fn compare_detects_regression() {
                     if let Some(m) = val.get("m").and_then(|m| m.as_object()) {
                         if let Some(count) = m.get("packet_count").and_then(|v| v.as_f64()) {
                             found_packet_count = true;
-                            // v1 has PACKET_COUNT=5, v2 has PACKET_COUNT=2
                             assert!(
                                 count == 5.0 || count == 2.0,
                                 "unexpected packet_count value: {count}"
@@ -190,7 +204,10 @@ fn compare_detects_regression() {
                 }
             }
         }
-        assert!(found_packet_count, "no packet_count metric found in metrics files");
+        assert!(
+            found_packet_count,
+            "no packet_count metric found in metrics files"
+        );
     }
 }
 

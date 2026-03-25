@@ -8,5 +8,6 @@ publish = false
 
 [dev-dependencies]
 patchbay = { path = "../../../../patchbay" }
+testdir = "0.9"
 tokio = { version = "1", features = ["rt", "macros", "net", "time"] }
 anyhow = "1"

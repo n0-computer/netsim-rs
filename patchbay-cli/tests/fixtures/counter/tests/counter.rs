@@ -12,7 +12,13 @@ async fn udp_counter() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let lab = patchbay::Lab::new().await?;
+    let outdir = testdir::testdir!();
+    let lab = patchbay::Lab::with_opts(
+        patchbay::LabOpts::default()
+            .outdir(patchbay::OutDir::Nested(outdir))
+            .label("udp-counter"),
+    )
+    .await?;
     let dc = lab.add_router("dc").build().await?;
     let sender = lab
         .add_device("sender")
