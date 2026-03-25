@@ -15,17 +15,51 @@ fn has_nextest() -> bool {
         .unwrap_or(false)
 }
 
+/// Shared test arguments used by both `patchbay test` and `patchbay compare test`.
+#[derive(Debug, Clone, clap::Args)]
 pub struct TestArgs {
+    /// Test name filter.
+    #[arg()]
     pub filter: Option<String>,
+
+    /// Include ignored tests.
+    #[arg(long)]
     pub ignored: bool,
+
+    /// Run only ignored tests.
+    #[arg(long)]
     pub ignored_only: bool,
+
+    /// Package to test.
+    #[arg(short = 'p', long = "package")]
     pub packages: Vec<String>,
+
+    /// Test target name.
+    #[arg(long = "test")]
     pub tests: Vec<String>,
+
+    /// Number of build jobs.
+    #[arg(short = 'j', long)]
     pub jobs: Option<u32>,
+
+    /// Features to enable.
+    #[arg(short = 'F', long)]
     pub features: Vec<String>,
+
+    /// Build in release mode.
+    #[arg(long)]
     pub release: bool,
+
+    /// Test only library.
+    #[arg(long)]
     pub lib: bool,
+
+    /// Don't stop on first failure.
+    #[arg(long)]
     pub no_fail_fast: bool,
+
+    /// Extra args passed to cargo and test binaries.
+    #[arg(last = true)]
     pub extra_args: Vec<String>,
 }
 
@@ -104,4 +138,40 @@ pub fn run_native(args: TestArgs) -> Result<()> {
         bail!("tests failed (exit code {})", status.code().unwrap_or(-1));
     }
     Ok(())
+}
+
+/// Run tests in a VM via patchbay-vm.
+#[cfg(feature = "vm")]
+pub fn run_vm(args: TestArgs, backend: patchbay_vm::Backend) -> anyhow::Result<()> {
+    let target = patchbay_vm::default_test_target();
+    let mut cargo_args = Vec::new();
+    if let Some(j) = args.jobs {
+        cargo_args.extend(["--jobs".into(), j.to_string()]);
+    }
+    for f in &args.features {
+        cargo_args.extend(["--features".into(), f.clone()]);
+    }
+    if args.release {
+        cargo_args.push("--release".into());
+    }
+    if args.lib {
+        cargo_args.push("--lib".into());
+    }
+    if args.no_fail_fast {
+        cargo_args.push("--no-fail-fast".into());
+    }
+    cargo_args.extend(args.extra_args);
+
+    let vm_args = patchbay_vm::TestVmArgs {
+        filter: args.filter,
+        target,
+        packages: args.packages,
+        tests: args.tests,
+        recreate: false,
+        cargo_args,
+    };
+    match backend {
+        patchbay_vm::Backend::Container => patchbay_vm::container::run_tests(vm_args),
+        _ => patchbay_vm::qemu::run_tests_in_vm(vm_args),
+    }
 }

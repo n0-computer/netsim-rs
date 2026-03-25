@@ -122,32 +122,26 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
 /// Run tests in a directory and capture results.
 pub fn run_tests_in_dir(
     dir: &Path,
-    filter: &Option<String>,
-    ignored: bool,
-    ignored_only: bool,
-    packages: &[String],
-    tests: &[String],
+    args: &crate::test::TestArgs,
 ) -> Result<(Vec<TestResult>, String)> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(dir);
     cmd.arg("test");
-
-    // Add RUSTFLAGS
     cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
 
-    for p in packages {
+    for p in &args.packages {
         cmd.arg("-p").arg(p);
     }
-    for t in tests {
+    for t in &args.tests {
         cmd.arg("--test").arg(t);
     }
 
-    if let Some(f) = filter {
+    if let Some(f) = &args.filter {
         cmd.arg(f);
     }
-    if ignored || ignored_only {
+    if args.ignored || args.ignored_only {
         cmd.arg("--");
-        if ignored_only {
+        if args.ignored_only {
             cmd.arg("--ignored");
         } else {
             cmd.arg("--include-ignored");

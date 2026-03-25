@@ -135,53 +135,12 @@ enum Command {
     },
     /// Run tests (delegates to cargo test on native, VM test flow on VM).
     Test {
-        /// Test name filter.
-        #[arg()]
-        filter: Option<String>,
-
-        /// Include ignored tests.
-        #[arg(long)]
-        ignored: bool,
-
-        /// Run only ignored tests.
-        #[arg(long)]
-        ignored_only: bool,
-
-        /// Package to test.
-        #[arg(short = 'p', long = "package")]
-        packages: Vec<String>,
-
-        /// Test target name.
-        #[arg(long = "test")]
-        tests: Vec<String>,
-
-        /// Number of build jobs.
-        #[arg(short = 'j', long)]
-        jobs: Option<u32>,
-
-        /// Features to enable.
-        #[arg(short = 'F', long)]
-        features: Vec<String>,
-
-        /// Build in release mode.
-        #[arg(long)]
-        release: bool,
-
-        /// Test only library.
-        #[arg(long)]
-        lib: bool,
-
-        /// Don't stop on first failure.
-        #[arg(long)]
-        no_fail_fast: bool,
+        #[command(flatten)]
+        args: test::TestArgs,
 
         /// Force VM backend.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         vm: Option<String>,
-
-        /// Extra args passed to cargo and test binaries.
-        #[arg(last = true)]
-        extra_args: Vec<String>,
     },
     /// Compare test or sim results across git refs.
     Compare {
@@ -217,10 +176,6 @@ enum Command {
 enum CompareCommand {
     /// Compare test results between git refs.
     Test {
-        /// Test name filter.
-        #[arg()]
-        filter: Option<String>,
-
         /// First git ref (compare against worktree if only one given).
         #[arg(long = "ref", required = true)]
         left_ref: String,
@@ -229,14 +184,8 @@ enum CompareCommand {
         #[arg(long = "ref2")]
         right_ref: Option<String>,
 
-        #[arg(long)]
-        ignored: bool,
-        #[arg(long)]
-        ignored_only: bool,
-        #[arg(short = 'p', long = "package")]
-        packages: Vec<String>,
-        #[arg(long = "test")]
-        tests: Vec<String>,
+        #[command(flatten)]
+        args: test::TestArgs,
     },
     /// Compare sim results between git refs.
     Run {
@@ -446,91 +395,27 @@ async fn tokio_main() -> Result<()> {
             work_dir,
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
-        Command::Test {
-            filter,
-            ignored,
-            ignored_only,
-            packages,
-            tests,
-            jobs,
-            features,
-            release,
-            lib,
-            no_fail_fast,
-            vm,
-            extra_args,
-        } => {
-            let test_args = test::TestArgs {
-                filter: filter.clone(),
-                ignored,
-                ignored_only,
-                packages: packages.clone(),
-                tests: tests.clone(),
-                jobs,
-                features: features.clone(),
-                release,
-                lib,
-                no_fail_fast,
-                extra_args: extra_args.clone(),
-            };
-
+        Command::Test { args, vm } => {
             #[cfg(feature = "vm")]
             if let Some(vm_backend) = vm {
-                // Delegate to VM test flow
                 let backend = match vm_backend.as_str() {
                     "auto" => patchbay_vm::resolve_backend(patchbay_vm::Backend::Auto),
                     "qemu" => patchbay_vm::Backend::Qemu,
                     "container" => patchbay_vm::Backend::Container,
                     other => bail!("unknown VM backend: {other}"),
                 };
-                let target = patchbay_vm::default_test_target();
-                let mut cargo_args = Vec::new();
-                if let Some(j) = jobs {
-                    cargo_args.extend(["--jobs".into(), j.to_string()]);
-                }
-                for f in &features {
-                    cargo_args.extend(["--features".into(), f.clone()]);
-                }
-                if release {
-                    cargo_args.push("--release".into());
-                }
-                if lib {
-                    cargo_args.push("--lib".into());
-                }
-                if no_fail_fast {
-                    cargo_args.push("--no-fail-fast".into());
-                }
-                cargo_args.extend(extra_args);
-
-                let vm_args = patchbay_vm::TestVmArgs {
-                    filter,
-                    target,
-                    packages,
-                    tests,
-                    recreate: false,
-                    cargo_args,
-                };
-                return match backend {
-                    patchbay_vm::Backend::Container => {
-                        patchbay_vm::container::run_tests(vm_args)
-                    }
-                    _ => patchbay_vm::qemu::run_tests_in_vm(vm_args),
-                };
+                return test::run_vm(args, backend);
             }
             #[cfg(not(feature = "vm"))]
             if vm.is_some() {
                 bail!("VM support not compiled (enable the `vm` feature)");
             }
-
-            // Native
-            test::run_native(test_args)
+            test::run_native(args)
         }
         Command::Compare { command } => {
             let cwd = std::env::current_dir().context("get cwd")?;
             match command {
-                CompareCommand::Test {
-                    filter, left_ref, right_ref, ignored, ignored_only, packages, tests,
-                } => {
+                CompareCommand::Test { left_ref, right_ref, args } => {
                     let right_label = right_ref.as_deref().unwrap_or("worktree");
                     println!("patchbay compare test: {} \u{2194} {}", left_ref, right_label);
 
@@ -545,12 +430,12 @@ async fn tokio_main() -> Result<()> {
                     // Run tests sequentially
                     println!("Running tests in {} ...", left_ref);
                     let (left_results, _left_output) = compare::run_tests_in_dir(
-                        &left_dir, &filter, ignored, ignored_only, &packages, &tests,
+                        &left_dir, &args,
                     )?;
 
                     println!("Running tests in {} ...", right_label);
                     let (right_results, _right_output) = compare::run_tests_in_dir(
-                        &right_dir, &filter, ignored, ignored_only, &packages, &tests,
+                        &right_dir, &args,
                     )?;
 
                     // Compare
