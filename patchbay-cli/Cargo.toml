@@ -32,6 +32,11 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "proc
 toml = "1.0"
 tracing = "0.1"
 
+[dev-dependencies]
+patchbay = { path = "../patchbay" }
+serde_json = "1"
+tempfile = "3"
+
 [features]
 default = ["serve", "upload", "vm"]
 serve = ["dep:patchbay-server"]
