@@ -1847,6 +1847,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "patchbay-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ctor",
+ "nix",
+ "open",
+ "patchbay",
+ "patchbay-runner",
+ "patchbay-server",
+ "patchbay-utils",
+ "patchbay-vm",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "patchbay-runner"
 version = "0.1.0"
 dependencies = [
@@ -1854,12 +1875,10 @@ dependencies = [
  "chrono",
  "clap",
  "comfy-table",
- "ctor",
  "flate2",
  "n0-tracing-test",
  "nix",
  "patchbay",
- "patchbay-server",
  "patchbay-utils",
  "rcgen 0.14.7",
  "regex",
@@ -1921,12 +1940,9 @@ dependencies = [
  "clap",
  "dirs",
  "nix",
- "open",
- "patchbay-server",
  "patchbay-utils",
  "serde",
  "serde_json",
- "tokio",
  "toml",
  "tracing",
 ]

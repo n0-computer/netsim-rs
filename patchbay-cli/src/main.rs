@@ -1,6 +1,6 @@
-//! Runs the `patchbay` CLI entrypoint.
+//! Unified CLI entrypoint for patchbay simulations (native and VM).
 
-mod sim;
+mod init;
 
 use std::{
     collections::HashMap,
@@ -12,6 +12,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use patchbay::check_caps;
+use patchbay_runner::sim;
 #[cfg(feature = "serve")]
 use patchbay_server::DEFAULT_UI_BIND;
 #[cfg(not(feature = "serve"))]
@@ -127,6 +128,94 @@ enum Command {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
     },
+    /// VM management and simulation execution.
+    #[cfg(feature = "vm")]
+    Vm {
+        #[command(subcommand)]
+        command: VmCommand,
+        /// Which VM backend to use.
+        #[arg(long, default_value = "auto", global = true)]
+        backend: patchbay_vm::Backend,
+    },
+}
+
+/// VM sub-subcommands (mirrors patchbay-vm's standalone CLI).
+#[cfg(feature = "vm")]
+#[derive(Subcommand)]
+enum VmCommand {
+    /// Boot or reuse VM and ensure mounts.
+    Up {
+        #[arg(long)]
+        recreate: bool,
+    },
+    /// Stop VM and helper processes.
+    Down,
+    /// Show VM running status.
+    Status,
+    /// Best-effort cleanup of VM helper artifacts/processes.
+    Cleanup,
+    /// Execute command in the guest (SSH for QEMU, exec for container).
+    Ssh {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec<String>,
+    },
+    /// Run one or more sims in VM using guest patchbay binary.
+    Run {
+        #[arg(required = true)]
+        sims: Vec<PathBuf>,
+        #[arg(long, default_value = ".patchbay-work")]
+        work_dir: PathBuf,
+        #[arg(long = "binary")]
+        binary_overrides: Vec<String>,
+        #[arg(short = 'v', long, default_value_t = false)]
+        verbose: bool,
+        #[arg(long)]
+        recreate: bool,
+        #[arg(long, default_value = "latest")]
+        patchbay_version: String,
+        #[arg(long, default_value_t = false)]
+        open: bool,
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
+        bind: String,
+    },
+    /// Serve embedded UI + work directory over HTTP.
+    Serve {
+        #[arg(long, default_value = ".patchbay-work")]
+        work_dir: PathBuf,
+        /// Serve `<work-dir>/binaries/tests/testdir-current` instead of work_dir.
+        #[arg(long, default_value_t = false)]
+        testdir: bool,
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
+        bind: String,
+        #[arg(long, default_value_t = false)]
+        open: bool,
+    },
+    /// Build and run tests in VM.
+    Test {
+        /// Test name filter (passed to test binaries at runtime).
+        #[arg()]
+        filter: Option<String>,
+        #[arg(long, default_value_t = patchbay_vm::default_test_target())]
+        target: String,
+        #[arg(short = 'p', long = "package")]
+        packages: Vec<String>,
+        #[arg(long = "test")]
+        tests: Vec<String>,
+        #[arg(short = 'j', long)]
+        jobs: Option<u32>,
+        #[arg(short = 'F', long)]
+        features: Vec<String>,
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        lib: bool,
+        #[arg(long)]
+        no_fail_fast: bool,
+        #[arg(long)]
+        recreate: bool,
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -241,6 +330,141 @@ async fn tokio_main() -> Result<()> {
             work_dir,
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
+        #[cfg(feature = "vm")]
+        Command::Vm { command, backend } => dispatch_vm(command, backend).await,
+    }
+}
+
+/// Dispatch VM subcommands to the patchbay-vm library.
+#[cfg(feature = "vm")]
+async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Result<()> {
+    let backend = patchbay_vm::resolve_backend(backend);
+
+    match command {
+        VmCommand::Up { recreate } => match backend {
+            patchbay_vm::Backend::Container => patchbay_vm::container::up_cmd(recreate),
+            _ => patchbay_vm::qemu::up_cmd(recreate),
+        },
+        VmCommand::Down => match backend {
+            patchbay_vm::Backend::Container => patchbay_vm::container::down_cmd(),
+            _ => patchbay_vm::qemu::down_cmd(),
+        },
+        VmCommand::Status => match backend {
+            patchbay_vm::Backend::Container => patchbay_vm::container::status_cmd(),
+            _ => patchbay_vm::qemu::status_cmd(),
+        },
+        VmCommand::Cleanup => match backend {
+            patchbay_vm::Backend::Container => patchbay_vm::container::cleanup_cmd(),
+            _ => patchbay_vm::qemu::cleanup_cmd(),
+        },
+        VmCommand::Ssh { cmd } => match backend {
+            patchbay_vm::Backend::Container => patchbay_vm::container::exec_cmd_cli(cmd),
+            _ => patchbay_vm::qemu::ssh_cmd_cli(cmd),
+        },
+        VmCommand::Run {
+            sims,
+            work_dir,
+            binary_overrides,
+            verbose,
+            recreate,
+            patchbay_version,
+            open,
+            bind,
+        } => {
+            if open {
+                let url = format!("http://{bind}");
+                println!("patchbay UI: {url}");
+                let _ = open::that(&url);
+                let work = work_dir.clone();
+                let bind_clone = bind.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = patchbay_server::serve(work, &bind_clone).await {
+                        tracing::error!("server error: {e}");
+                    }
+                });
+            }
+            let args = patchbay_vm::RunVmArgs {
+                sim_inputs: sims,
+                work_dir,
+                binary_overrides,
+                verbose,
+                recreate,
+                patchbay_version,
+            };
+            let res = match backend {
+                patchbay_vm::Backend::Container => patchbay_vm::container::run_sims(args),
+                _ => patchbay_vm::qemu::run_sims_in_vm(args),
+            };
+            if open && res.is_ok() {
+                println!("run finished; server still running (Ctrl-C to exit)");
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            }
+            res
+        }
+        VmCommand::Serve {
+            work_dir,
+            testdir,
+            bind,
+            open,
+        } => {
+            let dir = if testdir {
+                work_dir
+                    .join("binaries")
+                    .join("tests")
+                    .join("testdir-current")
+            } else {
+                work_dir
+            };
+            println!("patchbay: serving {} at http://{bind}/", dir.display());
+            if open {
+                let url = format!("http://{bind}");
+                let _ = open::that(&url);
+            }
+            patchbay_server::serve(dir, &bind).await
+        }
+        VmCommand::Test {
+            filter,
+            target,
+            packages,
+            tests,
+            jobs,
+            features,
+            release,
+            lib,
+            no_fail_fast,
+            recreate,
+            mut cargo_args,
+        } => {
+            if let Some(j) = jobs {
+                cargo_args.extend(["--jobs".into(), j.to_string()]);
+            }
+            for f in features {
+                cargo_args.extend(["--features".into(), f]);
+            }
+            if release {
+                cargo_args.push("--release".into());
+            }
+            if lib {
+                cargo_args.push("--lib".into());
+            }
+            if no_fail_fast {
+                cargo_args.push("--no-fail-fast".into());
+            }
+            let args = patchbay_vm::TestVmArgs {
+                filter,
+                target,
+                packages,
+                tests,
+                recreate,
+                cargo_args,
+            };
+            match backend {
+                patchbay_vm::Backend::Container => patchbay_vm::container::run_tests(args),
+                _ => patchbay_vm::qemu::run_tests_in_vm(args),
+            }
+        }
     }
 }
 
