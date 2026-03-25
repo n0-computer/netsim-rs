@@ -550,6 +550,12 @@ impl NetnsManager {
             .context("spawn user thread")
     }
 
+    /// Get the tracing dispatch for a namespace.
+    pub(crate) fn dispatch_for(&self, ns: &str) -> Option<tracing::Dispatch> {
+        let workers = self.workers.lock().expect("netns worker map poisoned");
+        workers.get(ns).map(|w| w.tracing_dispatch.clone())
+    }
+
     /// Clone the namespace fd (for moving veth endpoints etc).
     pub(crate) fn ns_fd(&self, ns: &str) -> Result<File> {
         let workers = self.workers.lock().expect("netns worker map poisoned");

@@ -132,6 +132,7 @@ pub struct Device {
     name: Arc<str>,
     ns: Arc<str>,
     lab: Arc<LabInner>,
+    dispatch: tracing::Dispatch,
 }
 
 /// Owned snapshot of a single router network interface.
@@ -172,6 +173,7 @@ impl Clone for Device {
             name: Arc::clone(&self.name),
             ns: Arc::clone(&self.ns),
             lab: Arc::clone(&self.lab),
+            dispatch: self.dispatch.clone(),
         }
     }
 }
@@ -187,7 +189,42 @@ impl std::fmt::Debug for Device {
 
 impl Device {
     pub(crate) fn new(id: NodeId, name: Arc<str>, ns: Arc<str>, lab: Arc<LabInner>) -> Self {
-        Self { id, name, ns, lab }
+        let dispatch = lab
+            .netns
+            .dispatch_for(&ns)
+            .unwrap_or_else(|| tracing::dispatcher::get_default(|d| d.clone()));
+        Self {
+            id,
+            name,
+            ns,
+            lab,
+            dispatch,
+        }
+    }
+
+    /// Enter this device's tracing context.
+    pub fn enter_tracing(&self) -> tracing::subscriber::DefaultGuard {
+        tracing::dispatcher::set_default(&self.dispatch)
+    }
+
+    /// Record a single metric.
+    pub fn record(&self, key: &str, value: f64) {
+        let mut map = serde_json::Map::new();
+        if let Some(n) = serde_json::Number::from_f64(value) {
+            map.insert(key.to_string(), serde_json::Value::Number(n));
+        }
+        let json = serde_json::to_string(&map).unwrap_or_default();
+        let _guard = tracing::dispatcher::set_default(&self.dispatch);
+        tracing::event!(
+            target: "patchbay::_metrics",
+            tracing::Level::INFO,
+            metrics_json = %json,
+        );
+    }
+
+    /// Returns a builder for recording multiple metrics at once.
+    pub fn metrics(&self) -> crate::metrics::MetricsBuilder {
+        crate::metrics::MetricsBuilder::new(self.dispatch.clone())
     }
 
     /// Returns the node identifier.
@@ -928,6 +965,7 @@ pub struct Router {
     name: Arc<str>,
     ns: Arc<str>,
     lab: Arc<LabInner>,
+    dispatch: tracing::Dispatch,
 }
 
 impl Clone for Router {
@@ -937,6 +975,7 @@ impl Clone for Router {
             name: Arc::clone(&self.name),
             ns: Arc::clone(&self.ns),
             lab: Arc::clone(&self.lab),
+            dispatch: self.dispatch.clone(),
         }
     }
 }
@@ -952,7 +991,42 @@ impl std::fmt::Debug for Router {
 
 impl Router {
     pub(crate) fn new(id: NodeId, name: Arc<str>, ns: Arc<str>, lab: Arc<LabInner>) -> Self {
-        Self { id, name, ns, lab }
+        let dispatch = lab
+            .netns
+            .dispatch_for(&ns)
+            .unwrap_or_else(|| tracing::dispatcher::get_default(|d| d.clone()));
+        Self {
+            id,
+            name,
+            ns,
+            lab,
+            dispatch,
+        }
+    }
+
+    /// Enter this router's tracing context.
+    pub fn enter_tracing(&self) -> tracing::subscriber::DefaultGuard {
+        tracing::dispatcher::set_default(&self.dispatch)
+    }
+
+    /// Record a single metric.
+    pub fn record(&self, key: &str, value: f64) {
+        let mut map = serde_json::Map::new();
+        if let Some(n) = serde_json::Number::from_f64(value) {
+            map.insert(key.to_string(), serde_json::Value::Number(n));
+        }
+        let json = serde_json::to_string(&map).unwrap_or_default();
+        let _guard = tracing::dispatcher::set_default(&self.dispatch);
+        tracing::event!(
+            target: "patchbay::_metrics",
+            tracing::Level::INFO,
+            metrics_json = %json,
+        );
+    }
+
+    /// Returns a builder for recording multiple metrics at once.
+    pub fn metrics(&self) -> crate::metrics::MetricsBuilder {
+        crate::metrics::MetricsBuilder::new(self.dispatch.clone())
     }
 
     /// Returns the node identifier.

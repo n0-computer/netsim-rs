@@ -253,6 +253,8 @@ struct NsWriterSubscriber {
     ansi_writer: Mutex<LazyFile>,
     /// Extracted `_events::` NDJSON writer.
     events_writer: Mutex<LazyFile>,
+    /// Per-node metrics JSONL writer.
+    metrics_writer: Mutex<LazyFile>,
     /// Target+level filter for the tracing file (from PATCHBAY_LOG / RUST_LOG).
     /// Supports full directive syntax, e.g. `iroh=trace,patchbay=debug`.
     file_filter: tracing_subscriber::filter::Targets,
@@ -381,6 +383,37 @@ impl NsWriterSubscriber {
     fn write_event_to_files(&self, event: &tracing::Event<'_>) {
         let meta = event.metadata();
         let target = meta.target();
+
+        // Write to .metrics.jsonl — only patchbay::_metrics target.
+        if target == "patchbay::_metrics" {
+            let mut visitor = JsonFieldVisitor::new();
+            event.record(&mut visitor);
+            let metrics_map = if let Some(serde_json::Value::String(json_str)) =
+                visitor.fields.get("metrics_json")
+            {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json_str)
+                    .unwrap_or_default()
+            } else {
+                let mut m = visitor.fields.clone();
+                m.remove("message");
+                m
+            };
+            if !metrics_map.is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let mut obj = serde_json::Map::new();
+                obj.insert("t".into(), serde_json::json!(now.as_secs_f64()));
+                obj.insert("m".into(), serde_json::Value::Object(metrics_map));
+                if let Ok(mut w) = self.metrics_writer.lock() {
+                    let _ = serde_json::to_writer(&mut *w, &serde_json::Value::Object(obj));
+                    let _ = w.write_all(b"\n");
+                    let _ = w.flush();
+                }
+            }
+            return;
+        }
+
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
 
         // Write to .events.jsonl — only _events:: targets.
@@ -462,6 +495,7 @@ impl tracing::Subscriber for NsWriterSubscriber {
                 .file_filter
                 .would_enable(metadata.target(), metadata.level())
             || metadata.target().contains("_events::")
+            || metadata.target() == "patchbay::_metrics"
     }
 
     fn new_span(&self, span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
@@ -549,6 +583,7 @@ pub(crate) fn install_namespace_subscriber(
     let tracing_path = run_dir.join(format!("{log_prefix}.{}", consts::TRACING_JSONL_EXT));
     let ansi_path = run_dir.join(format!("{log_prefix}.{}", consts::TRACING_LOG_EXT));
     let events_path = run_dir.join(format!("{log_prefix}.{}", consts::EVENTS_JSONL_EXT));
+    let metrics_path = run_dir.join(format!("{log_prefix}.{}", consts::METRICS_JSONL_EXT));
 
     let file_filter_str = std::env::var("PATCHBAY_LOG")
         .or_else(|_| std::env::var("RUST_LOG"))
@@ -566,6 +601,7 @@ pub(crate) fn install_namespace_subscriber(
         tracing_writer: Mutex::new(LazyFile::new(tracing_path)),
         ansi_writer: Mutex::new(LazyFile::new(ansi_path)),
         events_writer: Mutex::new(LazyFile::new(events_path)),
+        metrics_writer: Mutex::new(LazyFile::new(metrics_path)),
         file_filter,
         span_state: Mutex::new(SpanState::default()),
     };

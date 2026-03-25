@@ -27,6 +27,9 @@ pub const STDOUT_LOG_EXT: &str = "stdout.log";
 /// Per-node stderr log suffix.
 pub const STDERR_LOG_EXT: &str = "stderr.log";
 
+/// Per-node metrics suffix.
+pub const METRICS_JSONL_EXT: &str = "metrics.jsonl";
+
 /// Node kind prefix for devices.
 pub const KIND_DEVICE: &str = "device";
 

@@ -200,6 +200,7 @@ pub mod consts;
 pub(crate) mod core;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
+mod metrics;
 pub(crate) mod firewall;
 pub(crate) mod handles;
 mod lab;
@@ -220,6 +221,7 @@ pub mod util;
 pub(crate) mod writer;
 
 pub use firewall::PortPolicy;
+pub use metrics::MetricsBuilder;
 pub use ipnet::Ipv4Net;
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Device, DeviceBuilder, DeviceIface, Firewall,

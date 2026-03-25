@@ -39,6 +39,7 @@ const STATE_JSON: &str = "state.json";
 
 /// Per-node full tracing log suffix.
 const TRACING_JSONL_EXT: &str = "tracing.jsonl";
+const METRICS_JSONL_EXT: &str = "metrics.jsonl";
 
 /// Default bind address for the devtools server.
 pub const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
@@ -720,6 +721,8 @@ enum LogKind {
     TracingJsonl,
     /// Lab-level event log (`events.jsonl`).
     LabEvents,
+    /// Per-node metrics (`*.metrics.jsonl`).
+    Metrics,
     /// Generic JSON lines file (`*.jsonl`).
     Jsonl,
     /// Single JSON document (`*.json`).
@@ -742,6 +745,9 @@ struct LogEntry {
 fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
     if filename == EVENTS_JSONL {
         return Some(LogKind::LabEvents);
+    }
+    if filename.ends_with(&format!(".{METRICS_JSONL_EXT}")) {
+        return Some(LogKind::Metrics);
     }
     if filename.ends_with(&format!(".{TRACING_JSONL_EXT}")) {
         return Some(LogKind::TracingJsonl);
