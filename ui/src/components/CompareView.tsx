@@ -6,8 +6,8 @@ interface CompareManifest {
   right_ref: string
   timestamp: string
   summary: {
-    left_pass: number; left_fail: number; left_total: number
-    right_pass: number; right_fail: number; right_total: number
+    left: { pass: number; fail: number; total: number; time: number }
+    right: { pass: number; fail: number; total: number; time: number }
     fixes: number; regressions: number; score: number
   }
   left_results: { name: string; status: string; duration_ms?: number }[]
@@ -44,7 +44,7 @@ export default function CompareView({ batchName }: { batchName: string }) {
       {/* Summary bar */}
       <div className="compare-summary" style={{ display: 'flex', gap: '2rem', padding: '1rem', background: 'var(--surface)', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border)' }}>
         <div>
-          <strong>Tests:</strong> {s.left_pass}/{s.left_total} &rarr; {s.right_pass}/{s.right_total}
+          <strong>Tests:</strong> {s.left.pass}/{s.left.total} &rarr; {s.right.pass}/{s.right.total}
         </div>
         {s.fixes > 0 && <div style={{ color: 'var(--green)' }}>Fixes: {s.fixes}</div>}
         {s.regressions > 0 && <div style={{ color: 'var(--red)' }}>Regressions: {s.regressions}</div>}

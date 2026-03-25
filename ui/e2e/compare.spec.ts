@@ -30,16 +30,10 @@ const MOCK_MANIFEST = {
     { name: 'counter::udp_threshold', status: 'fail', duration_ms: 40 },
   ],
   summary: {
-    left_pass: 2,
-    left_fail: 0,
-    left_total: 2,
-    right_pass: 1,
-    right_fail: 1,
-    right_total: 2,
+    left: { pass: 2, fail: 0, total: 2, time: 150 },
+    right: { pass: 1, fail: 1, total: 2, time: 150 },
     fixes: 0,
     regressions: 1,
-    left_time_ms: 150,
-    right_time_ms: 150,
     score: -5,
   },
 }

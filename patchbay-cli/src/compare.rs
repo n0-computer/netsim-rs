@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -79,19 +80,37 @@ pub struct CompareManifest {
     pub summary: CompareSummary,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunStats {
+    pub pass: usize,
+    pub fail: usize,
+    pub total: usize,
+    #[serde(with = "duration_ms")]
+    pub time: Duration,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompareSummary {
-    pub left_pass: usize,
-    pub left_fail: usize,
-    pub left_total: usize,
-    pub right_pass: usize,
-    pub right_fail: usize,
-    pub right_total: usize,
+    pub left: RunStats,
+    pub right: RunStats,
     pub fixes: usize,
     pub regressions: usize,
-    pub left_time_ms: u64,
-    pub right_time_ms: u64,
     pub score: i32,
+}
+
+/// Serialize Duration as milliseconds.
+mod duration_ms {
+    use std::time::Duration;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u64(d.as_millis() as u64)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
+        let ms = u64::deserialize(d)?;
+        Ok(Duration::from_millis(ms))
+    }
 }
 
 /// Parse cargo test output into TestResults.
@@ -210,10 +229,19 @@ pub fn compare_results(
     }
 
     CompareSummary {
-        left_pass, left_fail, left_total: left.len(),
-        right_pass, right_fail, right_total: right.len(),
+        left: RunStats {
+            pass: left_pass,
+            fail: left_fail,
+            total: left.len(),
+            time: Duration::from_millis(left_time_ms),
+        },
+        right: RunStats {
+            pass: right_pass,
+            fail: right_fail,
+            total: right.len(),
+            time: Duration::from_millis(right_time_ms),
+        },
         fixes, regressions,
-        left_time_ms, right_time_ms,
         score,
     }
 }
@@ -222,18 +250,18 @@ pub fn compare_results(
 pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], summary: &CompareSummary) {
     println!("\nCompare: {left_ref} \u{2194} {right_ref}\n");
     println!("Tests:        {}/{} pass \u{2192} {}/{} pass",
-        summary.left_pass, summary.left_total,
-        summary.right_pass, summary.right_total);
+        summary.left.pass, summary.left.total,
+        summary.right.pass, summary.right.total);
     if summary.fixes > 0 {
         println!("Fixes:        {} (fail\u{2192}pass)", summary.fixes);
     }
     if summary.regressions > 0 {
         println!("Regressions:  {} (pass\u{2192}fail)", summary.regressions);
     }
-    if summary.left_time_ms > 0 || summary.right_time_ms > 0 {
+    if !summary.left.time.is_zero() || !summary.right.time.is_zero() {
         println!("Total time:   {:.1}s \u{2192} {:.1}s",
-            summary.left_time_ms as f64 / 1000.0,
-            summary.right_time_ms as f64 / 1000.0);
+            summary.left.time.as_secs_f64(),
+            summary.right.time.as_secs_f64());
     }
 
     // Per-test table

@@ -399,7 +399,7 @@ async fn tokio_main() -> Result<()> {
             #[cfg(feature = "vm")]
             if let Some(vm_backend) = vm {
                 let backend = match vm_backend.as_str() {
-                    "auto" => patchbay_vm::resolve_backend(patchbay_vm::Backend::Auto),
+                    "auto" => patchbay_vm::Backend::Auto.resolve(),
                     "qemu" => patchbay_vm::Backend::Qemu,
                     "container" => patchbay_vm::Backend::Container,
                     other => bail!("unknown VM backend: {other}"),
@@ -493,14 +493,14 @@ async fn tokio_main() -> Result<()> {
 /// Dispatch VM subcommands to the patchbay-vm library.
 #[cfg(feature = "vm")]
 async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Result<()> {
-    let ops = patchbay_vm::resolve_ops(backend);
+    let backend = backend.resolve();
 
     match command {
-        VmCommand::Up { recreate } => ops.up(recreate),
-        VmCommand::Down => ops.down(),
-        VmCommand::Status => ops.status(),
-        VmCommand::Cleanup => ops.cleanup(),
-        VmCommand::Ssh { cmd } => ops.exec(cmd),
+        VmCommand::Up { recreate } => backend.up(recreate),
+        VmCommand::Down => backend.down(),
+        VmCommand::Status => backend.status(),
+        VmCommand::Cleanup => backend.cleanup(),
+        VmCommand::Ssh { cmd } => backend.exec(cmd),
         VmCommand::Run {
             sims,
             work_dir,
@@ -531,7 +531,7 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
                 recreate,
                 patchbay_version,
             };
-            let res = ops.run_sims(args);
+            let res = backend.run_sims(args);
             if open && res.is_ok() {
                 println!("run finished; server still running (Ctrl-C to exit)");
                 loop {
@@ -587,7 +587,7 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
                 no_fail_fast,
                 extra_args: cargo_args,
             };
-            ops.run_tests(test_args.into_vm_args(target, recreate))
+            backend.run_tests(test_args.into_vm_args(target, recreate))
         }
     }
 }
