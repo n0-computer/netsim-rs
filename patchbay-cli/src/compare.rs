@@ -142,6 +142,7 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
 pub fn run_tests_in_dir(
     dir: &Path,
     args: &crate::test::TestArgs,
+    verbose: bool,
 ) -> Result<(Vec<TestResult>, String)> {
     let mut cmd = Command::new("cargo");
     cmd.current_dir(dir);
@@ -167,9 +168,36 @@ pub fn run_tests_in_dir(
         }
     }
 
-    let output = cmd.output().context("run cargo test")?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    use std::io::BufRead;
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().context("spawn cargo test")?;
+
+    let stdout_pipe = child.stdout.take().unwrap();
+    let stderr_pipe = child.stderr.take().unwrap();
+    let v = verbose;
+    let out_t = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
+            if v { println!("{line}"); }
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        buf
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
+            if verbose { eprintln!("{line}"); }
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        buf
+    });
+
+    let _ = child.wait().context("wait for cargo test")?;
+    let stdout = out_t.join().unwrap_or_default();
+    let stderr = err_t.join().unwrap_or_default();
     let combined = format!("{stdout}\n{stderr}");
     let results = parse_test_output(&combined);
     Ok((results, combined))

@@ -149,6 +149,9 @@ enum Command {
     },
     /// Compare test or sim results across git refs.
     Compare {
+        /// Stream subcommand output live.
+        #[arg(short = 'v', long, global = true)]
+        verbose: bool,
         #[command(subcommand)]
         command: CompareCommand,
     },
@@ -419,7 +422,7 @@ async fn tokio_main() -> Result<()> {
             }
             test::run_native(args)
         }
-        Command::Compare { command } => {
+        Command::Compare { verbose, command } => {
             let cwd = std::env::current_dir().context("get cwd")?;
             match command {
                 CompareCommand::Test { left_ref, right_ref, args } => {
@@ -437,12 +440,12 @@ async fn tokio_main() -> Result<()> {
                     // Run tests sequentially
                     println!("Running tests in {} ...", left_ref);
                     let (left_results, _left_output) = compare::run_tests_in_dir(
-                        &left_dir, &args,
+                        &left_dir, &args, verbose,
                     )?;
 
                     println!("Running tests in {} ...", right_label);
                     let (right_results, _right_output) = compare::run_tests_in_dir(
-                        &right_dir, &args,
+                        &right_dir, &args, verbose,
                     )?;
 
                     // Compare

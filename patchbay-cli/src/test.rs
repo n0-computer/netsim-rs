@@ -74,9 +74,15 @@ impl TestArgs {
         for f in &self.features {
             cargo_args.extend(["--features".into(), f.clone()]);
         }
-        if self.release { cargo_args.push("--release".into()); }
-        if self.lib { cargo_args.push("--lib".into()); }
-        if self.no_fail_fast { cargo_args.push("--no-fail-fast".into()); }
+        if self.release {
+            cargo_args.push("--release".into());
+        }
+        if self.lib {
+            cargo_args.push("--lib".into());
+        }
+        if self.no_fail_fast {
+            cargo_args.push("--no-fail-fast".into());
+        }
         cargo_args.extend(self.extra_args);
         patchbay_vm::TestVmArgs {
             filter: self.filter,
@@ -103,7 +109,7 @@ pub fn run_native(args: TestArgs) -> Result<()> {
         cmd.arg("test");
     }
 
-    // Add RUSTFLAGS with cfg(patchbay_test)
+    // Add RUSTFLAGS with cfg(patchbay_tests)
     cmd.env("RUSTFLAGS", crate::util::patchbay_rustflags());
 
     // Package selectors
@@ -172,14 +178,27 @@ fn copy_testdir_output() {
     // Try to find target/testdir-current via cargo metadata
     let Ok(output) = Command::new("cargo")
         .args(["metadata", "--format-version=1", "--no-deps"])
-        .output() else { return };
-    if !output.status.success() { return; }
-    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else { return };
-    let Some(target_dir) = meta["target_directory"].as_str() else { return };
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return;
+    };
+    let Some(target_dir) = meta["target_directory"].as_str() else {
+        return;
+    };
     let testdir = std::path::Path::new(target_dir).join("testdir-current");
-    if !testdir.exists() { return; }
+    if !testdir.exists() {
+        return;
+    }
     let dest = std::path::Path::new(".patchbay/work/testdir");
-    if dest.exists() { let _ = std::fs::remove_dir_all(dest); }
+    if dest.exists() {
+        let _ = std::fs::remove_dir_all(dest);
+    }
     // Use cp -r since std::fs doesn't have recursive copy
     let _ = Command::new("cp")
         .args(["-r"])
