@@ -307,8 +307,9 @@ fn persist_run() -> Result<()> {
     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
     std::fs::create_dir_all(dest.parent().unwrap())?;
+    // -rL: dereference symlinks (testdir-current is a symlink to testdir-N)
     let status = Command::new("cp")
-        .args(["-r"])
+        .args(["-rL"])
         .arg(&testdir)
         .arg(&dest)
         .status()
