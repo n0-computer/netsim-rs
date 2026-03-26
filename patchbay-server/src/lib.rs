@@ -148,17 +148,17 @@ fn scan_runs_recursive(
         if !path.is_dir() {
             continue;
         }
-        if path.join(EVENTS_JSONL).exists() || path.join(RUN_JSON).exists() {
-            // Use the relative path from root as the run name so nested
-            // runs are addressable via the API (e.g. "sim-20260305/ping-e2e").
+        let has_events = path.join(EVENTS_JSONL).exists();
+        let has_run_json = path.join(RUN_JSON).exists();
+
+        if has_events {
+            // Leaf run: has events.jsonl → it's an actual lab output dir.
             let name = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
             let (label, status) = read_run_metadata(&path);
-            // Derive group from the first path component (the timestamped
-            // directory) when the run is nested more than one level deep.
             let group = name
                 .split('/')
                 .next()
@@ -172,6 +172,10 @@ fn scan_runs_recursive(
                 group,
                 manifest: None, // populated after scan
             });
+        } else if has_run_json {
+            // Group directory: has run.json but no events.jsonl.
+            // Recurse to find child runs, they inherit this manifest.
+            scan_runs_recursive(root, &path, depth + 1, runs)?;
         } else {
             scan_runs_recursive(root, &path, depth + 1, runs)?;
         }

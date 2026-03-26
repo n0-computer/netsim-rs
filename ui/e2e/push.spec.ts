@@ -84,8 +84,8 @@ test('push run results and view via deep link', async ({ page }) => {
     const runsRes = await fetch(`${SERVE_URL}/api/runs`)
     const runs = await runsRes.json() as Array<{ name: string; group: string | null }>
     expect(runs.length).toBeGreaterThan(0)
-    // The pushed run should be discoverable by name matching the push group.
-    const run = runs.find(r => r.name === pushBody.group)
+    // The pushed run should belong to a group matching the push dir.
+    const run = runs.find(r => r.group === pushBody.group)
     expect(run).toBeTruthy()
 
     // Step 5: Open the runs index and verify pushed run appears with manifest data.

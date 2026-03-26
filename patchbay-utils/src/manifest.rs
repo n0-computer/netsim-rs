@@ -222,35 +222,78 @@ pub fn find_run_for_commit(
 
 // ── Test output parsing ─────────────────────────────────────────────
 
-/// Parse `cargo test` / `cargo nextest` stdout into per-test results.
+/// Parse `cargo test` and `cargo nextest` stdout into per-test results.
 ///
-/// Recognises lines of the form:
-/// - `test some::path ... ok`
-/// - `test some::path ... FAILED`
-/// - `test some::path ... ignored`
+/// Recognises two formats:
+/// - cargo test:  `test some::path ... ok`
+/// - nextest:     `    PASS [   1.234s] crate::module::test_name`
 pub fn parse_test_output(output: &str) -> Vec<TestResult> {
+    let mut seen = std::collections::HashSet::new();
     let mut results = Vec::new();
     for line in output.lines() {
         let line = line.trim();
-        let Some(rest) = line.strip_prefix("test ") else {
+
+        // cargo test format: "test name ... ok|FAILED|ignored"
+        if let Some(rest) = line.strip_prefix("test ") {
+            if let Some((name, status_str)) = rest.rsplit_once(" ... ") {
+                let status = match status_str.trim() {
+                    "ok" => TestStatus::Pass,
+                    "FAILED" => TestStatus::Fail,
+                    "ignored" => TestStatus::Ignored,
+                    _ => continue,
+                };
+                let name = name.trim().to_string();
+                if seen.insert(name.clone()) {
+                    results.push(TestResult { name, status, duration: None });
+                }
+            }
             continue;
-        };
-        let Some((name, status_str)) = rest.rsplit_once(" ... ") else {
-            continue;
-        };
-        let status = match status_str.trim() {
-            "ok" => TestStatus::Pass,
-            "FAILED" => TestStatus::Fail,
-            "ignored" => TestStatus::Ignored,
-            _ => continue,
-        };
-        results.push(TestResult {
-            name: name.trim().to_string(),
-            status,
-            duration: None,
-        });
+        }
+
+        // nextest format: "PASS [   1.234s] crate::test_name"
+        //                 "FAIL [   0.567s] crate::test_name"
+        //                 "IGNORE           crate::test_name"
+        //                 "TIMEOUT [ 60.0s] crate::test_name"
+        if let Some((status, rest)) = parse_nextest_line(line) {
+            let duration = parse_nextest_duration(rest);
+            let name = rest
+                .find(']')
+                .map(|i| &rest[i + 1..])
+                .unwrap_or(rest)
+                .trim()
+                .to_string();
+            if !name.is_empty() && seen.insert(name.clone()) {
+                results.push(TestResult { name, status, duration });
+            }
+        }
     }
     results
+}
+
+fn parse_nextest_line(line: &str) -> Option<(TestStatus, &str)> {
+    let prefixes = [
+        ("PASS", TestStatus::Pass),
+        ("FAIL", TestStatus::Fail),
+        ("IGNORE", TestStatus::Ignored),
+        ("TIMEOUT", TestStatus::Fail),
+    ];
+    for (prefix, status) in prefixes {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            if rest.starts_with(' ') || rest.starts_with('[') {
+                return Some((status, rest.trim()));
+            }
+        }
+    }
+    None
+}
+
+fn parse_nextest_duration(s: &str) -> Option<Duration> {
+    // "[   1.234s] name" → extract "1.234"
+    let s = s.strip_prefix('[')?;
+    let end = s.find(']')?;
+    let inner = s[..end].trim().strip_suffix('s')?;
+    let secs: f64 = inner.parse().ok()?;
+    Some(Duration::from_secs_f64(secs))
 }
 
 #[cfg(test)]
@@ -275,6 +318,29 @@ test result: FAILED. 1 passed; 1 failed; 1 ignored;
         assert_eq!(results[1].status, TestStatus::Fail);
         assert_eq!(results[2].name, "qux");
         assert_eq!(results[2].status, TestStatus::Ignored);
+    }
+
+    #[test]
+    fn test_parse_nextest_output() {
+        let output = "\
+    Compiling my-crate v0.1.0
+        PASS [   1.234s] my-crate::tests::foo
+        FAIL [   0.567s] my-crate::tests::bar
+     TIMEOUT [  60.001s] my-crate::tests::baz
+      IGNORE            my-crate::tests::qux
+";
+        let results = parse_test_output(output);
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].name, "my-crate::tests::foo");
+        assert_eq!(results[0].status, TestStatus::Pass);
+        assert_eq!(results[0].duration, Some(Duration::from_millis(1234)));
+        assert_eq!(results[1].name, "my-crate::tests::bar");
+        assert_eq!(results[1].status, TestStatus::Fail);
+        assert_eq!(results[2].name, "my-crate::tests::baz");
+        assert_eq!(results[2].status, TestStatus::Fail); // timeout = fail
+        assert_eq!(results[3].name, "my-crate::tests::qux");
+        assert_eq!(results[3].status, TestStatus::Ignored);
+        assert_eq!(results[3].duration, None);
     }
 
     #[test]
