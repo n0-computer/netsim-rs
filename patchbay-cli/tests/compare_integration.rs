@@ -237,7 +237,7 @@ fn compare_detects_regression() {
             .into_iter()
             .filter(|p| {
                 p.file_name()
-                    .map_or(false, |f| f.to_string_lossy().ends_with(".metrics.jsonl"))
+                    .is_some_and(|f| f.to_string_lossy().ends_with(".metrics.jsonl"))
             })
             .collect();
         assert!(
