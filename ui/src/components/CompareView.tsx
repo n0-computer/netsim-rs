@@ -113,10 +113,10 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
 
   return (
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Header: concise single-line for individual, summary for group */}
+      {/* Header: simple name for individual runs, summary for groups */}
       {!isGroup ? (
         <h2 style={{ margin: '0 0 1rem 0' }}>
-          Compare: {shortName(leftRun)} — left: {statusIcon(leftOutcome)} {leftOutcome ?? 'unknown'} | right: {statusIcon(rightOutcome)} {rightOutcome ?? 'unknown'}
+          Compare: {shortName(leftRun)}
         </h2>
       ) : (
         <>
