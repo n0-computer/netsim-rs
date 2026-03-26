@@ -34,6 +34,6 @@ axum-server = "0.7"
 rustls = "0.23"
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ version }/patchbay-serve-{ target }.tar.gz"
+pkg-url = "{ repo }/releases/download/rolling/patchbay-serve-{ target }.tar.gz"
 bin-dir = "{ bin }-{ target }{ binary-ext }"
 pkg-fmt = "tgz"

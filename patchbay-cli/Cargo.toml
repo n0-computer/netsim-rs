@@ -44,6 +44,6 @@ upload = ["dep:reqwest"]
 vm = ["dep:patchbay-vm"]
 
 [package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ version }/patchbay-{ target }.tar.gz"
+pkg-url = "{ repo }/releases/download/rolling/patchbay-{ target }.tar.gz"
 bin-dir = "{ bin }-{ target }{ binary-ext }"
 pkg-fmt = "tgz"

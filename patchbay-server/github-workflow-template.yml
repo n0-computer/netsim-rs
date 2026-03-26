@@ -30,11 +30,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       # ── Install patchbay CLI ──
-      # Try cargo-binstall first (fast, downloads pre-built binary),
-      # fall back to cargo install (builds from source).
+      # Install pre-built binary via binstall (fast), or build from source.
       - name: Install patchbay CLI
         run: |
-          cargo binstall patchbay-cli --no-confirm 2>/dev/null \
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall patchbay-cli --git-url https://github.com/n0-computer/patchbay --no-confirm \
             || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
 
       # ── Run tests — replace with your own command ──
