@@ -92,6 +92,8 @@ export default function RunsIndex() {
 
   // Checkbox selection for compare
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Collapsed groups (collapsed by default, expanded set tracks which are open)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     const refresh = () => fetchRuns().then((r) => { setRuns(r); setLoaded(true) })
@@ -226,21 +228,41 @@ export default function RunsIndex() {
       {pageRows.map((row) => {
         if (row.kind === 'group') {
           const g = row.group
+          const isExpanded = expanded.has(g.group)
+          const toggleExpand = () => setExpanded(prev => {
+            const next = new Set(prev)
+            if (next.has(g.group)) next.delete(g.group)
+            else next.add(g.group)
+            return next
+          })
           return (
             <div key={g.group} className="run-group">
-              {g.manifest ? (
-                <ManifestGroupHeader group={g} />
-              ) : (
-                <div className="run-group-header">
+              <div
+                className="run-group-header"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', padding: '8px 12px' }}
+                onClick={toggleExpand}
+              >
+                <span style={{ fontSize: 12, width: 16, textAlign: 'center', userSelect: 'none' }}>
+                  {isExpanded ? '\u25BC' : '\u25B6'}
+                </span>
+                <input
+                  type="checkbox"
+                  checked={selected.has(g.group)}
+                  aria-label={`Select group ${g.group} for comparison`}
+                  onChange={(e) => { e.stopPropagation(); toggleSelected(g.group) }}
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ cursor: 'pointer' }}
+                />
+                {g.manifest ? (
+                  <GroupHeaderContent group={g} />
+                ) : (
                   <span className="run-group-name">{g.group}</span>
-                  {g.runs.length > 1 && (
-                    <Link to={`/batch/${g.group}`} className="run-link combined">
-                      combined ({g.runs.length} sims)
-                    </Link>
-                  )}
-                </div>
-              )}
-              {g.runs.map((r) => (
+                )}
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
+                  {g.runs.length} {g.runs.length === 1 ? 'run' : 'runs'}
+                </span>
+              </div>
+              {isExpanded && g.runs.map((r) => (
                 <RunRow key={r.name} run={r} grouped selected={selected.has(r.name)} onToggle={toggleSelected} />
               ))}
             </div>
@@ -255,44 +277,41 @@ export default function RunsIndex() {
 
 // ── Subcomponents ──
 
-function ManifestGroupHeader({ group }: { group: RunGroupWithManifest }) {
+/** Inline content for a group header with manifest info (rendered inside the collapsible header). */
+function GroupHeaderContent({ group }: { group: RunGroupWithManifest }) {
   const m = group.manifest!
   const outcome = m.test_outcome ?? m.outcome
-  const statusIcon = outcome === 'success' || outcome === 'pass' ? '\u2705' : outcome === 'failure' || outcome === 'fail' ? '\u274c' : null
+  const statusIcon = outcome === 'pass' || outcome === 'success' ? '\u2705' : outcome === 'fail' || outcome === 'failure' ? '\u274c' : null
   const date = m.started_at ?? extractDate(group.group)
 
   return (
-    <Link to={`/batch/${group.group}`} className="pushed-run-entry">
-      <span className="pushed-run-project">{m.project || group.group}</span>
-      <div className="pushed-run-meta">
-        {m.branch && <span className="pushed-run-badge">{m.branch}</span>}
-        {m.commit && <code className="pushed-run-sha">{m.commit.slice(0, 7)}</code>}
-        {m.pr != null && m.pr_url ? (
-          <a href={m.pr_url} className="pushed-run-pr-link" onClick={(e) => e.stopPropagation()}>
-            PR #{m.pr}
-          </a>
-        ) : m.pr != null ? (
-          <span>PR #{m.pr}</span>
-        ) : null}
-        {m.title && <span className="pushed-run-title">{m.title}</span>}
-      </div>
-      <div className="pushed-run-right">
-        {statusIcon && <span className="pushed-run-status">{statusIcon}</span>}
-        {date && <span className="pushed-run-date">{typeof date === 'string' && date.includes('T') ? relativeTime(date) : formatDate(date)}</span>}
-        {m.pass != null && m.total != null && (
-          <span style={{ fontSize: 12 }}>{m.pass}/{m.total}</span>
-        )}
-        <span className="pushed-run-arrow">&rarr;</span>
-      </div>
-    </Link>
+    <>
+      <span style={{ fontWeight: 600 }}>{m.project || group.group}</span>
+      {m.branch && <span className="pushed-run-badge">{m.branch}</span>}
+      {m.commit && <code style={{ fontSize: 11 }}>{m.commit.slice(0, 7)}</code>}
+      {m.kind && <span className="kind-badge" style={kindBadgeStyle(m.kind)}>{m.kind}</span>}
+      {statusIcon && <span>{statusIcon}</span>}
+      {date && (
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {typeof date === 'string' && date.includes('T') ? relativeTime(date) : formatDate(date as string)}
+        </span>
+      )}
+      {m.pass != null && m.total != null && (
+        <span style={{ fontSize: 12 }}>{m.pass}/{m.total} pass</span>
+      )}
+    </>
   )
 }
 
 function RunRow({ run, grouped, selected, onToggle }: { run: RunInfo; grouped?: boolean; selected: boolean; onToggle: (name: string) => void }) {
-  const m = run.manifest
-  const label = grouped && run.group && run.name.startsWith(run.group + '/')
-    ? run.label ?? run.name.slice(run.group.length + 1)
-    : run.label ?? run.name
+  // For grouped (child) runs: show the test/sim name, not the inherited manifest info
+  const shortName = grouped && run.group && run.name.startsWith(run.group + '/')
+    ? run.name.slice(run.group.length + 1).replace(/\//g, ' / ')
+    : null
+  const displayLabel = shortName ?? run.label ?? run.name
+
+  // Only show manifest details for ungrouped (top-level) runs
+  const m = grouped ? null : run.manifest
 
   const branchCommit = m?.branch && m?.commit
     ? `${m.branch}@${m.commit.slice(0, 7)}`
@@ -300,30 +319,31 @@ function RunRow({ run, grouped, selected, onToggle }: { run: RunInfo; grouped?: 
     : null
 
   const dateStr = m?.started_at ?? extractDate(run.group ?? run.name)
-  const kindBadge = m?.kind
+  const kindBadge = grouped ? null : m?.kind
 
   return (
     <div className="run-entry" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
       <input
         type="checkbox"
         checked={selected}
+        aria-label={`Select ${displayLabel} for comparison`}
         onChange={(e) => { e.stopPropagation(); onToggle(run.name) }}
         onClick={(e) => e.stopPropagation()}
         style={{ cursor: 'pointer' }}
       />
       <Link to={`/run/${run.name}`} style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'inherit', textDecoration: 'none' }}>
         <span className="run-entry-label" style={{ flex: 1 }}>
-          {branchCommit ? <code style={{ fontSize: 12 }}>{branchCommit}</code> : label}
+          {branchCommit ?? displayLabel}
         </span>
         {kindBadge && (
           <span className="kind-badge" style={kindBadgeStyle(kindBadge)}>{kindBadge}</span>
         )}
-        {dateStr && (
+        {!grouped && dateStr && (
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
             {typeof dateStr === 'string' && dateStr.includes('T') ? relativeTime(dateStr) : dateStr}
           </span>
         )}
-        {m?.pass != null && m?.total != null && (
+        {!grouped && m?.pass != null && m?.total != null && (
           <span style={{ fontSize: 12 }}>
             {m.pass}/{m.total} pass
           </span>

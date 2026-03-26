@@ -41,9 +41,12 @@ test('runner sim produces viewable UI output', async ({ page }) => {
     await page.goto(UI_URL)
     await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
 
-    // Click on the run entry to navigate to the run detail.
+    // Expand the group (collapsed by default) then click a child run.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
     const runLink = page.locator('a[href*="/run/"]').first()
-    await expect(runLink).toBeVisible({ timeout: 10_000 })
+    await expect(runLink).toBeVisible({ timeout: 5_000 })
     await runLink.click()
 
     // Topology tab should show the router and devices.
@@ -102,13 +105,19 @@ test('multi-sim group shows grouped selector and combined results', async ({ pag
 
     await page.goto(UI_URL)
     await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
-    // Both sims should appear as run entries in the index.
-    await expect(page.getByText('ping-e2e').first()).toBeVisible({ timeout: 10_000 })
+
+    // Expand the group to see child runs.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
+
+    // Both sims should appear as run entries.
+    await expect(page.getByText('ping-e2e').first()).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('iperf-e2e').first()).toBeVisible()
 
     // Click through to one of the runs and verify it loads.
     const pingLink = page.locator('a[href*="/run/"]', { hasText: 'ping-e2e' }).first()
-    await expect(pingLink).toBeVisible({ timeout: 10_000 })
+    await expect(pingLink).toBeVisible({ timeout: 5_000 })
     await pingLink.click()
     // Topology tab should render topology nodes for this sim.
     await expect(page.getByText('sender')).toBeVisible({ timeout: 10_000 })
@@ -148,9 +157,12 @@ test('iperf sim shows perf results', async ({ page }) => {
 
     await page.goto(UI_URL)
     await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
-    // Click through to the run detail.
+    // Expand group and click through to the run detail.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
     const runLink = page.locator('a[href*="/run/"]').first()
-    await expect(runLink).toBeVisible({ timeout: 10_000 })
+    await expect(runLink).toBeVisible({ timeout: 5_000 })
     await runLink.click()
 
     // Navigate to perf tab.

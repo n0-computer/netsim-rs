@@ -92,11 +92,9 @@ test('push run results and view via deep link', async ({ page }) => {
     await page.goto(SERVE_URL)
     await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
 
-    // The run should be visible. RunRow renders branch@commit from manifest.
-    // For grouped runs, ManifestGroupHeader also shows project, PR link, title.
-    const runEntry = page.locator('.run-entry, .pushed-run-entry').first()
-    await expect(runEntry).toBeVisible({ timeout: 10_000 })
-    // Branch@commit should appear (RunRow renders this from manifest)
+    // The group header should show manifest data (branch, commit).
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('feat/test').first()).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('abc1234').first()).toBeVisible()
 
