@@ -48,6 +48,7 @@ jobs:
 
       # ── Upload results to patchbay-serve ──
       - name: Upload results
+        id: upload
         if: always()
         env:
           PATCHBAY_URL: ${{ secrets.PATCHBAY_URL }}
@@ -63,10 +64,11 @@ jobs:
             exit 0
           fi
 
-          patchbay upload "$RUN_DIR" \
+          VIEW_URL=$(patchbay upload "$RUN_DIR" \
             --project "$PROJECT" \
             --url "$PATCHBAY_URL" \
-            --api-key "$PATCHBAY_API_KEY"
+            --api-key "$PATCHBAY_API_KEY")
+          echo "view_url=$VIEW_URL" >> "$GITHUB_OUTPUT"
 
       # ── Post or update PR comment ──
       - name: Comment on PR
@@ -81,11 +83,10 @@ jobs:
             const shortSha = sha.slice(0, 7);
             const commitUrl = `${{ github.server_url }}/${{ github.repository }}/commit/${sha}`;
             const date = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-            const url = '${{ secrets.PATCHBAY_URL }}';
-            const project = '${{ github.event.repository.name }}';
+            const viewUrl = '${{ steps.upload.outputs.view_url }}';
             const body = [
               marker,
-              `${icon} **patchbay:** ${status} | ${url}/runs?project=${project}`,
+              `${icon} **patchbay:** ${status} | [view results](${viewUrl})`,
               `<sub>${date} · [\`${shortSha}\`](${commitUrl})</sub>`,
             ].join('\n');
 

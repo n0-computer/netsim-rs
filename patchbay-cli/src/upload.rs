@@ -74,8 +74,10 @@ pub fn upload(dir: &Path, project: &str, url: &str, api_key: &str) -> Result<()>
     }
 
     let result: serde_json::Value = resp.json().context("parse response")?;
+    let base = url.trim_end_matches('/');
     if let Some(run) = result.get("run").and_then(serde_json::Value::as_str) {
-        println!("uploaded: {run}");
+        let view_url = format!("{base}/run/{run}");
+        println!("{view_url}");
     }
     Ok(())
 }
