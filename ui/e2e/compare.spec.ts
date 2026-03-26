@@ -43,6 +43,63 @@ const MOCK_RIGHT_MANIFEST = {
   ],
 }
 
+test('checkbox selection on runs index navigates to compare view', async ({ page }) => {
+  test.setTimeout(60_000)
+  const workDir = mkdtempSync(join(tmpdir(), 'patchbay-compare-select-'))
+  let proc: ChildProcess | null = null
+
+  try {
+    // Create two run directories with manifests
+    const leftDir = join(workDir, 'run-left')
+    const rightDir = join(workDir, 'run-right')
+    mkdirSync(leftDir, { recursive: true })
+    mkdirSync(rightDir, { recursive: true })
+
+    writeFileSync(join(leftDir, 'run.json'), JSON.stringify(MOCK_LEFT_MANIFEST))
+    writeFileSync(join(leftDir, 'events.jsonl'), MINIMAL_EVENT)
+    writeFileSync(join(rightDir, 'run.json'), JSON.stringify(MOCK_RIGHT_MANIFEST))
+    writeFileSync(join(rightDir, 'events.jsonl'), MINIMAL_EVENT)
+
+    proc = spawn(
+      PATCHBAY_BIN,
+      ['serve', workDir, '--bind', `127.0.0.1:${PORT}`],
+      { cwd: REPO_ROOT, stdio: 'pipe' },
+    )
+    await waitForHttp(UI_URL, 15_000)
+
+    await page.goto(UI_URL)
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 10_000 })
+
+    // Both runs should appear
+    const checkboxes = page.locator('.run-entry input[type="checkbox"]')
+    await expect(checkboxes).toHaveCount(2, { timeout: 10_000 })
+
+    // Compare button should NOT be visible with 0 selected
+    await expect(page.locator('.compare-selected-btn')).not.toBeVisible()
+
+    // Select first checkbox
+    await checkboxes.first().check()
+    // Compare button still not visible with only 1 selected
+    await expect(page.locator('.compare-selected-btn')).not.toBeVisible()
+
+    // Select second checkbox
+    await checkboxes.nth(1).check()
+    // Now the compare button should appear
+    const compareBtn = page.locator('.compare-selected-btn')
+    await expect(compareBtn).toBeVisible()
+    await expect(compareBtn).toHaveText('Compare Selected (2)')
+
+    // Click compare and verify navigation to compare view
+    await compareBtn.click()
+    await expect(page).toHaveURL(/\/compare\//)
+    await expect(page.getByText('main@aaa111').first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('feature@bbb222').first()).toBeVisible()
+  } finally {
+    if (proc && !proc.killed) proc.kill('SIGTERM')
+    rmSync(workDir, { recursive: true, force: true })
+  }
+})
+
 test('compare view renders summary and regression', async ({ page }) => {
   test.setTimeout(60_000)
   const workDir = mkdtempSync(join(tmpdir(), 'patchbay-compare-e2e-'))
@@ -76,16 +133,78 @@ test('compare view renders summary and regression', async ({ page }) => {
     await expect(page.getByText('main@aaa111').first()).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('feature@bbb222').first()).toBeVisible()
 
-    // Summary
-    await expect(page.getByText('Regressions')).toBeVisible()
+    // Summary bar: per-side pass/fail counts
+    const summary = page.locator('.compare-summary')
+    await expect(summary).toBeVisible({ timeout: 10_000 })
+    await expect(summary.getByText('2/2 pass')).toBeVisible()    // left: 2 pass of 2
+    await expect(summary.getByText('1/2 pass')).toBeVisible()    // right: 1 pass of 2
+    await expect(summary.getByText('Regressions: 1')).toBeVisible()
 
-    // Per-test table
-    await expect(page.getByText('udp_counter')).toBeVisible()
-    await expect(page.getByText('udp_threshold')).toBeVisible()
-    await expect(page.getByText('REGRESS').first()).toBeVisible()
+    // Negative: no fixes in this scenario
+    await expect(summary.getByText('Fixes')).not.toBeVisible()
 
     // Score: 0 fixes, 1 regression => score = -5
-    await expect(page.getByText('-5')).toBeVisible()
+    await expect(summary.getByText('-5')).toBeVisible()
+
+    // Per-test table: verify column content, not just presence
+    const tableRows = page.locator('table tbody tr')
+    await expect(tableRows).toHaveCount(2) // two tests total
+
+    // udp_counter: pass on both sides, no delta
+    const counterRow = tableRows.filter({ hasText: 'udp_counter' })
+    await expect(counterRow.locator('td').nth(1)).toHaveText('PASS')  // left status
+    await expect(counterRow.locator('td').nth(2)).toHaveText('PASS')  // right status
+    await expect(counterRow.locator('td').nth(3)).toHaveText('')      // no delta
+
+    // udp_threshold: pass -> fail = REGRESS
+    const thresholdRow = tableRows.filter({ hasText: 'udp_threshold' })
+    await expect(thresholdRow.locator('td').nth(1)).toHaveText('PASS')
+    await expect(thresholdRow.locator('td').nth(2)).toHaveText('FAIL')
+    await expect(thresholdRow.locator('td').nth(3)).toHaveText('REGRESS')
+  } finally {
+    if (proc && !proc.killed) proc.kill('SIGTERM')
+    rmSync(workDir, { recursive: true, force: true })
+  }
+})
+
+test('compare view shows fix when right side improves', async ({ page }) => {
+  test.setTimeout(60_000)
+  const workDir = mkdtempSync(join(tmpdir(), 'patchbay-compare-fix-'))
+  let proc: ChildProcess | null = null
+
+  try {
+    // Reverse direction: left has a failure, right fixes it
+    const leftDir = join(workDir, 'run-broken')
+    const rightDir = join(workDir, 'run-fixed')
+    mkdirSync(leftDir, { recursive: true })
+    mkdirSync(rightDir, { recursive: true })
+
+    writeFileSync(join(leftDir, 'run.json'), JSON.stringify(MOCK_RIGHT_MANIFEST)) // fail side
+    writeFileSync(join(leftDir, 'events.jsonl'), MINIMAL_EVENT)
+    writeFileSync(join(rightDir, 'run.json'), JSON.stringify(MOCK_LEFT_MANIFEST)) // pass side
+    writeFileSync(join(rightDir, 'events.jsonl'), MINIMAL_EVENT)
+
+    proc = spawn(
+      PATCHBAY_BIN,
+      ['serve', workDir, '--bind', `127.0.0.1:${PORT}`],
+      { cwd: REPO_ROOT, stdio: 'pipe' },
+    )
+    await waitForHttp(UI_URL, 15_000)
+
+    await page.goto(`${UI_URL}/compare/run-broken/run-fixed`)
+
+    const summary = page.locator('.compare-summary')
+    await expect(summary).toBeVisible({ timeout: 10_000 })
+    await expect(summary.getByText('Fixes: 1')).toBeVisible()
+    // Negative: no regressions in this scenario
+    await expect(summary.getByText('Regressions')).not.toBeVisible()
+
+    // Score: 1 fix * 3 = +3
+    await expect(summary.getByText('+3')).toBeVisible()
+
+    // Delta column should show "fixed" not "REGRESS"
+    const thresholdRow = page.locator('table tbody tr').filter({ hasText: 'udp_threshold' })
+    await expect(thresholdRow.locator('td').nth(3)).toHaveText('fixed')
   } finally {
     if (proc && !proc.killed) proc.kill('SIGTERM')
     rmSync(workDir, { recursive: true, force: true })

@@ -71,10 +71,10 @@ jobs:
           BODY=$(echo "$RESPONSE" | head -n -1)
           [ "$HTTP_CODE" != "200" ] && echo "Push failed ($HTTP_CODE): $BODY" && exit 1
 
-          INVOCATION=$(echo "$BODY" | jq -r .invocation)
-          echo "PATCHBAY_VIEW_URL=$PATCHBAY_URL/#/inv/$INVOCATION" >> "$GITHUB_ENV"
+          GROUP=$(echo "$BODY" | jq -r .group)
+          echo "PATCHBAY_VIEW_URL=$PATCHBAY_URL/batch/$GROUP" >> "$GITHUB_ENV"
           echo "PATCHBAY_TEST_STATUS=$TEST_STATUS" >> "$GITHUB_ENV"
-          echo "Results: $PATCHBAY_URL/#/inv/$INVOCATION"
+          echo "Results: $PATCHBAY_URL/batch/$GROUP"
 
       # ── Post or update PR comment ──
       - name: Comment on PR

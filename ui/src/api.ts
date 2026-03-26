@@ -153,11 +153,11 @@ export async function fetchRunJson(run: string): Promise<RunManifest | null> {
 }
 
 export async function fetchCombinedResults(
-  batch: string,
+  group: string,
 ): Promise<CombinedResults | null> {
   try {
     const res = await fetch(
-      `${API}/batches/${encodeURIComponent(batch)}/combined-results`,
+      `${API}/groups/${encodeURIComponent(group)}/combined-results`,
     )
     if (!res.ok) return null
     return (await res.json()) as CombinedResults

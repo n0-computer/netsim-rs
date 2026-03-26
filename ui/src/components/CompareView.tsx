@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import type { LabEvent, LabState } from '../devtools-types'
+import type { SimResults } from '../types'
 import { fetchRunJson, fetchState, fetchEvents, fetchLogs, fetchResults } from '../api'
 import type { RunManifest, RunInfo, LogEntry } from '../api'
 import RunView from './RunView'
@@ -182,10 +184,10 @@ function SplitRunPanel({ runName, activeTab, onTabChange }: {
   activeTab: RunTab
   onTabChange: (tab: RunTab) => void
 }) {
-  const [state, setState] = useState<any>(null)
-  const [events, setEvents] = useState<any[]>([])
+  const [state, setState] = useState<LabState | null>(null)
+  const [events, setEvents] = useState<LabEvent[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
-  const [results, setResults] = useState<any>(null)
+  const [results, setResults] = useState<SimResults | null>(null)
 
   useEffect(() => {
     let dead = false

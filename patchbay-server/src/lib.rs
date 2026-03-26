@@ -109,14 +109,14 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
-    // Attach run.json manifests from batch directories.
+    // Attach run.json manifests from group directories.
     let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
-        let inv = run.group.clone().unwrap_or_else(|| run.name.clone());
+        let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
         let manifest = manifest_cache
-            .entry(inv.clone())
-            .or_insert_with(|| read_run_json(&base.join(&inv)))
+            .entry(group_key.clone())
+            .or_insert_with(|| read_run_json(&base.join(&group_key)))
             .clone();
         run.manifest = manifest;
     }
@@ -236,6 +236,7 @@ fn build_router(state: AppState) -> Router {
         .route("/runs", get(index_html))
         // SPA fallback: serve index.html for client-side routes.
         .route("/run/{*rest}", get(index_html))
+        .route("/group/{*rest}", get(index_html))
         .route("/batch/{*rest}", get(index_html))
         .route("/compare/{*rest}", get(index_html))
         .route("/inv/{*rest}", get(index_html))
@@ -248,13 +249,17 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
         .route(
-            "/api/batches/{name}/combined-results",
-            get(get_batch_combined),
+            "/api/groups/{name}/combined-results",
+            get(get_group_combined),
         )
         // Legacy alias — keep for backward-compat (links shared on Discord).
         .route(
+            "/api/batches/{name}/combined-results",
+            get(get_group_combined),
+        )
+        .route(
             "/api/invocations/{name}/combined-results",
-            get(get_batch_combined),
+            get(get_group_combined),
         );
     if state.push.is_some() {
         r = r.route("/api/push/{project}", post(push_run));
@@ -608,8 +613,8 @@ async fn get_run_file(
     serve_file(&file_path).await
 }
 
-/// Serve `combined-results.json` from a batch directory.
-async fn get_batch_combined(
+/// Serve `combined-results.json` from a group directory.
+async fn get_group_combined(
     AxPath(name): AxPath<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
@@ -620,8 +625,8 @@ async fn get_batch_combined(
             r#"{"error":"forbidden"}"#.to_string(),
         );
     }
-    let inv_dir = state.base.join(&name);
-    let file = inv_dir.join("combined-results.json");
+    let group_dir = state.base.join(&name);
+    let file = group_dir.join("combined-results.json");
     // Verify the resolved path stays under base.
     let ok = file
         .canonicalize()

@@ -33,6 +33,7 @@ export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[
     const metricsLogs = logs.filter(l => l.kind === 'metrics')
     if (metricsLogs.length === 0) return
 
+    let dead = false
     Promise.all(metricsLogs.map(async (log) => {
       const res = await fetch(`${runFilesBase(run)}${log.path}`)
       if (!res.ok) return []
@@ -55,7 +56,11 @@ export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[
       return Array.from(byKey.entries()).map(([key, values]) => ({
         device, key, values
       }))
-    })).then(results => setSeries(results.flat()))
+    })).then(results => {
+      if (!dead) setSeries(results.flat())
+    })
+
+    return () => { dead = true }
   }, [run, logs])
 
   if (series.length === 0) {
@@ -74,7 +79,7 @@ export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[
           </tr>
         </thead>
         <tbody>
-          {series.map((s, i) => (
+          {series.map((s) => (
             <tr key={`${s.device}:${s.key}`}>
               <td><code>{s.key}</code></td>
               <td>{s.device}</td>

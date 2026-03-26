@@ -60,10 +60,13 @@ test('runner sim produces viewable UI output', async ({ page }) => {
     await expect(page.getByText('router_added').first()).toBeVisible()
     await expect(page.getByText('device_added').first()).toBeVisible()
 
-    // Perf tab: should show latency column from ping results.
+    // Perf tab: should show latency column from ping results with actual numeric data.
     await page.getByRole('button', { name: 'perf' }).click()
     await expect(page.getByText('ping-check')).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('Latency (ms)')).toBeVisible()
+    // Verify that the perf table has at least one data row with a numeric latency value.
+    const perfDataCell = page.locator('table tbody tr td').first()
+    await expect(perfDataCell).toBeVisible({ timeout: 5_000 })
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')
@@ -72,12 +75,12 @@ test('runner sim produces viewable UI output', async ({ page }) => {
   }
 })
 
-test('multi-sim batch shows grouped selector and combined results', async ({ page }) => {
+test('multi-sim group shows grouped selector and combined results', async ({ page }) => {
   test.setTimeout(4 * 60 * 1000)
   const workDir = mkdtempSync(`${tmpdir()}/patchbay-runner-e2e-multi-`)
   let serveProc: ChildProcess | null = null
   try {
-    // Run both sims in a single batch.
+    // Run both sims in a single group.
     execFileSync(
       PATCHBAY_BIN,
       ['run', '--work-dir', workDir, PING_TOML, IPERF_TOML],
@@ -102,6 +105,14 @@ test('multi-sim batch shows grouped selector and combined results', async ({ pag
     // Both sims should appear as run entries in the index.
     await expect(page.getByText('ping-e2e').first()).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('iperf-e2e').first()).toBeVisible()
+
+    // Click through to one of the runs and verify it loads.
+    const pingLink = page.locator('a[href*="/run/"]', { hasText: 'ping-e2e' }).first()
+    await expect(pingLink).toBeVisible({ timeout: 10_000 })
+    await pingLink.click()
+    // Topology tab should render topology nodes for this sim.
+    await expect(page.getByText('sender')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('receiver')).toBeVisible()
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')

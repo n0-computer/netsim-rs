@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchRuns } from './api'
 import type { RunInfo, RunManifest } from './api'
+import { groupByGroup as groupByGroupBase } from './utils'
 
 // ── Types ──
 
-interface RunGroup {
+interface RunGroupWithManifest {
   group: string
   runs: RunInfo[]
   manifest: RunManifest | null
@@ -13,27 +14,16 @@ interface RunGroup {
 
 // ── Helpers ──
 
-function groupByGroup(runs: RunInfo[]): { groups: RunGroup[]; ungrouped: RunInfo[] } {
-  const grouped = new Map<string, RunInfo[]>()
-  const ungrouped: RunInfo[] = []
-  for (const r of runs) {
-    if (r.group) {
-      let list = grouped.get(r.group)
-      if (!list) {
-        list = []
-        grouped.set(r.group, list)
-      }
-      list.push(r)
-    } else {
-      ungrouped.push(r)
-    }
+/** Extends the shared groupByGroup with manifest extraction for the index page. */
+function groupByGroup(runs: RunInfo[]): { groups: RunGroupWithManifest[]; ungrouped: RunInfo[] } {
+  const { groups, ungrouped } = groupByGroupBase(runs)
+  return {
+    groups: groups.map((g) => ({
+      ...g,
+      manifest: g.runs.find((r) => r.manifest)?.manifest ?? null,
+    })),
+    ungrouped,
   }
-  const groups: RunGroup[] = []
-  for (const [group, groupRuns] of grouped) {
-    const manifest = groupRuns.find((r) => r.manifest)?.manifest ?? null
-    groups.push({ group, runs: groupRuns, manifest })
-  }
-  return { groups, ungrouped }
 }
 
 function formatDate(raw: string): string {
@@ -145,7 +135,7 @@ export default function RunsIndex() {
   const { groups, ungrouped } = useMemo(() => groupByGroup(filteredRuns), [filteredRuns])
 
   // Flatten for pagination: each group is one "row", each ungrouped run is one "row"
-  type Row = { kind: 'group'; group: RunGroup } | { kind: 'run'; run: RunInfo }
+  type Row = { kind: 'group'; group: RunGroupWithManifest } | { kind: 'run'; run: RunInfo }
   const allRows = useMemo(() => {
     const rows: Row[] = []
     // Sort groups by the first run's sortKey
@@ -265,7 +255,7 @@ export default function RunsIndex() {
 
 // ── Subcomponents ──
 
-function ManifestGroupHeader({ group }: { group: RunGroup }) {
+function ManifestGroupHeader({ group }: { group: RunGroupWithManifest }) {
   const m = group.manifest!
   const outcome = m.test_outcome ?? m.outcome
   const statusIcon = outcome === 'success' || outcome === 'pass' ? '\u2705' : outcome === 'failure' || outcome === 'fail' ? '\u274c' : null

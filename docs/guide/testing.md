@@ -291,8 +291,8 @@ Add this to your workflow **after** the test step:
           exit 1
         fi
 
-        INVOCATION=$(echo "$BODY" | jq -r .invocation)
-        VIEW_URL="$PATCHBAY_URL/#/inv/$INVOCATION"
+        GROUP=$(echo "$BODY" | jq -r .group)
+        VIEW_URL="$PATCHBAY_URL/batch/$GROUP"
         echo "PATCHBAY_VIEW_URL=$VIEW_URL" >> "$GITHUB_ENV"
         echo "Results uploaded: $VIEW_URL"
 

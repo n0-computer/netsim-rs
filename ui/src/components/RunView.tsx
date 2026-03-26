@@ -1,3 +1,4 @@
+import { useState, useCallback, useMemo } from 'react'
 import type { LabEvent, LabState } from '../devtools-types'
 import type { SimResults } from '../types'
 import type { RunInfo, LogEntry } from '../api'
@@ -8,7 +9,6 @@ import TimelineTab from './TimelineTab'
 import TopologyGraph from './TopologyGraph'
 import NodeDetail from './NodeDetail'
 import MetricsTab from './MetricsTab'
-import { useState, useCallback } from 'react'
 
 export type RunTab = 'topology' | 'logs' | 'timeline' | 'perf' | 'metrics'
 
@@ -38,16 +38,19 @@ export default function RunView({ run, state, events, logs, results, activeTab, 
   }, [onTabChange])
 
   const base = runFilesBase(run.name)
-  const logsForTabs = logs.map((l) => ({ node: l.node, kind: l.kind, path: l.path }))
+  const logsForTabs = useMemo(
+    () => logs.map((l) => ({ node: l.node, kind: l.kind, path: l.path })),
+    [logs],
+  )
 
-  const hasMetricsLogs = logs.some(l => l.kind === 'metrics')
-  const availableTabs: RunTab[] = [
+  const hasMetricsLogs = useMemo(() => logs.some(l => l.kind === 'metrics'), [logs])
+  const availableTabs = useMemo<RunTab[]>(() => [
     'topology',
     'logs',
     'timeline',
     ...(results ? (['perf'] as RunTab[]) : []),
     ...(hasMetricsLogs ? (['metrics'] as RunTab[]) : []),
-  ]
+  ], [results, hasMetricsLogs])
 
   const tab = availableTabs.includes(activeTab) ? activeTab : availableTabs[0]
 

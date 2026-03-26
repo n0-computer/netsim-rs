@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SimLogEntry } from '../types'
 import KvPairs from './KvPairs'
 import JsonTree from './JsonTree'
@@ -277,7 +277,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   }, [jumpTarget, logs, jumpHandledNonce])
 
   // Load log content
-  const loadContent = async () => {
+  const loadContent = useCallback(async () => {
     if (!active) return
     const url = `${base}${active.path}`
     setLoading(true)
@@ -298,19 +298,19 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     } finally {
       setLoading(false)
     }
-  }
+  }, [active, base])
 
   // Auto-load when jump is pending
   useEffect(() => {
     if (!active || !jumpNeedle || loaded || loading) return
     loadContent()
-  }, [active, jumpNeedle, loaded, loading])
+  }, [active, jumpNeedle, loaded, loading, loadContent])
 
   // Auto-load structured logs immediately
   useEffect(() => {
     if (!active || loaded || loading) return
     if (AUTO_LOAD_KINDS.has(active.kind)) loadContent()
-  }, [active, loaded, loading])
+  }, [active, loaded, loading, loadContent])
 
   const byNode = useMemo(() => {
     const m = new Map<string, SimLogEntry[]>()
