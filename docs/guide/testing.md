@@ -112,7 +112,8 @@ On Linux, tests run natively. Install patchbay's CLI if you want the
 `serve` command for viewing results:
 
 ```bash
-cargo install --git https://github.com/n0-computer/patchbay patchbay-runner
+cargo binstall patchbay-cli --no-confirm \
+  || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
 ```
 
 Then run your tests and serve the output:
@@ -242,89 +243,47 @@ posted as a PR comment.
 Set two repository secrets: `PATCHBAY_URL` (e.g. `https://patchbay.example.com`)
 and `PATCHBAY_API_KEY`.
 
-Add this to your workflow **after** the test step:
+Install the patchbay CLI in your workflow, then add these steps **after**
+the test step:
 
 ```yaml
-    - name: Push patchbay results
+    # Install patchbay CLI (binstall for speed, cargo install as fallback)
+    - name: Install patchbay CLI
+      run: |
+        cargo binstall patchbay-cli --no-confirm 2>/dev/null \
+          || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
+
+    # Run tests with patchbay (--persist keeps the run directory)
+    - name: Run tests
+      id: tests
+      run: patchbay test --persist -p my-crate --test my-test
+
+    # Upload results to patchbay-serve
+    - name: Upload results
       if: always()
       env:
         PATCHBAY_URL: ${{ secrets.PATCHBAY_URL }}
         PATCHBAY_API_KEY: ${{ secrets.PATCHBAY_API_KEY }}
       run: |
         set -euo pipefail
-
         PROJECT="${{ github.event.repository.name }}"
-        TESTDIR="$(cargo metadata --format-version=1 --no-deps | jq -r .target_directory)/testdir-current"
-
-        if [ ! -d "$TESTDIR" ]; then
-          echo "No testdir output found, skipping push"
+        RUN_DIR=$(ls -dt .patchbay/work/run-* 2>/dev/null | head -1)
+        if [ -z "$RUN_DIR" ]; then
+          echo "No run directory found, skipping upload"
           exit 0
         fi
-
-        # Create run.json manifest
-        cat > "$TESTDIR/run.json" <<MANIFEST
-        {
-          "project": "$PROJECT",
-          "branch": "${{ github.head_ref || github.ref_name }}",
-          "commit": "${{ github.sha }}",
-          "pr": ${{ github.event.pull_request.number || 'null' }},
-          "pr_url": "${{ github.event.pull_request.html_url || '' }}",
-          "title": "${{ github.event.pull_request.title || github.event.head_commit.message || '' }}",
-          "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        }
-        MANIFEST
-
-        # Upload as tar.gz
-        RESPONSE=$(tar -czf - -C "$TESTDIR" . | \
-          curl -s -w "\n%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $PATCHBAY_API_KEY" \
-            -H "Content-Type: application/gzip" \
-            --data-binary @- \
-            "$PATCHBAY_URL/api/push/$PROJECT")
-
-        HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-        BODY=$(echo "$RESPONSE" | head -n -1)
-
-        if [ "$HTTP_CODE" != "200" ]; then
-          echo "Push failed ($HTTP_CODE): $BODY"
-          exit 1
-        fi
-
-        GROUP=$(echo "$BODY" | jq -r .group)
-        VIEW_URL="$PATCHBAY_URL/batch/$GROUP"
-        echo "PATCHBAY_VIEW_URL=$VIEW_URL" >> "$GITHUB_ENV"
-        echo "Results uploaded: $VIEW_URL"
-
-    - name: Comment on PR
-      if: always() && github.event.pull_request && env.PATCHBAY_VIEW_URL
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const marker = '<!-- patchbay-results -->';
-          const body = `${marker}\n**patchbay results:** ${process.env.PATCHBAY_VIEW_URL}`;
-          const { data: comments } = await github.rest.issues.listComments({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            issue_number: context.issue.number,
-          });
-          const existing = comments.find(c => c.body.includes(marker));
-          if (existing) {
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: existing.id,
-              body,
-            });
-          } else {
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
-          }
+        patchbay upload "$RUN_DIR" \
+          --project "$PROJECT" \
+          --url "$PATCHBAY_URL" \
+          --api-key "$PATCHBAY_API_KEY"
 ```
+
+The `patchbay upload` command creates `run.json` (with branch, commit,
+and PR metadata from environment variables) if it is missing, then
+packages and pushes the directory to the server.
+
+For a complete workflow template including the PR comment step, see
+[`patchbay-server/github-workflow-template.yml`](https://github.com/n0-computer/patchbay/blob/main/patchbay-server/github-workflow-template.yml).
 
 The PR comment is auto-updated on each push, so you always see the latest run.
 

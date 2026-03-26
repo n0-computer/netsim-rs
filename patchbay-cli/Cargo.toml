@@ -45,5 +45,5 @@ vm = ["dep:patchbay-vm"]
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/{ version }/patchbay-{ target }.tar.gz"
-bin-dir = "{ bin }{ binary-ext }"
+bin-dir = "{ bin }-{ target }{ binary-ext }"
 pkg-fmt = "tgz"
