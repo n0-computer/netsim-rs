@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { runFilesBase } from '../api'
 import type { LogEntry } from '../api'
 
@@ -26,8 +26,18 @@ function Sparkline({ values }: { values: number[] }) {
   )
 }
 
-export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[] }) {
+interface MetricsTabProps {
+  run: string
+  logs: LogEntry[]
+  /** When provided, use this filter instead of internal state. */
+  sharedFilter?: string
+}
+
+export default function MetricsTab({ run, logs, sharedFilter }: MetricsTabProps) {
   const [series, setSeries] = useState<MetricSeries[]>([])
+  const hasSharedFilter = sharedFilter != null
+  const [localFilter, setLocalFilter] = useState('')
+  const filterValue = hasSharedFilter ? sharedFilter : localFilter
 
   useEffect(() => {
     const metricsLogs = logs.filter(l => l.kind === 'metrics')
@@ -63,32 +73,105 @@ export default function MetricsTab({ run, logs }: { run: string; logs: LogEntry[
     return () => { dead = true }
   }, [run, logs])
 
+  // Derive unique devices and metric keys, then pivot
+  const devices = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of series) set.add(s.device)
+    return Array.from(set).sort()
+  }, [series])
+
+  const metricKeys = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of series) set.add(s.key)
+    return Array.from(set).sort()
+  }, [series])
+
+  // Build lookup: key -> device -> series
+  const lookup = useMemo(() => {
+    const map = new Map<string, Map<string, MetricSeries>>()
+    for (const s of series) {
+      let byDevice = map.get(s.key)
+      if (!byDevice) { byDevice = new Map(); map.set(s.key, byDevice) }
+      byDevice.set(s.device, s)
+    }
+    return map
+  }, [series])
+
+  // Filter metric keys
+  const filteredKeys = useMemo(() => {
+    if (!filterValue) return metricKeys
+    const q = filterValue.toLowerCase()
+    return metricKeys.filter(k => k.toLowerCase().includes(q))
+  }, [metricKeys, filterValue])
+
   if (series.length === 0) {
     return <div className="empty">No metrics recorded for this run.</div>
   }
 
   return (
-    <div className="tbl-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Device</th>
-            <th>Last Value</th>
-            <th>Trend</th>
-          </tr>
-        </thead>
-        <tbody>
-          {series.map((s) => (
-            <tr key={`${s.device}:${s.key}`}>
-              <td><code>{s.key}</code></td>
-              <td>{s.device}</td>
-              <td>{s.values[s.values.length - 1]?.v.toFixed(2)}</td>
-              <td><Sparkline values={s.values.map(v => v.v)} /></td>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      {/* Filter input -- hidden when shared filter is provided */}
+      {!hasSharedFilter && (
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+          <input
+            type="search"
+            placeholder="Filter metrics by key..."
+            value={localFilter}
+            onChange={(e) => setLocalFilter(e.target.value)}
+            style={{ width: '100%', maxWidth: 400 }}
+          />
+        </div>
+      )}
+
+      <div className="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              {devices.map(d => (
+                <th key={d} colSpan={2}>{d}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+            <tr>
+              <th></th>
+              {devices.map(d => (
+                <Fragment key={d}>
+                  <th style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>value</th>
+                  <th style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>trend</th>
+                </Fragment>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filteredKeys.map((key) => {
+              const byDevice = lookup.get(key)
+              return (
+                <tr key={key}>
+                  <td><code>{key}</code></td>
+                  {devices.map(device => {
+                    const s = byDevice?.get(device)
+                    if (!s) {
+                      return (
+                        <Fragment key={device}>
+                          <td style={{ color: 'var(--text-muted)' }}>&#8212;</td>
+                          <td></td>
+                        </Fragment>
+                      )
+                    }
+                    const lastVal = s.values[s.values.length - 1]?.v
+                    return (
+                      <Fragment key={device}>
+                        <td>{lastVal != null ? lastVal.toFixed(2) : '\u2014'}</td>
+                        <td><Sparkline values={s.values.map(v => v.v)} /></td>
+                      </Fragment>
+                    )
+                  })}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

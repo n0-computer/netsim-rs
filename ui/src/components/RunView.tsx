@@ -12,6 +12,13 @@ import MetricsTab from './MetricsTab'
 
 export type RunTab = 'topology' | 'logs' | 'timeline' | 'perf' | 'metrics'
 
+/** External controls passed from CompareView for shared filter state. */
+export interface ExternalControls {
+  logFilter?: string
+  logLevels?: Set<string>
+  metricsFilter?: string
+}
+
 interface RunViewProps {
   run: RunInfo
   state: LabState | null
@@ -20,9 +27,10 @@ interface RunViewProps {
   results: SimResults | null
   activeTab: RunTab
   onTabChange: (tab: RunTab) => void
+  externalControls?: ExternalControls
 }
 
-export default function RunView({ run, state, events, logs, results, activeTab, onTabChange }: RunViewProps) {
+export default function RunView({ run, state, events, logs, results, activeTab, onTabChange, externalControls }: RunViewProps) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [selectedKind, setSelectedKind] = useState<'router' | 'device' | 'ix'>('router')
   const [logJump, setLogJump] = useState<{ node: string; path: string; timeLabel: string; nonce: number } | null>(null)
@@ -94,7 +102,13 @@ export default function RunView({ run, state, events, logs, results, activeTab, 
         )}
 
         {tab === 'logs' && (
-          <LogsTab base={base} logs={logsForTabs} jumpTarget={logJump} />
+          <LogsTab
+            base={base}
+            logs={logsForTabs}
+            jumpTarget={logJump}
+            sharedFilter={externalControls?.logFilter}
+            sharedLevels={externalControls?.logLevels}
+          />
         )}
 
         {tab === 'timeline' && (
@@ -104,7 +118,11 @@ export default function RunView({ run, state, events, logs, results, activeTab, 
         {tab === 'perf' && <PerfTab results={results} />}
 
         {tab === 'metrics' && (
-          <MetricsTab run={run.name} logs={logs} />
+          <MetricsTab
+            run={run.name}
+            logs={logs}
+            sharedFilter={externalControls?.metricsFilter}
+          />
         )}
       </div>
     </>

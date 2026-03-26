@@ -129,22 +129,19 @@ test('compare view renders summary and regression', async ({ page }) => {
     // Navigate directly to the compare view with two run names
     await page.goto(`${UI_URL}/compare/run-left/run-right`)
 
-    // Verify CompareView renders with ref labels (appears in heading + summary + table)
+    // Verify header shows ref labels and pass/fail summary
     await expect(page.getByText('main@aaa111').first()).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('feature@bbb222').first()).toBeVisible()
-
-    // Summary bar: per-side pass/fail counts
-    const summary = page.locator('.compare-summary')
-    await expect(summary).toBeVisible({ timeout: 10_000 })
-    await expect(summary.getByText('2/2 pass')).toBeVisible()    // left: 2 pass of 2
-    await expect(summary.getByText('1/2 pass')).toBeVisible()    // right: 1 pass of 2
-    await expect(summary.getByText('Regressions: 1')).toBeVisible()
+    // Concise header: "2/2 → 1/2 (1 regression)"
+    await expect(page.getByText('2/2').first()).toBeVisible()
+    await expect(page.getByText('1/2').first()).toBeVisible()
+    await expect(page.getByText('regression').first()).toBeVisible()
 
     // Negative: no fixes in this scenario
-    await expect(summary.getByText('Fixes')).not.toBeVisible()
+    await expect(page.getByText('fix').first()).not.toBeVisible()
 
     // Score: 0 fixes, 1 regression => score = -5
-    await expect(summary.getByText('-5')).toBeVisible()
+    await expect(page.getByText('-5').first()).toBeVisible()
 
     // Per-test table: verify column content, not just presence
     const tableRows = page.locator('table tbody tr')
@@ -193,14 +190,13 @@ test('compare view shows fix when right side improves', async ({ page }) => {
 
     await page.goto(`${UI_URL}/compare/run-broken/run-fixed`)
 
-    const summary = page.locator('.compare-summary')
-    await expect(summary).toBeVisible({ timeout: 10_000 })
-    await expect(summary.getByText('Fixes: 1')).toBeVisible()
-    // Negative: no regressions in this scenario
-    await expect(summary.getByText('Regressions')).not.toBeVisible()
+    // Header should show fix info
+    await expect(page.getByText('fix').first()).toBeVisible({ timeout: 10_000 })
+    // Negative: no regressions
+    await expect(page.getByText('regression')).not.toBeVisible()
 
     // Score: 1 fix * 3 = +3
-    await expect(summary.getByText('+3')).toBeVisible()
+    await expect(page.getByText('+3').first()).toBeVisible()
 
     // Delta column should show "fixed" not "REGRESS"
     const thresholdRow = page.locator('table tbody tr').filter({ hasText: 'udp_threshold' })

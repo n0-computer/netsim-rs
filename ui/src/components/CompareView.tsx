@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { LabEvent, LabState } from '../devtools-types'
 import type { SimResults } from '../types'
 import { fetchRunJson, fetchState, fetchEvents, fetchLogs, fetchResults } from '../api'
@@ -53,9 +54,23 @@ function refLabel(m: RunManifest | null, fallback: string): string {
   return fallback
 }
 
+/** Extract the last path segment as a short display name. */
+function shortName(runPath: string): string {
+  const parts = runPath.split('/')
+  return parts[parts.length - 1] || runPath
+}
+
+/** Check if this is a group compare (has tests) vs individual run compare. */
+function isGroupCompare(left: RunManifest | null, right: RunManifest | null): boolean {
+  const leftTests = left?.tests ?? []
+  const rightTests = right?.tests ?? []
+  return leftTests.length > 0 || rightTests.length > 0
+}
+
 // ── Compare View (route: /compare/:left/:right) ──
 
 export default function CompareView({ leftRun, rightRun }: { leftRun: string; rightRun: string }) {
+  const navigate = useNavigate()
   const [leftManifest, setLeftManifest] = useState<RunManifest | null>(null)
   const [rightManifest, setRightManifest] = useState<RunManifest | null>(null)
   const [loading, setLoading] = useState(true)
@@ -76,6 +91,7 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
 
   const leftLabel = refLabel(leftManifest, leftRun)
   const rightLabel = refLabel(rightManifest, rightRun)
+  const isGroup = isGroupCompare(leftManifest, rightManifest)
 
   // Compute diff from tests arrays
   const diff = leftManifest && rightManifest
@@ -83,73 +99,156 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
     : { tests: [] as TestDelta[], fixes: 0, regressions: 0, score: 0 }
 
   const leftPass = leftManifest?.pass ?? (leftManifest?.tests ?? []).filter(t => t.status === 'pass').length
-  const leftFail = leftManifest?.fail ?? (leftManifest?.tests ?? []).filter(t => t.status === 'fail').length
   const leftTotal = leftManifest?.total ?? (leftManifest?.tests ?? []).length
   const rightPass = rightManifest?.pass ?? (rightManifest?.tests ?? []).filter(t => t.status === 'pass').length
-  const rightFail = rightManifest?.fail ?? (rightManifest?.tests ?? []).filter(t => t.status === 'fail').length
   const rightTotal = rightManifest?.total ?? (rightManifest?.tests ?? []).length
+  const leftOutcome = leftManifest?.test_outcome ?? leftManifest?.outcome ?? null
+  const rightOutcome = rightManifest?.test_outcome ?? rightManifest?.outcome ?? null
+
+  const handleTestClick = (testName: string) => {
+    const leftPath = `${leftRun}/${testName}`
+    const rightPath = `${rightRun}/${testName}`
+    navigate(`/compare/${encodeURIComponent(leftPath)}/${encodeURIComponent(rightPath)}`)
+  }
 
   return (
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <h2>Compare: {leftLabel} vs {rightLabel}</h2>
+      {/* Header: concise single-line for individual, summary for group */}
+      {!isGroup ? (
+        <h2 style={{ margin: '0 0 1rem 0' }}>
+          Compare: {shortName(leftRun)} — left: {statusIcon(leftOutcome)} {leftOutcome ?? 'unknown'} | right: {statusIcon(rightOutcome)} {rightOutcome ?? 'unknown'}
+        </h2>
+      ) : (
+        <>
+          <h2 style={{ margin: '0 0 0.5rem 0' }}>
+            Compare: {leftLabel} vs {rightLabel} — {leftPass}/{leftTotal} → {rightPass}/{rightTotal}
+            {diff.regressions > 0 && <span style={{ color: 'var(--red)' }}> ({diff.regressions} regression{diff.regressions > 1 ? 's' : ''})</span>}
+            {diff.fixes > 0 && <span style={{ color: 'var(--green)' }}> ({diff.fixes} fix{diff.fixes > 1 ? 'es' : ''})</span>}
+          </h2>
 
-      {/* Summary bar */}
-      <div className="compare-summary" style={{ display: 'flex', gap: '2rem', padding: '1rem', background: 'var(--surface)', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border)', flexWrap: 'wrap' }}>
-        <div>
-          <strong>{leftLabel}:</strong> {leftPass}/{leftTotal} pass, {leftFail} fail
-        </div>
-        <div>
-          <strong>{rightLabel}:</strong> {rightPass}/{rightTotal} pass, {rightFail} fail
-        </div>
-        {diff.fixes > 0 && <div style={{ color: 'var(--green)' }}>Fixes: {diff.fixes}</div>}
-        {diff.regressions > 0 && <div style={{ color: 'var(--red)' }}>Regressions: {diff.regressions}</div>}
-        <div>
-          Score: <span style={{ color: diff.score >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 'bold' }}>
-            {diff.score >= 0 ? '+' : ''}{diff.score}
-          </span>
-        </div>
-      </div>
+          {/* Summary bar */}
+          <div className="compare-summary" style={{ display: 'flex', gap: '2rem', padding: '0.5rem 1rem', background: 'var(--surface)', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border)', alignItems: 'center' }}>
+            <div>
+              Score: <span style={{ color: diff.score >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 'bold' }}>
+                {diff.score >= 0 ? '+' : ''}{diff.score}
+              </span>
+            </div>
+          </div>
 
-      {/* Per-test table */}
-      {diff.tests.length > 0 && (
-        <div className="tbl-wrap" style={{ marginBottom: '1rem' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Test</th>
-                <th>{leftLabel}</th>
-                <th>{rightLabel}</th>
-                <th>Delta</th>
-              </tr>
-            </thead>
-            <tbody>
-              {diff.tests.map(({ name, left, right, delta }) => {
-                let color = ''
-                if (delta === 'fixed') color = 'var(--green)'
-                else if (delta === 'REGRESS') color = 'var(--red)'
-
-                return (
-                  <tr key={name}>
-                    <td><code>{name}</code></td>
-                    <td>{statusBadge(left)}</td>
-                    <td>{statusBadge(right)}</td>
-                    <td style={{ color, fontWeight: delta ? 'bold' : 'normal' }}>{delta}</td>
+          {/* Per-test table */}
+          {diff.tests.length > 0 && (
+            <div className="tbl-wrap" style={{ marginBottom: '1rem' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Test</th>
+                    <th>{leftLabel}</th>
+                    <th>{rightLabel}</th>
+                    <th>Delta</th>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {diff.tests.map(({ name, left, right, delta }) => {
+                    let color = ''
+                    if (delta === 'fixed') color = 'var(--green)'
+                    else if (delta === 'REGRESS') color = 'var(--red)'
+
+                    return (
+                      <tr key={name}>
+                        <td>
+                          <code
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
+                            onClick={() => handleTestClick(name)}
+                            title={`Compare ${name} side-by-side`}
+                          >
+                            {name}
+                          </code>
+                        </td>
+                        <td>{statusBadge(left)}</td>
+                        <td>{statusBadge(right)}</td>
+                        <td style={{ color, fontWeight: delta ? 'bold' : 'normal' }}>{delta}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
-      {/* Phase 4c: Split-screen co-navigation */}
-      <h3 style={{ marginTop: '1rem' }}>Side-by-side view</h3>
+      {/* Split-screen co-navigation */}
       <SplitRunView left={leftRun} right={rightRun} sharedTab={sharedTab} onTabChange={setSharedTab} />
     </div>
   )
 }
 
-// ── Phase 4c: Split-screen co-navigation ──
+// ── Shared controls state ──
+
+interface SharedControls {
+  logFilter: string
+  logLevels: Set<string>
+  metricsFilter: string
+}
+
+const ALL_LEVELS = ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'] as const
+
+function SharedControlsBar({ controls, onChange, activeTab }: {
+  controls: SharedControls
+  onChange: (updates: Partial<SharedControls>) => void
+  activeTab: RunTab
+}) {
+  const toggleLevel = useCallback((level: string) => {
+    const next = new Set(controls.logLevels)
+    if (next.has(level)) next.delete(level)
+    else next.add(level)
+    onChange({ logLevels: next })
+  }, [controls.logLevels, onChange])
+
+  if (activeTab === 'logs') {
+    return (
+      <div className="logs-toolbar" style={{ marginBottom: '0.5rem', flexShrink: 0 }}>
+        <span style={{ fontWeight: 600, fontSize: 12 }}>Shared:</span>
+        {ALL_LEVELS.map((level) => (
+          <span
+            key={level}
+            className={`level-toggle level-${level} ${controls.logLevels.has(level) ? 'on' : 'off'}`}
+            onClick={() => toggleLevel(level)}
+            style={{ cursor: 'pointer' }}
+          >
+            {level}
+          </span>
+        ))}
+        <input
+          type="search"
+          placeholder="filter logs..."
+          value={controls.logFilter}
+          onChange={(e) => onChange({ logFilter: e.target.value })}
+          style={{ marginLeft: 'auto', minWidth: 180 }}
+        />
+      </div>
+    )
+  }
+
+  if (activeTab === 'metrics') {
+    return (
+      <div className="logs-toolbar" style={{ marginBottom: '0.5rem', flexShrink: 0 }}>
+        <span style={{ fontWeight: 600, fontSize: 12 }}>Shared:</span>
+        <input
+          type="search"
+          placeholder="filter metrics..."
+          value={controls.metricsFilter}
+          onChange={(e) => onChange({ metricsFilter: e.target.value })}
+          style={{ minWidth: 180 }}
+        />
+      </div>
+    )
+  }
+
+  return null
+}
+
+// ── Split-screen co-navigation ──
 
 function SplitRunView({ left, right, sharedTab, onTabChange }: {
   left: string
@@ -157,32 +256,46 @@ function SplitRunView({ left, right, sharedTab, onTabChange }: {
   sharedTab: RunTab
   onTabChange: (tab: RunTab) => void
 }) {
+  const [sharedControls, setSharedControls] = useState<SharedControls>({
+    logFilter: '',
+    logLevels: new Set(ALL_LEVELS),
+    metricsFilter: '',
+  })
+
+  const handleControlsChange = useCallback((updates: Partial<SharedControls>) => {
+    setSharedControls(prev => ({ ...prev, ...updates }))
+  }, [])
+
   return (
-    <div style={{ display: 'flex', gap: '1rem', flex: 1, minHeight: 0 }}>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-        <div style={{ padding: '4px 8px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600 }}>
-          {left}
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
+      <SharedControlsBar controls={sharedControls} onChange={handleControlsChange} activeTab={sharedTab} />
+      <div style={{ display: 'flex', gap: '1rem', flex: 1, minHeight: 0 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '4px 8px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600 }}>
+            {left}
+          </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <SplitRunPanel runName={left} activeTab={sharedTab} onTabChange={onTabChange} sharedControls={sharedControls} />
+          </div>
         </div>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <SplitRunPanel runName={left} activeTab={sharedTab} onTabChange={onTabChange} />
-        </div>
-      </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-        <div style={{ padding: '4px 8px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600 }}>
-          {right}
-        </div>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <SplitRunPanel runName={right} activeTab={sharedTab} onTabChange={onTabChange} />
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+          <div style={{ padding: '4px 8px', background: 'var(--surface)', borderBottom: '1px solid var(--border)', fontSize: 12, fontWeight: 600 }}>
+            {right}
+          </div>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <SplitRunPanel runName={right} activeTab={sharedTab} onTabChange={onTabChange} sharedControls={sharedControls} />
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-function SplitRunPanel({ runName, activeTab, onTabChange }: {
+function SplitRunPanel({ runName, activeTab, onTabChange, sharedControls }: {
   runName: string
   activeTab: RunTab
   onTabChange: (tab: RunTab) => void
+  sharedControls: SharedControls
 }) {
   const [state, setState] = useState<LabState | null>(null)
   const [events, setEvents] = useState<LabEvent[]>([])
@@ -208,6 +321,12 @@ function SplitRunPanel({ runName, activeTab, onTabChange }: {
 
   const run: RunInfo = { name: runName, label: null, status: null, group: null }
 
+  const externalControls = useMemo(() => ({
+    logFilter: sharedControls.logFilter,
+    logLevels: sharedControls.logLevels,
+    metricsFilter: sharedControls.metricsFilter,
+  }), [sharedControls.logFilter, sharedControls.logLevels, sharedControls.metricsFilter])
+
   return (
     <RunView
       run={run}
@@ -217,6 +336,7 @@ function SplitRunPanel({ runName, activeTab, onTabChange }: {
       results={results}
       activeTab={activeTab}
       onTabChange={onTabChange}
+      externalControls={externalControls}
     />
   )
 }
@@ -231,4 +351,12 @@ function statusBadge(status?: string) {
     ignored: 'var(--text-muted)',
   }
   return <span style={{ color: colors[status] || 'inherit' }}>{status.toUpperCase()}</span>
+}
+
+function statusIcon(outcome?: string | null): string {
+  if (!outcome) return '?'
+  const lower = outcome.toLowerCase()
+  if (lower === 'pass' || lower === 'success') return '\u2705'
+  if (lower === 'fail' || lower === 'failure') return '\u274C'
+  return '\u2753'
 }

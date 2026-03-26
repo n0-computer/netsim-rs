@@ -277,6 +277,7 @@ tbody td {
     display: flex;
     flex: 1;
     overflow: hidden;
+    position: relative;
 }
 .logs-sidebar {
     width: 220px;

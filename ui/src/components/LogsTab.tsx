@@ -37,6 +37,10 @@ interface Props {
   base: string
   logs: SimLogEntry[]
   jumpTarget?: { node: string; path: string; timeLabel: string; nonce: number } | null
+  /** When provided, use this filter instead of internal search state. */
+  sharedFilter?: string
+  /** When provided, use these levels instead of internal level state. */
+  sharedLevels?: Set<string>
 }
 
 function valueString(v: unknown): string {
@@ -208,7 +212,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`
 }
 
-export default function LogsTab({ base, logs, jumpTarget }: Props) {
+export default function LogsTab({ base, logs, jumpTarget, sharedFilter, sharedLevels }: Props) {
   const [active, setActive] = useState<SimLogEntry | null>(null)
   const [text, setText] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -220,11 +224,16 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const [jumpHandledNonce, setJumpHandledNonce] = useState<number | null>(null)
   const jumpingRef = useRef(false)
 
-  // Level filter (for tracing logs)
-  const [enabledLevels, setEnabledLevels] = useState<Set<string>>(new Set(ALL_LEVELS))
+  // Level filter (for tracing logs) — use shared if provided
+  const hasSharedLevels = sharedLevels != null
+  const [localEnabledLevels, setLocalEnabledLevels] = useState<Set<string>>(new Set(ALL_LEVELS))
+  const enabledLevels = hasSharedLevels ? sharedLevels : localEnabledLevels
 
-  // Search
-  const [searchQuery, setSearchQuery] = useState('')
+  // Search — use shared filter if provided
+  const hasSharedFilter = sharedFilter != null
+  const [localSearchQuery, setLocalSearchQuery] = useState('')
+  const searchQuery = hasSharedFilter ? sharedFilter : localSearchQuery
+
   const [searchMatches, setSearchMatches] = useState<number[]>([])
   const [searchIdx, setSearchIdx] = useState(0)
   const contentRef = useRef<HTMLDivElement>(null)
@@ -233,9 +242,15 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   const [timeMode, setTimeMode] = useState<TimeMode>('absolute')
   const [qlogNameFilter, setQlogNameFilter] = useState('all')
 
+  // Sidebar collapse
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
   const isStructured = active != null && STRUCTURED_KINDS.has(active.kind)
   const isTracingLog = active?.kind === 'tracing_jsonl'
   const isQlog = active?.kind === 'qlog'
+
+  // Hide internal controls when shared controls are provided
+  const hideInternalControls = hasSharedLevels || hasSharedFilter
 
   // Auto-select first log
   useEffect(() => {
@@ -257,11 +272,11 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
       setJumpLine(null)
     }
     jumpingRef.current = false
-    setSearchQuery('')
+    if (!hasSharedFilter) setLocalSearchQuery('')
     setSearchMatches([])
     setSearchIdx(0)
     setQlogNameFilter('all')
-  }, [active, base])
+  }, [active, base, hasSharedFilter])
 
   // Handle jump target from timeline
   useEffect(() => {
@@ -345,23 +360,39 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   }, [parsed])
 
   const filteredLines = useMemo(() => {
-    if (!isTracingLog) return parsed.map((line, i) => ({ line, origIdx: i }))
-    return parsed
-      .map((line, i) => ({ line, origIdx: i }))
-      .filter(({ line }) => {
+    let lines = parsed.map((line, i) => ({ line, origIdx: i }))
+
+    // Level filtering for tracing logs
+    if (isTracingLog) {
+      lines = lines.filter(({ line }) => {
         if (line.type === 'tracing') return enabledLevels.has(line.level)
         return true
       })
-  }, [parsed, enabledLevels, isTracingLog])
+    }
 
-  // Search matches
+    // Text search filtering (from shared or local)
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      lines = lines.filter(({ line }) => {
+        const lineText = line.type === 'tracing'
+          ? `${line.ts} ${line.level} ${line.spans} ${line.target} ${line.msg} ${line.fields}`
+          : line.type === 'event' ? `${line.kind} ${line.raw}`
+            : line.raw
+        return lineText.toLowerCase().includes(q)
+      })
+    }
+
+    return lines
+  }, [parsed, enabledLevels, isTracingLog, searchQuery])
+
+  // Search matches (for local search navigation only)
   useEffect(() => {
-    if (!searchQuery) {
+    if (!localSearchQuery || hasSharedFilter) {
       setSearchMatches([])
       setSearchIdx(0)
       return
     }
-    const q = searchQuery.toLowerCase()
+    const q = localSearchQuery.toLowerCase()
     const matches: number[] = []
     filteredLines.forEach(({ line }, i) => {
       const text = line.type === 'tracing'
@@ -372,7 +403,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
     })
     setSearchMatches(matches)
     setSearchIdx(0)
-  }, [searchQuery, filteredLines])
+  }, [localSearchQuery, filteredLines, hasSharedFilter])
 
   // Jump needle resolution
   useEffect(() => {
@@ -435,7 +466,7 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
   }, [searchIdx, searchMatches])
 
   const toggleLevel = (level: string) => {
-    setEnabledLevels((prev) => {
+    setLocalEnabledLevels((prev) => {
       const next = new Set(prev)
       if (next.has(level)) next.delete(level)
       else next.add(level)
@@ -485,24 +516,45 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
 
   return (
     <div className="logs-layout">
-      <div className="logs-sidebar">
-        {byNode.map(([node, files]) => (
-          <div key={node} className="node-group">
-            <div className="node-label">{node}</div>
-            {files.map((f) => (
-              <div
-                key={f.path}
-                className={`file-item${active?.path === f.path ? ' active' : ''}`}
-                onClick={() => setActive(f)}
-                title={f.path}
-              >
-                {f.path.split('/').pop()?.replace(/^device\.[^.]+\./, '')}
-                <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>[{f.kind}]</span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
+      {/* Sidebar toggle button */}
+      <button
+        className="btn"
+        onClick={() => setSidebarCollapsed(v => !v)}
+        style={{
+          position: 'absolute',
+          zIndex: 10,
+          left: sidebarCollapsed ? 4 : 174,
+          top: 4,
+          fontSize: 10,
+          padding: '2px 6px',
+          minWidth: 0,
+          transition: 'left 0.15s ease',
+        }}
+        title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+      >
+        {sidebarCollapsed ? '\u25B6' : '\u25C0'}
+      </button>
+
+      {!sidebarCollapsed && (
+        <div className="logs-sidebar">
+          {byNode.map(([node, files]) => (
+            <div key={node} className="node-group">
+              <div className="node-label">{node}</div>
+              {files.map((f) => (
+                <div
+                  key={f.path}
+                  className={`file-item${active?.path === f.path ? ' active' : ''}`}
+                  onClick={() => setActive(f)}
+                  title={f.path}
+                >
+                  {f.path.split('/').pop()?.replace(/^device\.[^.]+\./, '')}
+                  <span style={{ marginLeft: 6, color: 'var(--text-muted)' }}>[{f.kind}]</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="logs-main">
         {error && <div className="error-msg">{error}</div>}
@@ -537,8 +589,8 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
               )}
             </div>
 
-            {/* Tracing log toolbar */}
-            {isTracingLog && loaded && (
+            {/* Tracing log toolbar — hidden when shared controls are active */}
+            {isTracingLog && loaded && !hideInternalControls && (
               <div className="logs-toolbar">
                 <button className={`btn${showSpans ? ' active' : ''}`} onClick={() => setShowSpans((v) => !v)}>
                   {showSpans ? 'hide spans' : 'show spans'}
@@ -561,8 +613,8 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
                 <input
                   type="search"
                   placeholder="search..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={localSearchQuery}
+                  onChange={(e) => setLocalSearchQuery(e.target.value)}
                   style={{ marginLeft: 'auto' }}
                 />
                 {searchMatches.length > 0 && (
@@ -574,6 +626,21 @@ export default function LogsTab({ base, logs, jumpTarget }: Props) {
                     <button className="btn" onClick={() => setSearchIdx((i) => (i + 1) % searchMatches.length)}>next</button>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* Tracing log toolbar (display-only controls) when shared controls are active */}
+            {isTracingLog && loaded && hideInternalControls && (
+              <div className="logs-toolbar">
+                <button className={`btn${showSpans ? ' active' : ''}`} onClick={() => setShowSpans((v) => !v)}>
+                  {showSpans ? 'hide spans' : 'show spans'}
+                </button>
+                <button className={`btn${showTarget ? ' active' : ''}`} onClick={() => setShowTarget((v) => !v)}>
+                  {showTarget ? 'hide target' : 'show target'}
+                </button>
+                <button className="btn" onClick={() => setTimeMode((v) => (v === 'absolute' ? 'relative' : 'absolute'))}>
+                  time: {timeMode}
+                </button>
               </div>
             )}
 
