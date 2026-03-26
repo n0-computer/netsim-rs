@@ -60,7 +60,7 @@ fn compare_detects_regression() {
     // Run compare
     let patchbay_bin = env!("CARGO_BIN_EXE_patchbay");
     let output = Command::new(patchbay_bin)
-        .args(["compare", "test", "--ref", "v1", "--ref2", "v2"])
+        .args(["-v", "compare", "test", "v1", "v2"])
         .current_dir(dir)
         .output()
         .unwrap();

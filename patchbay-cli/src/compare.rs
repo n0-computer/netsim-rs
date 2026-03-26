@@ -29,7 +29,8 @@ pub fn setup_worktree(git_ref: &str, base: &Path) -> Result<PathBuf> {
     Ok(tree_dir)
 }
 
-/// Remove worktree if it has no changes.
+/// Remove worktree if tracked files are unchanged.
+/// Uses --force to handle untracked files (e.g. target/).
 pub fn cleanup_worktree(tree_dir: &Path) -> Result<()> {
     let diff = Command::new("git")
         .args(["diff", "--quiet"])
@@ -37,9 +38,8 @@ pub fn cleanup_worktree(tree_dir: &Path) -> Result<()> {
         .status()
         .context("git diff")?;
     if diff.success() {
-        // No changes, safe to remove
         let _ = Command::new("git")
-            .args(["worktree", "remove"])
+            .args(["worktree", "remove", "--force"])
             .arg(tree_dir)
             .status();
     }
@@ -147,6 +147,9 @@ pub fn run_tests_in_dir(
     use std::io::BufRead;
 
     let mut cmd = args.cargo_test_cmd_in(Some(dir));
+    // Use a per-worktree target dir to avoid sharing cached binaries
+    // between different git refs.
+    cmd.env("CARGO_TARGET_DIR", dir.join("target"));
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().context("spawn cargo test")?;
