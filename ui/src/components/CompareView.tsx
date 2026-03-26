@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import type { LabEvent, LabState } from '../devtools-types'
 import type { SimResults } from '../types'
 import { fetchRunJson, fetchState, fetchEvents, fetchLogs, fetchResults } from '../api'
@@ -70,6 +70,18 @@ function isGroupCompare(left: RunManifest | null, right: RunManifest | null): bo
   return leftTests.length > 0 || rightTests.length > 0
 }
 
+/** Extract the group (first path segment) from a run path like "run-20260326_123338/project/test". */
+function extractGroup(runPath: string): string {
+  return runPath.split('/')[0] || runPath
+}
+
+/** Build the parent group compare URL from two individual run paths. */
+function groupCompareUrl(leftRun: string, rightRun: string): string {
+  const leftGroup = extractGroup(leftRun)
+  const rightGroup = extractGroup(rightRun)
+  return `/compare/${encodeURIComponent(leftGroup)}/${encodeURIComponent(rightGroup)}`
+}
+
 // ── Compare View (route: /compare/:left/:right) ──
 
 export default function CompareView({ leftRun, rightRun }: { leftRun: string; rightRun: string }) {
@@ -118,9 +130,14 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header: simple name for individual runs, summary for groups */}
       {!isGroup ? (
-        <h2 style={{ margin: '0 0 1rem 0' }}>
-          Compare: {shortName(leftRun)}
-        </h2>
+        <div style={{ margin: '0 0 1rem 0' }}>
+          <h2 style={{ margin: '0 0 0.5rem 0' }}>
+            Compare: {shortName(leftRun)} (left) vs {shortName(rightRun)} (right)
+          </h2>
+          <Link to={groupCompareUrl(leftRun, rightRun)} style={{ fontSize: 13, color: 'var(--accent, #4a9eff)' }}>
+            &#x21A9; Back to group compare
+          </Link>
+        </div>
       ) : (
         <>
           <h2 style={{ margin: '0 0 0.5rem 0' }}>

@@ -1,10 +1,10 @@
 //! Compare mode: run tests/sims in two git worktrees and diff results.
 
+use anyhow::{bail, Context, Result};
+use patchbay_utils::manifest::{self, TestResult, TestStatus};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use anyhow::{bail, Context, Result};
-use patchbay_utils::manifest::{self, TestResult, TestStatus};
 
 /// Set up a git worktree for the given ref.
 pub fn setup_worktree(git_ref: &str, base: &Path) -> Result<PathBuf> {
@@ -78,8 +78,13 @@ pub fn run_tests_in_dir(
     let v = verbose;
     let out_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
-            if v { println!("{line}"); }
+        for line in std::io::BufReader::new(stdout_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if v {
+                println!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -87,8 +92,13 @@ pub fn run_tests_in_dir(
     });
     let err_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
-            if verbose { eprintln!("{line}"); }
+        for line in std::io::BufReader::new(stderr_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if verbose {
+                eprintln!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -117,8 +127,14 @@ pub fn persist_worktree_run(
     let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
     std::fs::create_dir_all(&dest)?;
 
-    let pass = results.iter().filter(|r| r.status == TestStatus::Pass).count() as u32;
-    let fail = results.iter().filter(|r| r.status == TestStatus::Fail).count() as u32;
+    let pass = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Pass)
+        .count() as u32;
+    let fail = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Fail)
+        .count() as u32;
     let total = results.len() as u32;
     let outcome = if fail == 0 { "pass" } else { "fail" };
 
@@ -155,7 +171,11 @@ fn test_index(results: &[TestResult]) -> std::collections::HashMap<&str, &TestRe
 }
 
 fn merged_names(left: &[TestResult], right: &[TestResult]) -> Vec<String> {
-    let mut names: Vec<String> = left.iter().chain(right.iter()).map(|r| r.name.clone()).collect();
+    let mut names: Vec<String> = left
+        .iter()
+        .chain(right.iter())
+        .map(|r| r.name.clone())
+        .collect();
     names.sort();
     names.dedup();
     names
@@ -184,8 +204,14 @@ pub fn compare_results(left: &[TestResult], right: &[TestResult]) -> CompareResu
 
     let left_pass = left.iter().filter(|r| r.status == TestStatus::Pass).count();
     let left_fail = left.iter().filter(|r| r.status == TestStatus::Fail).count();
-    let right_pass = right.iter().filter(|r| r.status == TestStatus::Pass).count();
-    let right_fail = right.iter().filter(|r| r.status == TestStatus::Fail).count();
+    let right_pass = right
+        .iter()
+        .filter(|r| r.status == TestStatus::Pass)
+        .count();
+    let right_fail = right
+        .iter()
+        .filter(|r| r.status == TestStatus::Fail)
+        .count();
 
     let mut fixes = 0;
     let mut regressions = 0;
@@ -207,15 +233,30 @@ pub fn compare_results(left: &[TestResult], right: &[TestResult]) -> CompareResu
     score += fixes as i32 * 3;
     score -= regressions as i32 * 5;
     if !left_time.is_zero() {
-        let pct = (right_time.as_secs_f64() - left_time.as_secs_f64()) / left_time.as_secs_f64() * 100.0;
-        if pct < -2.0 { score += 1; }
-        if pct > 5.0 { score -= 1; }
+        let pct =
+            (right_time.as_secs_f64() - left_time.as_secs_f64()) / left_time.as_secs_f64() * 100.0;
+        if pct < -2.0 {
+            score += 1;
+        }
+        if pct > 5.0 {
+            score -= 1;
+        }
     }
 
     CompareResult {
-        left: SideStats { pass: left_pass, fail: left_fail, total: left.len() },
-        right: SideStats { pass: right_pass, fail: right_fail, total: right.len() },
-        fixes, regressions, score,
+        left: SideStats {
+            pass: left_pass,
+            fail: left_fail,
+            total: left.len(),
+        },
+        right: SideStats {
+            pass: right_pass,
+            fail: right_fail,
+            total: right.len(),
+        },
+        fixes,
+        regressions,
+        score,
     }
 }
 
@@ -228,11 +269,23 @@ fn status_str(s: TestStatus) -> &'static str {
 }
 
 /// Print a comparison summary table.
-pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], result: &CompareResult) {
+pub fn print_summary(
+    left_ref: &str,
+    right_ref: &str,
+    left: &[TestResult],
+    right: &[TestResult],
+    result: &CompareResult,
+) {
     println!("\nCompare: {left_ref} \u{2194} {right_ref}\n");
-    println!("Tests:        {}/{} pass ({} fail) \u{2192} {}/{} pass ({} fail)",
-        result.left.pass, result.left.total, result.left.fail,
-        result.right.pass, result.right.total, result.right.fail);
+    println!(
+        "Tests:        {}/{} pass ({} fail) \u{2192} {}/{} pass ({} fail)",
+        result.left.pass,
+        result.left.total,
+        result.left.fail,
+        result.right.pass,
+        result.right.total,
+        result.right.fail
+    );
     if result.fixes > 0 {
         println!("Fixes:        {} (fail\u{2192}pass)", result.fixes);
     }
@@ -244,7 +297,10 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
     let right_map = test_index(right);
     let all_names = merged_names(left, right);
 
-    println!("\n{:<50} {:>8} {:>8} {:>10}", "Test", "Left", "Right", "Delta");
+    println!(
+        "\n{:<50} {:>8} {:>8} {:>10}",
+        "Test", "Left", "Right", "Delta"
+    );
     println!("{}", "-".repeat(80));
     for name in &all_names {
         let name = name.as_str();
@@ -259,9 +315,19 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
             (Some(_), None) => "removed",
             _ => "",
         };
-        let display_name = if name.len() > 48 { &name[name.len()-48..] } else { name };
-        println!("{:<50} {:>8} {:>8} {:>10}", display_name, ls_str, rs_str, delta);
+        let display_name = if name.len() > 48 {
+            &name[name.len() - 48..]
+        } else {
+            name
+        };
+        println!(
+            "{:<50} {:>8} {:>8} {:>10}",
+            display_name, ls_str, rs_str, delta
+        );
     }
 
-    println!("\nScore: {:+} ({} fixes, {} regressions)", result.score, result.fixes, result.regressions);
+    println!(
+        "\nScore: {:+} ({} fixes, {} regressions)",
+        result.score, result.fixes, result.regressions
+    );
 }

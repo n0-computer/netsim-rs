@@ -21,7 +21,7 @@ export function selectionFromValue(val: string): Selection | null {
 
 export function selectionPath(s: Selection | null): string {
   if (!s) return '/'
-  return s.kind === 'group' ? `/batch/${s.name}` : `/run/${s.name}`
+  return s.kind === 'group' ? `/group/${s.name}` : `/run/${s.name}`
 }
 
 // ── Component ──────────────────────────────────────────────────────

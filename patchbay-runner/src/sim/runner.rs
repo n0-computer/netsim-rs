@@ -20,7 +20,7 @@ use crate::sim::{
     env::SimEnv,
     progress::{
         collect_run_environment, format_timestamp, now_stamp, write_json, write_progress,
-        write_sim_report, ManifestSimSummary, ProgressSim, SimRunReport, RunProgress,
+        write_sim_report, ManifestSimSummary, ProgressSim, RunProgress, SimRunReport,
     },
     report::{
         print_run_summary_table_for_runs, write_combined_results_for_runs, write_results,

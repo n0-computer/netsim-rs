@@ -51,7 +51,10 @@ fn compare_detects_regression() {
 
     // Commit 2: regressing (PACKET_COUNT = 2, below THRESHOLD = 3)
     let src = std::fs::read_to_string(dir.join("tests/counter.rs")).unwrap();
-    let regressed = src.replace("const PACKET_COUNT: u32 = 5;", "const PACKET_COUNT: u32 = 2;");
+    let regressed = src.replace(
+        "const PACKET_COUNT: u32 = 5;",
+        "const PACKET_COUNT: u32 = 2;",
+    );
     std::fs::write(dir.join("tests/counter.rs"), regressed).unwrap();
     git(dir, &["add", "."]);
     git(dir, &["commit", "-m", "regressing"]);
@@ -89,14 +92,23 @@ fn compare_detects_regression() {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
         .collect();
-    assert_eq!(run_dirs.len(), 2, "expected 2 run directories, found {}", run_dirs.len());
+    assert_eq!(
+        run_dirs.len(),
+        2,
+        "expected 2 run directories, found {}",
+        run_dirs.len()
+    );
 
     // Parse run.json from each directory
     let mut manifests: Vec<serde_json::Value> = run_dirs
         .iter()
         .map(|d| {
             let run_json = d.path().join("run.json");
-            assert!(run_json.exists(), "run.json not found in {}", d.path().display());
+            assert!(
+                run_json.exists(),
+                "run.json not found in {}",
+                d.path().display()
+            );
             serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap()
         })
         .collect();
@@ -104,7 +116,10 @@ fn compare_detects_regression() {
     // Both should have kind: "test"
     for m in &manifests {
         assert_eq!(m["kind"], "test", "run.json should have kind 'test'");
-        assert!(!m["dirty"].as_bool().unwrap_or(true), "run should not be dirty");
+        assert!(
+            !m["dirty"].as_bool().unwrap_or(true),
+            "run should not be dirty"
+        );
         assert!(m["commit"].is_string(), "run.json should have a commit SHA");
     }
 
@@ -131,17 +146,41 @@ fn compare_detects_regression() {
     let left_manifest = &manifests[0];
     let right_manifest = &manifests[1];
 
-    assert_eq!(left_manifest["commit"].as_str().unwrap(), v1_sha, "left run should match v1 SHA");
-    assert_eq!(right_manifest["commit"].as_str().unwrap(), v2_sha, "right run should match v2 SHA");
+    assert_eq!(
+        left_manifest["commit"].as_str().unwrap(),
+        v1_sha,
+        "left run should match v1 SHA"
+    );
+    assert_eq!(
+        right_manifest["commit"].as_str().unwrap(),
+        v2_sha,
+        "right run should match v2 SHA"
+    );
 
     // Left side: both tests pass (PACKET_COUNT=5 >= THRESHOLD=3)
-    assert_eq!(left_manifest["pass"].as_u64().unwrap(), 2, "left should have 2 passes");
-    assert_eq!(left_manifest["fail"].as_u64().unwrap(), 0, "left should have 0 failures");
+    assert_eq!(
+        left_manifest["pass"].as_u64().unwrap(),
+        2,
+        "left should have 2 passes"
+    );
+    assert_eq!(
+        left_manifest["fail"].as_u64().unwrap(),
+        0,
+        "left should have 0 failures"
+    );
     assert_eq!(left_manifest["total"].as_u64().unwrap(), 2);
 
     // Right side: udp_threshold fails (PACKET_COUNT=2 < THRESHOLD=3)
-    assert_eq!(right_manifest["pass"].as_u64().unwrap(), 1, "right should have 1 pass");
-    assert_eq!(right_manifest["fail"].as_u64().unwrap(), 1, "right should have 1 failure");
+    assert_eq!(
+        right_manifest["pass"].as_u64().unwrap(),
+        1,
+        "right should have 1 pass"
+    );
+    assert_eq!(
+        right_manifest["fail"].as_u64().unwrap(),
+        1,
+        "right should have 1 failure"
+    );
     assert_eq!(right_manifest["total"].as_u64().unwrap(), 2);
 
     // Per-test results
@@ -187,8 +226,7 @@ fn compare_detects_regression() {
             .current_dir(dir)
             .output()
             .unwrap();
-        let meta: serde_json::Value =
-            serde_json::from_slice(&meta_out.stdout).unwrap_or_default();
+        let meta: serde_json::Value = serde_json::from_slice(&meta_out.stdout).unwrap_or_default();
         let target = meta["target_directory"]
             .as_str()
             .map(|s| Path::new(s).join("testdir-current"));

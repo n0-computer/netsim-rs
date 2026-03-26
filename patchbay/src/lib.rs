@@ -200,10 +200,10 @@ pub mod consts;
 pub(crate) mod core;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
-mod metrics;
 pub(crate) mod firewall;
 pub(crate) mod handles;
 mod lab;
+mod metrics;
 pub(crate) mod nat;
 pub(crate) mod nat64;
 mod netlink;
@@ -221,7 +221,6 @@ pub mod util;
 pub(crate) mod writer;
 
 pub use firewall::PortPolicy;
-pub use metrics::MetricsBuilder;
 pub use ipnet::Ipv4Net;
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Device, DeviceBuilder, DeviceIface, Firewall,
@@ -230,6 +229,7 @@ pub use lab::{
     NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir, Region, RegionLink, Router,
     RouterBuilder, RouterIface, RouterPreset, TestGuard,
 };
+pub use metrics::MetricsBuilder;
 
 pub use crate::{
     core::{NodeId, ReflectorGuard},

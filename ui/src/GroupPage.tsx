@@ -8,16 +8,14 @@ import type { Selection } from './components/RunSelector'
 import PerfTab from './components/PerfTab'
 import { simLabel } from './utils'
 
-type BatchTab = 'sims' | 'perf'
+type GroupTab = 'sims' | 'perf'
 
-export default function BatchPage() {
+export default function GroupPage() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  const batchName = location.pathname.startsWith('/group/')
-    ? location.pathname.slice('/group/'.length)
-    : location.pathname.slice('/batch/'.length)
-  const [tab, setTab] = useState<BatchTab>('sims')
+  const groupName = location.pathname.slice('/group/'.length)
+  const [tab, setTab] = useState<GroupTab>('sims')
 
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
@@ -39,30 +37,30 @@ export default function BatchPage() {
   // ── Load combined results ──
 
   useEffect(() => {
-    if (!batchName) {
+    if (!groupName) {
       setCombinedResults(null)
       return
     }
 
     let dead = false
-    fetchCombinedResults(batchName).then((results) => {
+    fetchCombinedResults(groupName).then((results) => {
       if (dead) return
       setCombinedResults(results)
     })
 
     return () => { dead = true }
-  }, [batchName])
+  }, [groupName])
 
   // ── Derived ──
 
-  const selection: Selection | null = batchName ? { kind: 'group', name: batchName } : null
+  const selection: Selection | null = groupName ? { kind: 'group', name: groupName } : null
   const groupRuns = useMemo(
-    () => runs.filter((r) => r.group === batchName),
-    [runs, batchName],
+    () => runs.filter((r) => r.group === groupName),
+    [runs, groupName],
   )
 
-  const availableTabs = useMemo<BatchTab[]>(
-    () => ['sims', ...(combinedResults ? (['perf'] as BatchTab[]) : [])],
+  const availableTabs = useMemo<GroupTab[]>(
+    () => ['sims', ...(combinedResults ? (['perf'] as GroupTab[]) : [])],
     [combinedResults],
   )
 
@@ -101,7 +99,7 @@ export default function BatchPage() {
       <div className="tab-content" style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         {tab === 'sims' && (
           <div className="sims-list">
-            <h2>{batchName}</h2>
+            <h2>{groupName}</h2>
             {groupRuns.length === 0 && <div className="empty">No sims found.</div>}
             {groupRuns.map((r) => (
               <a

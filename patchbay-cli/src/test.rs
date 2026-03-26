@@ -222,8 +222,13 @@ pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
     let v = verbose;
     let out_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
-            if v { println!("{line}"); }
+        for line in std::io::BufReader::new(stdout_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if v {
+                println!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -231,8 +236,13 @@ pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
     });
     let err_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
-            if verbose { eprintln!("{line}"); }
+        for line in std::io::BufReader::new(stderr_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if verbose {
+                eprintln!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -248,8 +258,14 @@ pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
     let results = manifest::parse_test_output(&combined);
 
     // Write run.json into testdir-current/.
-    let pass = results.iter().filter(|r| r.status == TestStatus::Pass).count() as u32;
-    let fail = results.iter().filter(|r| r.status == TestStatus::Fail).count() as u32;
+    let pass = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Pass)
+        .count() as u32;
+    let fail = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Fail)
+        .count() as u32;
     let total = results.len() as u32;
     let git = manifest::git_context();
     let runtime = (ended_at - started_at).to_std().ok();
@@ -327,7 +343,6 @@ fn persist_run() -> Result<()> {
     println!("patchbay: persisted run to {}", dest.display());
     Ok(())
 }
-
 
 /// Run tests in a VM via patchbay-vm.
 #[cfg(feature = "vm")]

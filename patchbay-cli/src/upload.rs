@@ -1,18 +1,20 @@
 //! Upload run/compare directories to a patchbay-server instance.
 
-use std::path::Path;
 use anyhow::{bail, Context, Result};
-use patchbay_utils::manifest::{RunManifest, RunKind};
+use patchbay_utils::manifest::{RunKind, RunManifest};
+use std::path::Path;
 
 /// Build a RunManifest from CI environment variables.
 pub fn manifest_from_env(project: &str) -> RunManifest {
     RunManifest {
         kind: RunKind::Sim, // default; overridden if run.json already exists
         project: Some(project.to_string()),
-        branch: std::env::var("GITHUB_REF_NAME").ok()
+        branch: std::env::var("GITHUB_REF_NAME")
+            .ok()
             .or_else(|| std::env::var("GITHUB_HEAD_REF").ok()),
         commit: std::env::var("GITHUB_SHA").ok(),
-        pr: std::env::var("GITHUB_PR_NUMBER").ok()
+        pr: std::env::var("GITHUB_PR_NUMBER")
+            .ok()
             .and_then(|s| s.parse().ok()),
         pr_url: None,
         title: std::env::var("GITHUB_PR_TITLE").ok(),
@@ -60,7 +62,8 @@ pub fn upload(dir: &Path, project: &str, url: &str, api_key: &str) -> Result<()>
     let push_url = format!("{}/api/push/{}", url.trim_end_matches('/'), project);
 
     let client = reqwest::blocking::Client::new();
-    let resp = client.post(&push_url)
+    let resp = client
+        .post(&push_url)
         .header("Authorization", format!("Bearer {api_key}"))
         .header("Content-Type", "application/gzip")
         .body(body)

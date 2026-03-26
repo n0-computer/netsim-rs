@@ -241,7 +241,6 @@ fn build_router(state: AppState) -> Router {
         // SPA fallback: serve index.html for client-side routes.
         .route("/run/{*rest}", get(index_html))
         .route("/group/{*rest}", get(index_html))
-        .route("/batch/{*rest}", get(index_html))
         .route("/compare/{*rest}", get(index_html))
         .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
@@ -258,10 +257,6 @@ fn build_router(state: AppState) -> Router {
             get(get_group_combined),
         )
         // Legacy alias — keep for backward-compat (links shared on Discord).
-        .route(
-            "/api/batches/{name}/combined-results",
-            get(get_group_combined),
-        )
         .route(
             "/api/invocations/{name}/combined-results",
             get(get_group_combined),
@@ -977,16 +972,62 @@ async fn push_run(
         );
     }
 
-    // Extract tar.gz
+    // Extract tar.gz — iterate entries manually to reject unsafe paths.
     let decoder = flate2::read::GzDecoder::new(&body[..]);
     let mut archive = tar::Archive::new(decoder);
-    if let Err(e) = archive.unpack(&run_dir) {
-        // Clean up on failure
-        let _ = std::fs::remove_dir_all(&run_dir);
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("failed to extract archive: {e}"),
-        );
+    archive.set_preserve_permissions(false);
+    archive.set_unpack_xattrs(false);
+    archive.set_overwrite(false);
+
+    let entries = match archive.entries() {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("failed to read archive entries: {e}"),
+            );
+        }
+    };
+    for entry in entries {
+        let mut entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read archive entry: {e}"),
+                );
+            }
+        };
+        let path = match entry.path() {
+            Ok(p) => p.into_owned(),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read entry path: {e}"),
+                );
+            }
+        };
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+        {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid path in archive".to_string(),
+            );
+        }
+        if let Err(e) = entry.unpack_in(&run_dir) {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("failed to extract archive: {e}"),
+            );
+        }
     }
 
     // Notify subscribers about new run

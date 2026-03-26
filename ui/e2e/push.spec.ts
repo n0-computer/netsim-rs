@@ -74,7 +74,7 @@ test('push run results and view via deep link', async ({ page }) => {
       body: tarGz,
     })
     expect(pushRes.status).toBe(200)
-    const pushBody = await pushRes.json() as { ok: boolean; group: string; batch: string; project: string }
+    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string }
     expect(pushBody.ok).toBe(true)
     expect(pushBody.project).toBe('test-project')
     expect(pushBody.group).toBeTruthy()

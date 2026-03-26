@@ -319,7 +319,12 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
                 };
                 let name = name.trim().to_string();
                 if seen.insert(name.clone()) {
-                    results.push(TestResult { name, status, duration: None, dir: None });
+                    results.push(TestResult {
+                        name,
+                        status,
+                        duration: None,
+                        dir: None,
+                    });
                 }
             }
             continue;
@@ -338,7 +343,12 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
                 .trim()
                 .to_string();
             if !name.is_empty() && seen.insert(name.clone()) {
-                results.push(TestResult { name, status, duration, dir: None });
+                results.push(TestResult {
+                    name,
+                    status,
+                    duration,
+                    dir: None,
+                });
             }
         }
     }

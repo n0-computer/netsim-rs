@@ -436,45 +436,58 @@ async fn tokio_main() -> Result<()> {
             let cwd = std::env::current_dir().context("get cwd")?;
             let work_dir = cwd.join(".patchbay/work");
             match command {
-                CompareCommand::Test { left_ref, right_ref, force_build, no_ref_build, args } => {
+                CompareCommand::Test {
+                    left_ref,
+                    right_ref,
+                    force_build,
+                    no_ref_build,
+                    args,
+                } => {
                     use patchbay_utils::manifest::{self as mf, RunKind};
 
                     let right_label = right_ref.as_deref().unwrap_or("worktree");
-                    println!("patchbay compare test: {} \u{2194} {}", left_ref, right_label);
+                    println!(
+                        "patchbay compare test: {} \u{2194} {}",
+                        left_ref, right_label
+                    );
 
                     // Helper: resolve results for a ref, using cache or building.
-                    let resolve_ref_results = |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
-                        let sha = mf::resolve_ref(git_ref)
-                            .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
+                    let resolve_ref_results =
+                        |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
+                            let sha = mf::resolve_ref(git_ref)
+                                .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
 
-                        // Check cache (unless --force-build).
-                        if !force_build {
-                            if let Some((_dir, manifest)) = mf::find_run_for_commit(&work_dir, &sha, RunKind::Test) {
-                                println!("Using cached run for {label} ({sha:.8})");
-                                return Ok(manifest.tests);
+                            // Check cache (unless --force-build).
+                            if !force_build {
+                                if let Some((_dir, manifest)) =
+                                    mf::find_run_for_commit(&work_dir, &sha, RunKind::Test)
+                                {
+                                    println!("Using cached run for {label} ({sha:.8})");
+                                    return Ok(manifest.tests);
+                                }
                             }
-                        }
 
-                        // No cache — fail if --no-ref-build.
-                        if no_ref_build {
-                            bail!(
-                                "no cached run for {label} ({sha:.8}); \
+                            // No cache — fail if --no-ref-build.
+                            if no_ref_build {
+                                bail!(
+                                    "no cached run for {label} ({sha:.8}); \
                                  run `patchbay test --persist` on that ref first, \
                                  or remove --no-ref-build"
-                            );
-                        }
+                                );
+                            }
 
-                        // Build in worktree.
-                        println!("Running tests in {label} ...");
-                        let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
-                        let (results, _output) = compare::run_tests_in_dir(&tree_dir, &args, cli.verbose)?;
+                            // Build in worktree.
+                            println!("Running tests in {label} ...");
+                            let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
+                            let (results, _output) =
+                                compare::run_tests_in_dir(&tree_dir, &args, cli.verbose)?;
 
-                        // Persist the run so future compares can reuse it.
-                        compare::persist_worktree_run(&tree_dir, &results, &sha)?;
+                            // Persist the run so future compares can reuse it.
+                            compare::persist_worktree_run(&tree_dir, &results, &sha)?;
 
-                        compare::cleanup_worktree(&tree_dir)?;
-                        Ok(results)
-                    };
+                            compare::cleanup_worktree(&tree_dir)?;
+                            Ok(results)
+                        };
 
                     let left_results = resolve_ref_results(&left_ref, &left_ref)?;
 
@@ -483,33 +496,54 @@ async fn tokio_main() -> Result<()> {
                     } else {
                         // Compare against current worktree: always run fresh.
                         println!("Running tests in worktree ...");
-                        let (results, _output) = compare::run_tests_in_dir(&cwd, &args, cli.verbose)?;
+                        let (results, _output) =
+                            compare::run_tests_in_dir(&cwd, &args, cli.verbose)?;
                         results
                     };
 
                     // Compare
                     let result = compare::compare_results(&left_results, &right_results);
-                    compare::print_summary(&left_ref, right_label, &left_results, &right_results, &result);
+                    compare::print_summary(
+                        &left_ref,
+                        right_label,
+                        &left_results,
+                        &right_results,
+                        &result,
+                    );
 
                     if result.regressions > 0 {
                         bail!("{} regressions detected", result.regressions);
                     }
                     Ok(())
                 }
-                CompareCommand::Run { sims: _, left_ref: _, right_ref: _ } => {
+                CompareCommand::Run {
+                    sims: _,
+                    left_ref: _,
+                    right_ref: _,
+                } => {
                     // TODO: implement compare run (sim comparison)
                     bail!("compare run is not yet implemented");
                 }
             }
         }
-        Command::Upload { dir, project, url, api_key } => {
+        Command::Upload {
+            dir,
+            project,
+            url,
+            api_key,
+        } => {
             if !dir.exists() {
                 bail!("directory does not exist: {}", dir.display());
             }
             #[cfg(feature = "upload")]
-            { upload::upload(&dir, &project, &url, &api_key) }
+            {
+                upload::upload(&dir, &project, &url, &api_key)
+            }
             #[cfg(not(feature = "upload"))]
-            { let _ = (&dir, &project, &url, &api_key); bail!("upload support not compiled in (enable the `upload` feature)") }
+            {
+                let _ = (&dir, &project, &url, &api_key);
+                bail!("upload support not compiled in (enable the `upload` feature)")
+            }
         }
         #[cfg(feature = "vm")]
         Command::Vm { command, backend } => dispatch_vm(command, backend).await,
@@ -612,7 +646,9 @@ async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Resul
                 no_fail_fast,
                 extra_args: {
                     let mut args = Vec::new();
-                    if let Some(f) = filter { args.push(f); }
+                    if let Some(f) = filter {
+                        args.push(f);
+                    }
                     args.extend(cargo_args);
                     args
                 },
