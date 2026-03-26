@@ -230,8 +230,9 @@ fn status_str(s: TestStatus) -> &'static str {
 /// Print a comparison summary table.
 pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], result: &CompareResult) {
     println!("\nCompare: {left_ref} \u{2194} {right_ref}\n");
-    println!("Tests:        {}/{} pass \u{2192} {}/{} pass",
-        result.left.pass, result.left.total, result.right.pass, result.right.total);
+    println!("Tests:        {}/{} pass ({} fail) \u{2192} {}/{} pass ({} fail)",
+        result.left.pass, result.left.total, result.left.fail,
+        result.right.pass, result.right.total, result.right.fail);
     if result.fixes > 0 {
         println!("Fixes:        {} (fail\u{2192}pass)", result.fixes);
     }
