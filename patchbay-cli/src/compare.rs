@@ -1,10 +1,13 @@
 //! Compare mode: run tests/sims in two git worktrees and diff results.
 
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
+
 use anyhow::{bail, Context, Result};
 use patchbay_utils::manifest::{self, TestResult, TestStatus};
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
 
 /// Set up a git worktree for the given ref.
 pub fn setup_worktree(git_ref: &str, base: &Path) -> Result<PathBuf> {

@@ -1,7 +1,9 @@
 //! Test command implementation.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{bail, Context, Result};
 use patchbay_utils::manifest::{self, RunKind, RunManifest, TestStatus};

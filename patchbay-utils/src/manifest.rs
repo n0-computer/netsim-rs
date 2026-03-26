@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 
 /// Serialize/deserialize a [`Duration`] as integer milliseconds.
 pub mod duration_ms {
-    use serde::{Deserialize, Deserializer, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_u64(d.as_millis() as u64)
@@ -31,8 +32,9 @@ pub mod duration_ms {
 
 /// Serialize/deserialize an `Option<Duration>` as integer milliseconds.
 pub mod option_duration_ms {
-    use serde::{Deserialize, Deserializer, Serializer};
     use std::time::Duration;
+
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(d: &Option<Duration>, s: S) -> Result<S::Ok, S::Error> {
         match d {

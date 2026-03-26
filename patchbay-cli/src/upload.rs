@@ -1,8 +1,9 @@
 //! Upload run/compare directories to a patchbay-server instance.
 
+use std::path::Path;
+
 use anyhow::{bail, Context, Result};
 use patchbay_utils::manifest::{RunKind, RunManifest};
-use std::path::Path;
 
 /// Build a RunManifest from CI environment variables.
 pub fn manifest_from_env(project: &str) -> RunManifest {

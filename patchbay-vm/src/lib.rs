@@ -3,9 +3,8 @@ pub mod container;
 pub mod qemu;
 pub mod util;
 
-pub use common::{RunVmArgs, TestVmArgs};
-
 use clap::ValueEnum;
+pub use common::{RunVmArgs, TestVmArgs};
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum Backend {

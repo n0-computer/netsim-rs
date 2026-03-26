@@ -2,8 +2,7 @@
 //! Copies the counter fixture into a temp git repo, makes two commits
 //! with different PACKET_COUNT values, and runs compare between them.
 
-use std::path::Path;
-use std::process::Command;
+use std::{path::Path, process::Command};
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
