@@ -80,58 +80,85 @@ fn compare_detects_regression() {
     assert!(stdout.contains("Compare:"), "missing Compare header");
     assert!(stdout.contains("Score:"), "missing Score line");
 
-    // Find and parse the manifest
+    // Find the two persisted run directories in .patchbay/work/
     let work = dir.join(".patchbay/work");
     assert!(work.exists(), ".patchbay/work dir not created");
-    let compare_dir = std::fs::read_dir(&work)
+
+    let run_dirs: Vec<_> = std::fs::read_dir(&work)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| e.file_name().to_string_lossy().starts_with("compare-"))
-        .expect("compare output dir not found");
-    let manifest_path = compare_dir.path().join("summary.json");
-    assert!(manifest_path.exists(), "summary.json not written");
+        .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+        .collect();
+    assert_eq!(run_dirs.len(), 2, "expected 2 run directories, found {}", run_dirs.len());
 
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    // Parse run.json from each directory
+    let mut manifests: Vec<serde_json::Value> = run_dirs
+        .iter()
+        .map(|d| {
+            let run_json = d.path().join("run.json");
+            assert!(run_json.exists(), "run.json not found in {}", d.path().display());
+            serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap()
+        })
+        .collect();
 
-    // Refs
-    assert_eq!(manifest["left_ref"], "v1");
-    assert_eq!(manifest["right_ref"], "v2");
-    assert!(manifest["timestamp"].is_string(), "missing timestamp");
+    // Both should have kind: "test"
+    for m in &manifests {
+        assert_eq!(m["kind"], "test", "run.json should have kind 'test'");
+        assert!(!m["dirty"].as_bool().unwrap_or(true), "run should not be dirty");
+        assert!(m["commit"].is_string(), "run.json should have a commit SHA");
+    }
+
+    // Resolve expected SHAs for v1 and v2
+    let v1_sha = {
+        let out = Command::new("git")
+            .args(["rev-parse", "v1"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let v2_sha = {
+        let out = Command::new("git")
+            .args(["rev-parse", "v2"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+
+    // Sort manifests so left (v1) comes first
+    manifests.sort_by_key(|m| m["commit"].as_str().unwrap() == v2_sha);
+    let left_manifest = &manifests[0];
+    let right_manifest = &manifests[1];
+
+    assert_eq!(left_manifest["commit"].as_str().unwrap(), v1_sha, "left run should match v1 SHA");
+    assert_eq!(right_manifest["commit"].as_str().unwrap(), v2_sha, "right run should match v2 SHA");
 
     // Left side: both tests pass (PACKET_COUNT=5 >= THRESHOLD=3)
-    let left = &manifest["summary"]["left"];
-    assert_eq!(left["pass"].as_u64().unwrap(), 2, "left should have 2 passes");
-    assert_eq!(left["fail"].as_u64().unwrap(), 0, "left should have 0 failures");
-    assert_eq!(left["total"].as_u64().unwrap(), 2);
+    assert_eq!(left_manifest["pass"].as_u64().unwrap(), 2, "left should have 2 passes");
+    assert_eq!(left_manifest["fail"].as_u64().unwrap(), 0, "left should have 0 failures");
+    assert_eq!(left_manifest["total"].as_u64().unwrap(), 2);
 
     // Right side: udp_threshold fails (PACKET_COUNT=2 < THRESHOLD=3)
-    let right = &manifest["summary"]["right"];
-    assert_eq!(right["pass"].as_u64().unwrap(), 1, "right should have 1 pass");
-    assert_eq!(right["fail"].as_u64().unwrap(), 1, "right should have 1 failure");
-    assert_eq!(right["total"].as_u64().unwrap(), 2);
-
-    // Regression/fix counts
-    let summary = &manifest["summary"];
-    assert_eq!(summary["regressions"].as_u64().unwrap(), 1);
-    assert_eq!(summary["fixes"].as_u64().unwrap(), 0);
-    assert!(summary["score"].as_i64().unwrap() < 0, "score should be negative");
+    assert_eq!(right_manifest["pass"].as_u64().unwrap(), 1, "right should have 1 pass");
+    assert_eq!(right_manifest["fail"].as_u64().unwrap(), 1, "right should have 1 failure");
+    assert_eq!(right_manifest["total"].as_u64().unwrap(), 2);
 
     // Per-test results
-    let left_results = manifest["left_results"].as_array().unwrap();
-    let right_results = manifest["right_results"].as_array().unwrap();
-    assert_eq!(left_results.len(), 2, "should have 2 left test results");
-    assert_eq!(right_results.len(), 2, "should have 2 right test results");
+    let left_tests = left_manifest["tests"].as_array().unwrap();
+    let right_tests = right_manifest["tests"].as_array().unwrap();
+    assert_eq!(left_tests.len(), 2, "should have 2 left test results");
+    assert_eq!(right_tests.len(), 2, "should have 2 right test results");
 
     // Find the threshold test in right results — it should fail
-    let threshold_right = right_results
+    let threshold_right = right_tests
         .iter()
         .find(|r| r["name"].as_str().unwrap().contains("udp_threshold"))
         .expect("udp_threshold test not found in right results");
     assert_eq!(threshold_right["status"], "fail");
 
     // Find the threshold test in left results — it should pass
-    let threshold_left = left_results
+    let threshold_left = left_tests
         .iter()
         .find(|r| r["name"].as_str().unwrap().contains("udp_threshold"))
         .expect("udp_threshold test not found in left results");

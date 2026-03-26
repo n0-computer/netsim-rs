@@ -84,24 +84,24 @@ impl Backend {
 /// Implement VmOps on Backend by delegating to the resolved backend.
 impl VmOps for Backend {
     fn up(&self, recreate: bool) -> anyhow::Result<()> {
-        match self { Self::Container => Container.up(recreate), _ => Qemu.up(recreate) }
+        match self { Self::Container => Container.up(recreate), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.up(recreate) }
     }
     fn down(&self) -> anyhow::Result<()> {
-        match self { Self::Container => Container.down(), _ => Qemu.down() }
+        match self { Self::Container => Container.down(), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.down() }
     }
     fn status(&self) -> anyhow::Result<()> {
-        match self { Self::Container => Container.status(), _ => Qemu.status() }
+        match self { Self::Container => Container.status(), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.status() }
     }
     fn cleanup(&self) -> anyhow::Result<()> {
-        match self { Self::Container => Container.cleanup(), _ => Qemu.cleanup() }
+        match self { Self::Container => Container.cleanup(), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.cleanup() }
     }
     fn exec(&self, cmd: Vec<String>) -> anyhow::Result<()> {
-        match self { Self::Container => Container.exec(cmd), _ => Qemu.exec(cmd) }
+        match self { Self::Container => Container.exec(cmd), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.exec(cmd) }
     }
     fn run_sims(&self, args: RunVmArgs) -> anyhow::Result<()> {
-        match self { Self::Container => Container.run_sims(args), _ => Qemu.run_sims(args) }
+        match self { Self::Container => Container.run_sims(args), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.run_sims(args) }
     }
     fn run_tests(&self, args: TestVmArgs) -> anyhow::Result<()> {
-        match self { Self::Container => Container.run_tests(args), _ => Qemu.run_tests(args) }
+        match self { Self::Container => Container.run_tests(args), Self::Auto => anyhow::bail!("Backend::Auto must be resolved before use; call .resolve() first"), Self::Qemu => Qemu.run_tests(args) }
     }
 }

@@ -1,9 +1,10 @@
 //! Test command implementation.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use patchbay_utils::manifest::{self, RunKind, RunManifest, TestStatus};
 
 /// Check if cargo-nextest is available.
 fn has_nextest() -> bool {
@@ -142,8 +143,27 @@ impl TestArgs {
     }
 }
 
+/// Resolve `target_directory` from cargo metadata.
+fn cargo_target_dir() -> Option<PathBuf> {
+    let output = Command::new("cargo")
+        .args(["metadata", "--format-version=1", "--no-deps"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let meta: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    meta["target_directory"].as_str().map(PathBuf::from)
+}
+
 /// Run tests natively via cargo test/nextest.
-pub fn run_native(args: TestArgs) -> Result<()> {
+///
+/// Captures stdout/stderr (printing live when `verbose` is true), parses
+/// test results, and writes `run.json` to `testdir-current/`.
+/// When `persist` is true, copies output to `.patchbay/work/run-{timestamp}/`.
+pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
+    use std::io::BufRead;
+
     let use_nextest = has_nextest();
     let mut cmd = if use_nextest {
         let mut cmd = Command::new("cargo");
@@ -175,7 +195,6 @@ pub fn run_native(args: TestArgs) -> Result<()> {
         } else if args.ignored {
             cmd.arg("--run-ignored").arg("ignored-only");
         }
-        // nextest: extra_args go directly (filter is just a positional)
         for a in &args.extra_args {
             cmd.arg(a);
         }
@@ -185,41 +204,122 @@ pub fn run_native(args: TestArgs) -> Result<()> {
         args.cargo_test_cmd()
     };
 
-    let status = cmd.status().context("failed to run tests")?;
+    // Set PATCHBAY_OUTDIR so test fixtures can discover the output directory.
+    if let Some(target_dir) = cargo_target_dir() {
+        let outdir = target_dir.join("testdir-current");
+        cmd.env("PATCHBAY_OUTDIR", &outdir);
+    }
+
+    // Pipe stdout/stderr so we can capture output while optionally printing live.
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let started_at = chrono::Utc::now();
+    let mut child = cmd.spawn().context("failed to spawn test command")?;
+
+    let stdout_pipe = child.stdout.take().unwrap();
+    let stderr_pipe = child.stderr.take().unwrap();
+    let v = verbose;
+    let out_t = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
+            if v { println!("{line}"); }
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        buf
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
+            if verbose { eprintln!("{line}"); }
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        buf
+    });
+
+    let status = child.wait().context("failed to wait for test command")?;
+    let ended_at = chrono::Utc::now();
+    let stdout = out_t.join().unwrap_or_default();
+    let stderr = err_t.join().unwrap_or_default();
+
+    let combined = format!("{stdout}\n{stderr}");
+    let results = manifest::parse_test_output(&combined);
+
+    // Write run.json into testdir-current/.
+    let pass = results.iter().filter(|r| r.status == TestStatus::Pass).count() as u32;
+    let fail = results.iter().filter(|r| r.status == TestStatus::Fail).count() as u32;
+    let total = results.len() as u32;
+    let git = manifest::git_context();
+    let runtime = (ended_at - started_at).to_std().ok();
+    let outcome = if status.success() { "pass" } else { "fail" };
+
+    let manifest = RunManifest {
+        kind: RunKind::Test,
+        project: None,
+        commit: git.commit,
+        branch: git.branch,
+        dirty: git.dirty,
+        pr: None,
+        pr_url: None,
+        title: None,
+        started_at: Some(started_at),
+        ended_at: Some(ended_at),
+        runtime,
+        outcome: Some(outcome.to_string()),
+        pass: Some(pass),
+        fail: Some(fail),
+        total: Some(total),
+        tests: results,
+        os: Some(std::env::consts::OS.to_string()),
+        arch: Some(std::env::consts::ARCH.to_string()),
+        patchbay_version: option_env!("CARGO_PKG_VERSION").map(|v| v.to_string()),
+    };
+
+    if let Some(target_dir) = cargo_target_dir() {
+        let testdir = target_dir.join("testdir-current");
+        std::fs::create_dir_all(&testdir).ok();
+        let run_json = testdir.join("run.json");
+        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+            std::fs::write(&run_json, json).ok();
+        }
+    }
+
+    // --persist: copy output dir to .patchbay/work/run-{timestamp}/
+    if persist {
+        persist_run()?;
+    }
+
     if !status.success() {
         bail!("tests failed (exit code {})", status.code().unwrap_or(-1));
     }
-    copy_testdir_output();
     Ok(())
 }
 
-/// Copy testdir-current into the work dir if it exists.
-fn copy_testdir_output() {
-    let Ok(output) = Command::new("cargo")
-        .args(["metadata", "--format-version=1", "--no-deps"])
-        .output()
-    else {
-        return;
-    };
-    if !output.status.success() {
-        return;
-    }
-    let Ok(meta) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-        return;
-    };
-    let Some(target_dir) = meta["target_directory"].as_str() else {
-        return;
-    };
-    let testdir = std::path::Path::new(target_dir).join("testdir-current");
+/// Copy testdir-current/ into `.patchbay/work/run-{timestamp}/`.
+fn persist_run() -> Result<()> {
+    let target_dir = cargo_target_dir().context("could not determine cargo target dir")?;
+    let testdir = target_dir.join("testdir-current");
     if !testdir.exists() {
-        return;
+        return Ok(());
     }
-    let dest = std::path::Path::new(".patchbay/work/testdir");
-    if dest.exists() {
-        let _ = std::fs::remove_dir_all(dest);
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
+    std::fs::create_dir_all(dest.parent().unwrap())?;
+    let status = Command::new("cp")
+        .args(["-r"])
+        .arg(&testdir)
+        .arg(&dest)
+        .status()
+        .context("cp testdir")?;
+    if !status.success() {
+        bail!("failed to copy testdir to {}", dest.display());
     }
-    let _ = Command::new("cp").args(["-r"]).arg(&testdir).arg(dest).status();
+    println!("patchbay: persisted run to {}", dest.display());
+    Ok(())
 }
+
 
 /// Run tests in a VM via patchbay-vm.
 #[cfg(feature = "vm")]

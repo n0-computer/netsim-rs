@@ -11,31 +11,36 @@ const UI_URL = `http://127.0.0.1:${PORT}`
 const MINIMAL_EVENT =
   '{"opid":1,"timestamp":"2026-03-25T00:00:00Z","kind":"lab_created","lab_prefix":"lab-p1","label":"test"}\n'
 
-const MOCK_METRICS = [
-  '{"t":1,"m":{"packet_count":5.0}}',
-  '{"t":2,"m":{"packet_count":5.0}}',
-  '{"t":3,"m":{"packet_count":5.0}}',
-].join('\n') + '\n'
+const MOCK_LEFT_MANIFEST = {
+  kind: 'test',
+  project: 'test-project',
+  commit: 'aaa111',
+  branch: 'main',
+  dirty: false,
+  outcome: 'pass',
+  pass: 2,
+  fail: 0,
+  total: 2,
+  tests: [
+    { name: 'counter::udp_counter', status: 'pass' },
+    { name: 'counter::udp_threshold', status: 'pass' },
+  ],
+}
 
-const MOCK_MANIFEST = {
-  left_ref: 'v1',
-  right_ref: 'v2',
-  timestamp: '20260325_120000',
-  left_results: [
-    { name: 'counter::udp_counter', status: 'pass', duration_ms: 100 },
-    { name: 'counter::udp_threshold', status: 'pass', duration_ms: 50 },
+const MOCK_RIGHT_MANIFEST = {
+  kind: 'test',
+  project: 'test-project',
+  commit: 'bbb222',
+  branch: 'feature',
+  dirty: false,
+  outcome: 'fail',
+  pass: 1,
+  fail: 1,
+  total: 2,
+  tests: [
+    { name: 'counter::udp_counter', status: 'pass' },
+    { name: 'counter::udp_threshold', status: 'fail' },
   ],
-  right_results: [
-    { name: 'counter::udp_counter', status: 'pass', duration_ms: 110 },
-    { name: 'counter::udp_threshold', status: 'fail', duration_ms: 40 },
-  ],
-  summary: {
-    left: { pass: 2, fail: 0, total: 2, time: 150 },
-    right: { pass: 1, fail: 1, total: 2, time: 150 },
-    fixes: 0,
-    regressions: 1,
-    score: -5,
-  },
 }
 
 test('compare view renders summary and regression', async ({ page }) => {
@@ -44,17 +49,17 @@ test('compare view renders summary and regression', async ({ page }) => {
   let proc: ChildProcess | null = null
 
   try {
-    // Write mock data
-    const batchDir = join(workDir, 'compare-mock')
-    mkdirSync(join(batchDir, 'left-v1'), { recursive: true })
-    mkdirSync(join(batchDir, 'right-v2'), { recursive: true })
-    writeFileSync(join(batchDir, 'summary.json'), JSON.stringify(MOCK_MANIFEST))
-    writeFileSync(join(batchDir, 'left-v1', 'events.jsonl'), MINIMAL_EVENT)
-    writeFileSync(join(batchDir, 'right-v2', 'events.jsonl'), MINIMAL_EVENT)
-    writeFileSync(
-      join(batchDir, 'right-v2', 'device.sender.metrics.jsonl'),
-      MOCK_METRICS,
-    )
+    // Write mock data: two separate run directories, each with run.json
+    const leftDir = join(workDir, 'run-left')
+    const rightDir = join(workDir, 'run-right')
+    mkdirSync(leftDir, { recursive: true })
+    mkdirSync(rightDir, { recursive: true })
+
+    writeFileSync(join(leftDir, 'run.json'), JSON.stringify(MOCK_LEFT_MANIFEST))
+    writeFileSync(join(leftDir, 'events.jsonl'), MINIMAL_EVENT)
+
+    writeFileSync(join(rightDir, 'run.json'), JSON.stringify(MOCK_RIGHT_MANIFEST))
+    writeFileSync(join(rightDir, 'events.jsonl'), MINIMAL_EVENT)
 
     // Start server
     proc = spawn(
@@ -64,26 +69,12 @@ test('compare view renders summary and regression', async ({ page }) => {
     )
     await waitForHttp(UI_URL, 15_000)
 
-    // Navigate to the app
-    await page.goto(UI_URL)
+    // Navigate directly to the compare view with two run names
+    await page.goto(`${UI_URL}/compare/run-left/run-right`)
 
-    // Select the compare batch
-    await page.waitForTimeout(1000)
-    // Look for compare-mock in the page (it should be in the run list)
-    const batchLink = page.getByText('compare-mock')
-    if (await batchLink.isVisible()) {
-      await batchLink.click()
-    } else {
-      // Try selector
-      const selector = page.locator('select')
-      if (await selector.isVisible()) {
-        await selector.selectOption({ label: 'compare-mock' })
-      }
-    }
-
-    // Verify CompareView renders
-    await expect(page.getByText('v1')).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText('v2')).toBeVisible()
+    // Verify CompareView renders with ref labels (appears in heading + summary + table)
+    await expect(page.getByText('main@aaa111').first()).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('feature@bbb222').first()).toBeVisible()
 
     // Summary
     await expect(page.getByText('Regressions')).toBeVisible()
@@ -91,9 +82,9 @@ test('compare view renders summary and regression', async ({ page }) => {
     // Per-test table
     await expect(page.getByText('udp_counter')).toBeVisible()
     await expect(page.getByText('udp_threshold')).toBeVisible()
-    await expect(page.getByText('REGRESS')).toBeVisible()
+    await expect(page.getByText('REGRESS').first()).toBeVisible()
 
-    // Score
+    // Score: 0 fixes, 1 regression => score = -5
     await expect(page.getByText('-5')).toBeVisible()
   } finally {
     if (proc && !proc.killed) proc.kill('SIGTERM')

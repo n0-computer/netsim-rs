@@ -146,6 +146,10 @@ enum Command {
         #[command(flatten)]
         args: test::TestArgs,
 
+        /// Persist run output to `.patchbay/work/run-{timestamp}/`.
+        #[arg(long)]
+        persist: bool,
+
         /// Force VM backend.
         #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
         vm: Option<String>,
@@ -191,6 +195,14 @@ enum CompareCommand {
 
         /// Second git ref (right side). If omitted, compares against current worktree.
         right_ref: Option<String>,
+
+        /// Force rebuild even if a cached run exists for the commit.
+        #[arg(long)]
+        force_build: bool,
+
+        /// Fail instead of building if no cached run exists for a ref.
+        #[arg(long)]
+        no_ref_build: bool,
 
         #[command(flatten)]
         args: test::TestArgs,
@@ -403,7 +415,7 @@ async fn tokio_main() -> Result<()> {
             work_dir,
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
-        Command::Test { args, vm } => {
+        Command::Test { args, persist, vm } => {
             #[cfg(feature = "vm")]
             if let Some(vm_backend) = vm {
                 let backend = match vm_backend.as_str() {
@@ -418,63 +430,69 @@ async fn tokio_main() -> Result<()> {
             if vm.is_some() {
                 bail!("VM support not compiled (enable the `vm` feature)");
             }
-            test::run_native(args)
+            test::run_native(args, cli.verbose, persist)
         }
         Command::Compare { command } => {
             let cwd = std::env::current_dir().context("get cwd")?;
+            let work_dir = cwd.join(".patchbay/work");
             match command {
-                CompareCommand::Test { left_ref, right_ref, args } => {
+                CompareCommand::Test { left_ref, right_ref, force_build, no_ref_build, args } => {
+                    use patchbay_utils::manifest::{self as mf, RunKind};
+
                     let right_label = right_ref.as_deref().unwrap_or("worktree");
                     println!("patchbay compare test: {} \u{2194} {}", left_ref, right_label);
 
-                    // Set up worktrees
-                    let left_dir = compare::setup_worktree(&left_ref, &cwd)?;
-                    let right_dir = if let Some(ref r) = right_ref {
-                        compare::setup_worktree(r, &cwd)?
-                    } else {
-                        cwd.clone()
+                    // Helper: resolve results for a ref, using cache or building.
+                    let resolve_ref_results = |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
+                        let sha = mf::resolve_ref(git_ref)
+                            .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
+
+                        // Check cache (unless --force-build).
+                        if !force_build {
+                            if let Some((_dir, manifest)) = mf::find_run_for_commit(&work_dir, &sha, RunKind::Test) {
+                                println!("Using cached run for {label} ({sha:.8})");
+                                return Ok(manifest.tests);
+                            }
+                        }
+
+                        // No cache — fail if --no-ref-build.
+                        if no_ref_build {
+                            bail!(
+                                "no cached run for {label} ({sha:.8}); \
+                                 run `patchbay test --persist` on that ref first, \
+                                 or remove --no-ref-build"
+                            );
+                        }
+
+                        // Build in worktree.
+                        println!("Running tests in {label} ...");
+                        let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
+                        let (results, _output) = compare::run_tests_in_dir(&tree_dir, &args, cli.verbose)?;
+
+                        // Persist the run so future compares can reuse it.
+                        compare::persist_worktree_run(&tree_dir, &results, &sha)?;
+
+                        compare::cleanup_worktree(&tree_dir)?;
+                        Ok(results)
                     };
 
-                    // Run tests sequentially
-                    println!("Running tests in {} ...", left_ref);
-                    let (left_results, _left_output) = compare::run_tests_in_dir(
-                        &left_dir, &args, cli.verbose,
-                    )?;
+                    let left_results = resolve_ref_results(&left_ref, &left_ref)?;
 
-                    println!("Running tests in {} ...", right_label);
-                    let (right_results, _right_output) = compare::run_tests_in_dir(
-                        &right_dir, &args, cli.verbose,
-                    )?;
+                    let right_results = if let Some(ref r) = right_ref {
+                        resolve_ref_results(r, r)?
+                    } else {
+                        // Compare against current worktree: always run fresh.
+                        println!("Running tests in worktree ...");
+                        let (results, _output) = compare::run_tests_in_dir(&cwd, &args, cli.verbose)?;
+                        results
+                    };
 
                     // Compare
-                    let summary = compare::compare_results(&left_ref, right_label, &left_results, &right_results);
-                    compare::print_summary(&left_ref, right_label, &left_results, &right_results, &summary);
+                    let result = compare::compare_results(&left_results, &right_results);
+                    compare::print_summary(&left_ref, right_label, &left_results, &right_results, &result);
 
-                    // Write manifest
-                    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
-                    let compare_dir = cwd.join(".patchbay/work").join(format!("compare-{ts}"));
-                    std::fs::create_dir_all(&compare_dir)?;
-                    let manifest = compare::CompareManifest {
-                        left_ref: left_ref.clone(),
-                        right_ref: right_label.to_string(),
-                        timestamp: ts,
-                        project: std::env::var("PATCHBAY_PROJECT").ok(),
-                        left_results,
-                        right_results,
-                        summary,
-                    };
-                    let manifest_path = compare_dir.join("summary.json");
-                    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
-                    println!("\nManifest: {}", manifest_path.display());
-
-                    // Cleanup worktrees
-                    compare::cleanup_worktree(&left_dir)?;
-                    if right_ref.is_some() {
-                        compare::cleanup_worktree(&right_dir)?;
-                    }
-
-                    if manifest.summary.regressions > 0 {
-                        bail!("{} regressions detected", manifest.summary.regressions);
+                    if result.regressions > 0 {
+                        bail!("{} regressions detected", result.regressions);
                     }
                     Ok(())
                 }

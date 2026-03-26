@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import type {
   Firewall,
@@ -20,13 +20,12 @@ import {
   fetchLogs,
   fetchResults,
   fetchCombinedResults,
-  runFilesBase,
 } from './api'
 import type { RunInfo, LogEntry } from './api'
 import PerfTab from './components/PerfTab'
 import RunView from './components/RunView'
 import type { RunTab } from './components/RunView'
-import CompareView from './components/CompareView'
+// CompareView is now rendered via ComparePage at /compare/:left/:right
 
 type Tab = 'topology' | 'logs' | 'timeline' | 'perf' | 'metrics' | 'sims'
 
@@ -46,39 +45,39 @@ function selectionPath(s: Selection | null): string {
   return s.kind === 'batch' ? `/batch/${s.name}` : `/run/${s.name}`
 }
 
-// ── Batch grouping ─────────────────────────────────────────────────
+// ── Group helpers ───────────────────────────────────────────────────
 
-interface BatchGroup {
-  batch: string
+interface RunGroup {
+  group: string
   runs: RunInfo[]
 }
 
-function groupByBatch(runs: RunInfo[]): { groups: BatchGroup[]; ungrouped: RunInfo[] } {
+function groupByGroup(runs: RunInfo[]): { groups: RunGroup[]; ungrouped: RunInfo[] } {
   const grouped = new Map<string, RunInfo[]>()
   const ungrouped: RunInfo[] = []
   for (const r of runs) {
-    if (r.batch) {
-      let list = grouped.get(r.batch)
+    if (r.group) {
+      let list = grouped.get(r.group)
       if (!list) {
         list = []
-        grouped.set(r.batch, list)
+        grouped.set(r.group, list)
       }
       list.push(r)
     } else {
       ungrouped.push(r)
     }
   }
-  const groups: BatchGroup[] = []
-  for (const [batch, groupRuns] of grouped) {
-    groups.push({ batch, runs: groupRuns })
+  const groups: RunGroup[] = []
+  for (const [group, groupRuns] of grouped) {
+    groups.push({ group, runs: groupRuns })
   }
   return { groups, ungrouped }
 }
 
-/** Short display label for a run within a batch group. */
+/** Short display label for a run within a group. */
 function simLabel(run: RunInfo): string {
-  if (run.batch && run.name.startsWith(run.batch + '/')) {
-    return run.label ?? run.name.slice(run.batch.length + 1)
+  if (run.group && run.name.startsWith(run.group + '/')) {
+    return run.label ?? run.name.slice(run.group.length + 1)
   }
   return run.label ?? run.name
 }
@@ -167,16 +166,16 @@ function applyEvent(state: LabState, event: LabEvent): LabState {
 
 // ── Unified App ────────────────────────────────────────────────────
 
-export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
+export default function App({ mode }: { mode: 'run' | 'batch' }) {
   const location = useLocation()
   const navigate = useNavigate()
 
   // Derive selection from the URL path.
   // Route is /run/*, /batch/*, or /compare/* so everything after the prefix is the name.
-  const prefixes: Record<string, string> = { run: '/run/', batch: '/batch/', compare: '/compare/' }
+  const prefixes: Record<string, string> = { run: '/run/', batch: '/batch/' }
   const prefixLen = prefixes[mode]?.length ?? '/run/'.length
   const nameFromUrl = location.pathname.slice(prefixLen)
-  const effectiveKind = mode === 'compare' ? 'batch' : mode
+  const effectiveKind = mode
   const selection: Selection | null = nameFromUrl
     ? { kind: effectiveKind === 'batch' ? 'batch' : 'run', name: nameFromUrl }
     : null
@@ -184,7 +183,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
   const selectedRun = selection?.kind === 'run' ? selection.name : null
   const selectedBatch = selection?.kind === 'batch' ? selection.name : null
 
-  const [tab, setTab] = useState<Tab>(mode === 'batch' || mode === 'compare' ? 'sims' : 'topology')
+  const [tab, setTab] = useState<Tab>(mode === 'batch' ? 'sims' : 'topology')
 
   // Run list (for the dropdown)
   const [runs, setRuns] = useState<RunInfo[]>([])
@@ -202,8 +201,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
   const [simResults, setSimResults] = useState<SimResults | null>(null)
   const [combinedResults, setCombinedResults] = useState<CombinedResults | null>(null)
 
-  // Compare manifest detection for batch view
-  const [hasCompareManifest, setHasCompareManifest] = useState(false)
+  // (Compare is now at /compare/:left/:right via ComparePage)
 
   // ── Poll runs list ──
 
@@ -264,26 +262,6 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
     return () => { dead = true }
   }, [selectedBatch])
 
-  // ── Check for compare manifest (summary.json) in batch ──
-
-  useEffect(() => {
-    if (!selectedBatch) {
-      setHasCompareManifest(false)
-      return
-    }
-
-    let dead = false
-    fetch(`${runFilesBase(selectedBatch)}summary.json`, { method: 'HEAD' })
-      .then((res) => {
-        if (!dead) setHasCompareManifest(res.ok)
-      })
-      .catch(() => {
-        if (!dead) setHasCompareManifest(false)
-      })
-
-    return () => { dead = true }
-  }, [selectedBatch])
-
   // ── SSE for live updates (only when run is "running") ──
 
   useEffect(() => {
@@ -311,9 +289,13 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
         esRef.current = null
       }
     }
+    const onUnload = () => esRef.current?.close()
     document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('beforeunload', () => esRef.current?.close())
-    return () => document.removeEventListener('visibilitychange', onVisibility)
+    window.addEventListener('beforeunload', onUnload)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('beforeunload', onUnload)
+    }
   }, [])
 
   // ── Derived ──
@@ -321,17 +303,20 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
   const isSimView = selection?.kind === 'run'
   const isBatchView = selection?.kind === 'batch'
 
-  // Runs belonging to the current batch
+  // Runs belonging to the current batch/group
   const batchRuns = isBatchView
-    ? runs.filter((r) => r.batch === selectedBatch)
+    ? runs.filter((r) => r.group === selectedBatch)
     : []
 
   const hasMetricsLogs = logList.some(l => l.kind === 'metrics')
-  const availableTabs: Tab[] = isSimView
-    ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : []), ...(hasMetricsLogs ? (['metrics'] as Tab[]) : [])]
-    : isBatchView
-      ? ['sims', ...(combinedResults ? (['perf'] as Tab[]) : [])]
-      : []
+  const availableTabs = useMemo<Tab[]>(() =>
+    isSimView
+      ? ['topology', 'logs', 'timeline', ...(simResults ? (['perf'] as Tab[]) : []), ...(hasMetricsLogs ? (['metrics'] as Tab[]) : [])]
+      : isBatchView
+        ? ['sims', ...(combinedResults ? (['perf'] as Tab[]) : [])]
+        : [],
+    [isSimView, isBatchView, !!simResults, !!combinedResults, hasMetricsLogs]
+  )
 
   // When available tabs change, ensure current tab is still valid.
   useEffect(() => {
@@ -344,7 +329,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
   const selectedRunInfo = isSimView ? runs.find((r) => r.name === selectedRun) ?? null : null
 
   // Group runs for the selector
-  const { groups, ungrouped } = groupByBatch(runs)
+  const { groups, ungrouped } = groupByGroup(runs)
 
   // ── Render ──
 
@@ -369,9 +354,9 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
         >
           <option value="">select run</option>
           {groups.map((g) => (
-            <optgroup key={g.batch} label={g.batch}>
+            <optgroup key={g.group} label={g.group}>
               {g.runs.length > 1 && (
-                <option value={`batch:${g.batch}`}>
+                <option value={`batch:${g.group}`}>
                   combined ({g.runs.length} sims)
                 </option>
               )}
@@ -402,7 +387,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
 
       {isSimView && selectedRun && (
         <RunView
-          run={selectedRunInfo ?? { name: selectedRun, label: null, status: null, batch: null }}
+          run={selectedRunInfo ?? { name: selectedRun, label: null, status: null, group: null }}
           state={labState}
           events={labEvents}
           logs={logList}
@@ -412,11 +397,7 @@ export default function App({ mode }: { mode: 'run' | 'batch' | 'compare' }) {
         />
       )}
 
-      {isBatchView && hasCompareManifest && (
-        <CompareView batchName={selectedBatch!} />
-      )}
-
-      {isBatchView && !hasCompareManifest && (
+      {isBatchView && (
         <>
           <div className="tabs">
             {availableTabs.map((t) => (

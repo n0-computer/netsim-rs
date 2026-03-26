@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use patchbay_utils::manifest::{self, TestResult, TestStatus};
 
 /// Set up a git worktree for the given ref.
 pub fn setup_worktree(git_ref: &str, base: &Path) -> Result<PathBuf> {
@@ -52,91 +52,10 @@ fn sanitize_ref(r: &str) -> String {
 
 // ── Test comparison ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestResult {
-    pub name: String,
-    pub status: TestStatus,
-    pub duration_ms: Option<u64>,
-}
+// Types re-exported from patchbay_utils::manifest:
+// TestResult, TestStatus, RunManifest, RunKind
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TestStatus {
-    Pass,
-    Fail,
-    Ignored,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CompareManifest {
-    pub left_ref: String,
-    pub right_ref: String,
-    pub timestamp: String,
-    /// Project name (for CI upload scoping).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
-    pub left_results: Vec<TestResult>,
-    pub right_results: Vec<TestResult>,
-    pub summary: CompareSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RunStats {
-    pub pass: usize,
-    pub fail: usize,
-    pub total: usize,
-    #[serde(with = "duration_ms")]
-    pub time: Duration,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CompareSummary {
-    pub left: RunStats,
-    pub right: RunStats,
-    pub fixes: usize,
-    pub regressions: usize,
-    pub score: i32,
-}
-
-/// Serialize Duration as milliseconds.
-mod duration_ms {
-    use std::time::Duration;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u64(d.as_millis() as u64)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Duration, D::Error> {
-        let ms = u64::deserialize(d)?;
-        Ok(Duration::from_millis(ms))
-    }
-}
-
-/// Parse cargo test output into TestResults.
-/// Parses lines like "test tests::foo ... ok" and "test tests::bar ... FAILED".
-pub fn parse_test_output(output: &str) -> Vec<TestResult> {
-    let mut results = Vec::new();
-    for line in output.lines() {
-        let line = line.trim();
-        // "test path::to::test ... ok"
-        // "test path::to::test ... FAILED"
-        // "test path::to::test ... ignored"
-        if let Some(rest) = line.strip_prefix("test ") {
-            if let Some((name, outcome)) = rest.rsplit_once(" ... ") {
-                let name = name.trim().to_string();
-                let status = match outcome.trim() {
-                    "ok" => TestStatus::Pass,
-                    "FAILED" => TestStatus::Fail,
-                    "ignored" => TestStatus::Ignored,
-                    _ => continue,
-                };
-                results.push(TestResult { name, status, duration_ms: None });
-            }
-        }
-    }
-    results
-}
+pub use manifest::parse_test_output;
 
 /// Run tests in a directory and capture results.
 pub fn run_tests_in_dir(
@@ -184,6 +103,53 @@ pub fn run_tests_in_dir(
     Ok((results, combined))
 }
 
+/// Persist test results from a worktree run so future compares can reuse them.
+///
+/// Writes `run.json` into `.patchbay/work/run-{timestamp}/`.
+pub fn persist_worktree_run(
+    _tree_dir: &Path,
+    results: &[TestResult],
+    commit_sha: &str,
+) -> Result<()> {
+    use manifest::{RunKind, RunManifest};
+
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
+    std::fs::create_dir_all(&dest)?;
+
+    let pass = results.iter().filter(|r| r.status == TestStatus::Pass).count() as u32;
+    let fail = results.iter().filter(|r| r.status == TestStatus::Fail).count() as u32;
+    let total = results.len() as u32;
+    let outcome = if fail == 0 { "pass" } else { "fail" };
+
+    let manifest = RunManifest {
+        kind: RunKind::Test,
+        project: None,
+        commit: Some(commit_sha.to_string()),
+        branch: None,
+        dirty: false,
+        pr: None,
+        pr_url: None,
+        title: None,
+        started_at: None,
+        ended_at: None,
+        runtime: None,
+        outcome: Some(outcome.to_string()),
+        pass: Some(pass),
+        fail: Some(fail),
+        total: Some(total),
+        tests: results.to_vec(),
+        os: Some(std::env::consts::OS.to_string()),
+        arch: Some(std::env::consts::ARCH.to_string()),
+        patchbay_version: option_env!("CARGO_PKG_VERSION").map(|v| v.to_string()),
+    };
+
+    let json = serde_json::to_string_pretty(&manifest)?;
+    std::fs::write(dest.join("run.json"), json)?;
+    println!("patchbay: persisted run to {}", dest.display());
+    Ok(())
+}
+
 fn test_index(results: &[TestResult]) -> std::collections::HashMap<&str, &TestResult> {
     results.iter().map(|r| (r.name.as_str(), r)).collect()
 }
@@ -195,13 +161,24 @@ fn merged_names(left: &[TestResult], right: &[TestResult]) -> Vec<String> {
     names
 }
 
-/// Compare two sets of test results.
-pub fn compare_results(
-    _left_ref: &str,
-    _right_ref: &str,
-    left: &[TestResult],
-    right: &[TestResult],
-) -> CompareSummary {
+/// Aggregate pass/fail/total for one side of a comparison.
+pub struct SideStats {
+    pub pass: usize,
+    pub fail: usize,
+    pub total: usize,
+}
+
+/// Computed comparison result (not persisted — compare is always computed on the fly).
+pub struct CompareResult {
+    pub left: SideStats,
+    pub right: SideStats,
+    pub fixes: usize,
+    pub regressions: usize,
+    pub score: i32,
+}
+
+/// Compare two sets of test results and return computed stats.
+pub fn compare_results(left: &[TestResult], right: &[TestResult]) -> CompareResult {
     let left_map = test_index(left);
     let right_map = test_index(right);
 
@@ -214,9 +191,8 @@ pub fn compare_results(
     let mut regressions = 0;
     let all_names = merged_names(left, right);
     for name in &all_names {
-        let name = name.as_str();
-        let ls = left_map.get(name).map(|r| r.status);
-        let rs = right_map.get(name).map(|r| r.status);
+        let ls = left_map.get(name.as_str()).map(|r| r.status);
+        let rs = right_map.get(name.as_str()).map(|r| r.status);
         match (ls, rs) {
             (Some(TestStatus::Fail), Some(TestStatus::Pass)) => fixes += 1,
             (Some(TestStatus::Pass), Some(TestStatus::Fail)) => regressions += 1,
@@ -224,56 +200,45 @@ pub fn compare_results(
         }
     }
 
-    let left_time_ms: u64 = left.iter().filter_map(|r| r.duration_ms).sum();
-    let right_time_ms: u64 = right.iter().filter_map(|r| r.duration_ms).sum();
+    let left_time: Duration = left.iter().filter_map(|r| r.duration).sum();
+    let right_time: Duration = right.iter().filter_map(|r| r.duration).sum();
 
-    // Scoring
     let mut score: i32 = 0;
     score += fixes as i32 * 3;
     score -= regressions as i32 * 5;
-    if left_time_ms > 0 {
-        let time_pct = (right_time_ms as f64 - left_time_ms as f64) / left_time_ms as f64 * 100.0;
-        if time_pct < -2.0 { score += 1; }
-        if time_pct > 5.0 { score -= 1; }
+    if !left_time.is_zero() {
+        let pct = (right_time.as_secs_f64() - left_time.as_secs_f64()) / left_time.as_secs_f64() * 100.0;
+        if pct < -2.0 { score += 1; }
+        if pct > 5.0 { score -= 1; }
     }
 
-    CompareSummary {
-        left: RunStats {
-            pass: left_pass,
-            fail: left_fail,
-            total: left.len(),
-            time: Duration::from_millis(left_time_ms),
-        },
-        right: RunStats {
-            pass: right_pass,
-            fail: right_fail,
-            total: right.len(),
-            time: Duration::from_millis(right_time_ms),
-        },
-        fixes, regressions,
-        score,
+    CompareResult {
+        left: SideStats { pass: left_pass, fail: left_fail, total: left.len() },
+        right: SideStats { pass: right_pass, fail: right_fail, total: right.len() },
+        fixes, regressions, score,
+    }
+}
+
+fn status_str(s: TestStatus) -> &'static str {
+    match s {
+        TestStatus::Pass => "PASS",
+        TestStatus::Fail => "FAIL",
+        TestStatus::Ignored => "SKIP",
     }
 }
 
 /// Print a comparison summary table.
-pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], summary: &CompareSummary) {
+pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right: &[TestResult], result: &CompareResult) {
     println!("\nCompare: {left_ref} \u{2194} {right_ref}\n");
     println!("Tests:        {}/{} pass \u{2192} {}/{} pass",
-        summary.left.pass, summary.left.total,
-        summary.right.pass, summary.right.total);
-    if summary.fixes > 0 {
-        println!("Fixes:        {} (fail\u{2192}pass)", summary.fixes);
+        result.left.pass, result.left.total, result.right.pass, result.right.total);
+    if result.fixes > 0 {
+        println!("Fixes:        {} (fail\u{2192}pass)", result.fixes);
     }
-    if summary.regressions > 0 {
-        println!("Regressions:  {} (pass\u{2192}fail)", summary.regressions);
-    }
-    if !summary.left.time.is_zero() || !summary.right.time.is_zero() {
-        println!("Total time:   {:.1}s \u{2192} {:.1}s",
-            summary.left.time.as_secs_f64(),
-            summary.right.time.as_secs_f64());
+    if result.regressions > 0 {
+        println!("Regressions:  {} (pass\u{2192}fail)", result.regressions);
     }
 
-    // Per-test table
     let left_map = test_index(left);
     let right_map = test_index(right);
     let all_names = merged_names(left, right);
@@ -284,18 +249,8 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
         let name = name.as_str();
         let ls = left_map.get(name).map(|r| r.status);
         let rs = right_map.get(name).map(|r| r.status);
-        let ls_str = match ls {
-            Some(TestStatus::Pass) => "PASS",
-            Some(TestStatus::Fail) => "FAIL",
-            Some(TestStatus::Ignored) => "SKIP",
-            None => "-",
-        };
-        let rs_str = match rs {
-            Some(TestStatus::Pass) => "PASS",
-            Some(TestStatus::Fail) => "FAIL",
-            Some(TestStatus::Ignored) => "SKIP",
-            None => "-",
-        };
+        let ls_str = ls.map(status_str).unwrap_or("-");
+        let rs_str = rs.map(status_str).unwrap_or("-");
         let delta = match (ls, rs) {
             (Some(TestStatus::Fail), Some(TestStatus::Pass)) => "fixed",
             (Some(TestStatus::Pass), Some(TestStatus::Fail)) => "REGRESS",
@@ -303,10 +258,9 @@ pub fn print_summary(left_ref: &str, right_ref: &str, left: &[TestResult], right
             (Some(_), None) => "removed",
             _ => "",
         };
-        // Truncate long test names
         let display_name = if name.len() > 48 { &name[name.len()-48..] } else { name };
         println!("{:<50} {:>8} {:>8} {:>10}", display_name, ls_str, rs_str, delta);
     }
 
-    println!("\nScore: {:+} ({} fixes, {} regressions)", summary.score, summary.fixes, summary.regressions);
+    println!("\nScore: {:+} ({} fixes, {} regressions)", result.score, result.fixes, result.regressions);
 }

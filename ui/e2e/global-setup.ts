@@ -7,24 +7,11 @@ const UI_DIR = path.resolve(THIS_DIR, '..')
 const REPO_ROOT = path.resolve(UI_DIR, '..')
 
 export default function globalSetup() {
-  console.log('[setup] building UI...')
-  execFileSync('npm', ['run', 'build'], {
-    cwd: UI_DIR,
-    stdio: 'inherit',
-    timeout: 60_000,
-  })
-
-  console.log('[setup] building cargo workspace...')
-  execFileSync('cargo', ['build', '-p', 'patchbay-runner', '-p', 'patchbay-server'], {
+  // cargo build triggers npm build via patchbay-server's build.rs
+  console.log('[setup] building cargo workspace (includes UI build)...')
+  execFileSync('cargo', ['build', '-p', 'patchbay-cli', '-p', 'patchbay-server'], {
     cwd: REPO_ROOT,
     stdio: 'inherit',
     timeout: 5 * 60_000,
-  })
-
-  console.log('[setup] building patchbay-serve binary...')
-  execFileSync('cargo', ['build', '--bin', 'patchbay-serve'], {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-    timeout: 3 * 60_000,
   })
 }

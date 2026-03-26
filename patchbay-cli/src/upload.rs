@@ -2,42 +2,32 @@
 
 use std::path::Path;
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use patchbay_utils::manifest::{RunManifest, RunKind};
 
-#[derive(Serialize)]
-pub struct RunManifest {
-    pub project: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pr_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub test_outcome: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<String>,
-}
-
-impl RunManifest {
-    /// Build manifest from env vars (typically set in CI).
-    pub fn from_env(project: &str) -> Self {
-        Self {
-            project: project.to_string(),
-            branch: std::env::var("GITHUB_REF_NAME").ok()
-                .or_else(|| std::env::var("GITHUB_HEAD_REF").ok()),
-            commit: std::env::var("GITHUB_SHA").ok(),
-            pr: std::env::var("GITHUB_PR_NUMBER").ok()
-                .and_then(|s| s.parse().ok()),
-            pr_url: None, // Constructed from GITHUB_SERVER_URL + GITHUB_REPOSITORY + pr number if available
-            title: std::env::var("GITHUB_PR_TITLE").ok(),
-            test_outcome: None, // Set by caller
-            created_at: Some(chrono::Utc::now().to_rfc3339()),
-        }
+/// Build a RunManifest from CI environment variables.
+pub fn manifest_from_env(project: &str) -> RunManifest {
+    RunManifest {
+        kind: RunKind::Sim, // default; overridden if run.json already exists
+        project: Some(project.to_string()),
+        branch: std::env::var("GITHUB_REF_NAME").ok()
+            .or_else(|| std::env::var("GITHUB_HEAD_REF").ok()),
+        commit: std::env::var("GITHUB_SHA").ok(),
+        pr: std::env::var("GITHUB_PR_NUMBER").ok()
+            .and_then(|s| s.parse().ok()),
+        pr_url: None,
+        title: std::env::var("GITHUB_PR_TITLE").ok(),
+        outcome: None,
+        started_at: Some(chrono::Utc::now()),
+        ended_at: None,
+        runtime: None,
+        dirty: false,
+        pass: None,
+        fail: None,
+        total: None,
+        tests: Vec::new(),
+        os: None,
+        arch: None,
+        patchbay_version: None,
     }
 }
 
@@ -61,7 +51,7 @@ pub fn upload(dir: &Path, project: &str, url: &str, api_key: &str) -> Result<()>
     // Write run.json manifest if not already present
     let manifest_path = dir.join("run.json");
     if !manifest_path.exists() {
-        let manifest = RunManifest::from_env(project);
+        let manifest = manifest_from_env(project);
         let json = serde_json::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, json).context("write run.json")?;
     }
