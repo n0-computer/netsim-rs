@@ -17,6 +17,8 @@ interface TestDelta {
   left?: string
   right?: string
   delta: 'fixed' | 'REGRESS' | 'new' | 'removed' | ''
+  /** Relative directory for this test's output, if it exists on disk. */
+  dir?: string
 }
 
 function computeDiff(left: RunManifest, right: RunManifest) {
@@ -24,6 +26,7 @@ function computeDiff(left: RunManifest, right: RunManifest) {
   const rightTests = right.tests ?? []
   const leftMap = new Map(leftTests.map(t => [t.name, t.status]))
   const rightMap = new Map(rightTests.map(t => [t.name, t.status]))
+  const dirMap = new Map([...leftTests, ...rightTests].filter((t): t is typeof t & { dir: string } => !!t.dir).map(t => [t.name, t.dir]))
 
   const allNames = new Set([...leftMap.keys(), ...rightMap.keys()])
   const tests: TestDelta[] = []
@@ -40,7 +43,7 @@ function computeDiff(left: RunManifest, right: RunManifest) {
     else if (!l && r) { delta = 'new' }
     else if (l && !r) { delta = 'removed' }
 
-    tests.push({ name, left: l, right: r, delta })
+    tests.push({ name, left: l, right: r, delta, dir: dirMap.get(name) })
   }
 
   const score = fixes * SCORE_FIX + regressions * SCORE_REGRESS
@@ -105,9 +108,9 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
   const leftOutcome = leftManifest?.test_outcome ?? leftManifest?.outcome ?? null
   const rightOutcome = rightManifest?.test_outcome ?? rightManifest?.outcome ?? null
 
-  const handleTestClick = (testName: string) => {
-    const leftPath = `${leftRun}/${testName}`
-    const rightPath = `${rightRun}/${testName}`
+  const handleTestClick = (dir: string) => {
+    const leftPath = `${leftRun}/${dir}`
+    const rightPath = `${rightRun}/${dir}`
     navigate(`/compare/${encodeURIComponent(leftPath)}/${encodeURIComponent(rightPath)}`)
   }
 
@@ -148,7 +151,7 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
                   </tr>
                 </thead>
                 <tbody>
-                  {diff.tests.map(({ name, left, right, delta }) => {
+                  {diff.tests.map(({ name, left, right, delta, dir }) => {
                     let color = ''
                     if (delta === 'fixed') color = 'var(--green)'
                     else if (delta === 'REGRESS') color = 'var(--red)'
@@ -156,13 +159,19 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
                     return (
                       <tr key={name}>
                         <td>
-                          <code
-                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
-                            onClick={() => handleTestClick(name)}
-                            title={`Compare ${name} side-by-side`}
-                          >
-                            {name}
-                          </code>
+                          {dir ? (
+                            <code
+                              style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
+                              onClick={() => handleTestClick(dir)}
+                              title={`Compare ${name} side-by-side`}
+                            >
+                              {name}
+                            </code>
+                          ) : (
+                            <code style={{ color: 'var(--text-muted)' }} title="No test output available">
+                              {name}
+                            </code>
+                          )}
                         </td>
                         <td>{statusBadge(left)}</td>
                         <td>{statusBadge(right)}</td>
@@ -353,10 +362,3 @@ function statusBadge(status?: string) {
   return <span style={{ color: colors[status] || 'inherit' }}>{status.toUpperCase()}</span>
 }
 
-function statusIcon(outcome?: string | null): string {
-  if (!outcome) return '?'
-  const lower = outcome.toLowerCase()
-  if (lower === 'pass' || lower === 'success') return '\u2705'
-  if (lower === 'fail' || lower === 'failure') return '\u274C'
-  return '\u2753'
-}

@@ -8,9 +8,10 @@ export interface TestResult {
   name: string
   status: string  // "pass" | "fail" | "ignored"
   duration?: number | null
+  /** Relative directory path for this test's output, if it exists on disk. */
+  dir?: string | null
 }
 
-/** Manifest from run.json, included with pushed CI runs. */
 export interface RunManifest {
   kind?: string | null       // "test" | "sim"
   project?: string | null
@@ -144,7 +145,8 @@ export function runFilesBase(run: string): string {
 /** Fetch run.json manifest for a given run. */
 export async function fetchRunJson(run: string): Promise<RunManifest | null> {
   try {
-    const res = await fetch(`${runFilesBase(run)}run.json`)
+    // Use the API endpoint which enriches the manifest (e.g. resolves test dirs).
+    const res = await fetch(`${API}/runs/${encodeURIComponent(run)}/manifest`)
     if (!res.ok) return null
     return (await res.json()) as RunManifest
   } catch {

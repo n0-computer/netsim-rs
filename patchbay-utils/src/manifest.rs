@@ -78,6 +78,10 @@ pub struct TestResult {
         with = "option_duration_ms"
     )]
     pub duration: Option<Duration>,
+    /// Relative directory path for this test's output (e.g. `"patchbay/holepunch_simple"`).
+    /// Populated by the server when the directory exists on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
 }
 
 /// Unified manifest written as `run.json` alongside every run.
@@ -147,6 +151,70 @@ pub struct RunManifest {
     pub patchbay_version: Option<String>,
 }
 
+impl RunManifest {
+    /// Populate `dir` fields by scanning the run directory for subdirs that
+    /// contain `events.jsonl`, then matching them to test results by the bare
+    /// function name (last path segment of the dir, last token of the nextest name).
+    pub fn resolve_test_dirs(&mut self, run_dir: &std::path::Path) {
+        // Collect all dirs with events.jsonl, recursively (up to 2 levels).
+        let mut test_dirs: Vec<String> = Vec::new();
+        collect_event_dirs(run_dir, run_dir, 0, 2, &mut test_dirs);
+
+        // Build a map: bare function name → relative dir path.
+        // e.g. "holepunch_simple" → "patchbay/holepunch_simple"
+        let dir_by_fn: std::collections::HashMap<&str, &str> = test_dirs
+            .iter()
+            .filter_map(|d| {
+                let fn_name = d.rsplit('/').next()?;
+                Some((fn_name, d.as_str()))
+            })
+            .collect();
+
+        // Match each test result to a directory by bare function name.
+        // Nextest name: "iroh::patchbay holepunch_simple" → last token "holepunch_simple"
+        for test in &mut self.tests {
+            let fn_name = test
+                .name
+                .rsplit_once(' ')
+                .map(|(_, name)| name)
+                .unwrap_or(&test.name);
+            if let Some(&dir) = dir_by_fn.get(fn_name) {
+                test.dir = Some(dir.to_string());
+            }
+        }
+    }
+}
+
+/// Recursively collect relative paths to directories containing `events.jsonl`.
+fn collect_event_dirs(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    depth: usize,
+    max_depth: usize,
+    out: &mut Vec<String>,
+) {
+    if depth > max_depth {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("events.jsonl").exists() {
+            if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().into_owned());
+            }
+        } else {
+            collect_event_dirs(root, &path, depth + 1, max_depth, out);
+        }
+    }
+}
+
 // ── Git helpers ─────────────────────────────────────────────────────
 
 /// Snapshot of git repository state.
@@ -173,11 +241,18 @@ pub fn git_context() -> GitContext {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| s != "HEAD");
-    let dirty = !Command::new("git")
+    // Check both unstaged and staged changes.
+    let unstaged = !Command::new("git")
         .args(["diff", "--quiet"])
         .status()
         .map(|s| s.success())
         .unwrap_or(true);
+    let staged = !Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(true);
+    let dirty = unstaged || staged;
     GitContext {
         commit,
         branch,
@@ -244,7 +319,7 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
                 };
                 let name = name.trim().to_string();
                 if seen.insert(name.clone()) {
-                    results.push(TestResult { name, status, duration: None });
+                    results.push(TestResult { name, status, duration: None, dir: None });
                 }
             }
             continue;
@@ -263,7 +338,7 @@ pub fn parse_test_output(output: &str) -> Vec<TestResult> {
                 .trim()
                 .to_string();
             if !name.is_empty() && seen.insert(name.clone()) {
-                results.push(TestResult { name, status, duration });
+                results.push(TestResult { name, status, duration, dir: None });
             }
         }
     }

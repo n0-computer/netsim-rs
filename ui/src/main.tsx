@@ -24,7 +24,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   </React.StrictMode>
 )
 
-/** Redirect legacy /inv/* paths to /batch/*. */
+/** Redirect legacy /inv/* paths to /group/*. */
 function InvRedirect() {
   const rest = window.location.pathname.slice('/inv/'.length)
   return <Navigate to={`/group/${rest}`} replace />

@@ -279,10 +279,17 @@ pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
 
     if let Some(target_dir) = cargo_target_dir() {
         let testdir = target_dir.join("testdir-current");
-        std::fs::create_dir_all(&testdir).ok();
+        if let Err(e) = std::fs::create_dir_all(&testdir) {
+            eprintln!("patchbay: warning: could not create testdir: {e}");
+        }
         let run_json = testdir.join("run.json");
-        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
-            std::fs::write(&run_json, json).ok();
+        match serde_json::to_string_pretty(&manifest) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&run_json, json) {
+                    eprintln!("patchbay: warning: could not write run.json: {e}");
+                }
+            }
+            Err(e) => eprintln!("patchbay: warning: could not serialize run.json: {e}"),
         }
     }
 

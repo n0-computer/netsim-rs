@@ -246,6 +246,7 @@ fn build_router(state: AppState) -> Router {
         .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
+        .route("/api/runs/{run}/manifest", get(get_run_manifest))
         .route("/api/runs/{run}/state", get(get_run_state))
         .route("/api/runs/{run}/events", get(run_events_sse))
         .route("/api/runs/{run}/events.json", get(run_events_json))
@@ -435,6 +436,31 @@ async fn runs_sse(
 #[derive(Deserialize)]
 struct EventsQuery {
     after: Option<u64>,
+}
+
+async fn get_run_manifest(
+    AxPath(run): AxPath<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let Some(run_dir) = safe_run_dir(&state.base, &run) else {
+        return (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            r#"{"error":"forbidden"}"#.to_string(),
+        );
+    };
+    match read_run_json(&run_dir) {
+        Some(manifest) => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            r#"{"error":"run.json not found"}"#.to_string(),
+        ),
+    }
 }
 
 async fn get_run_state(
@@ -901,7 +927,9 @@ const RUN_JSON: &str = "run.json";
 
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut manifest: RunManifest = serde_json::from_str(&text).ok()?;
+    manifest.resolve_test_dirs(dir);
+    Some(manifest)
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
@@ -1027,7 +1055,7 @@ fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
-            let ft = entry.file_type().unwrap_or_else(|_| unreachable!());
+            let Ok(ft) = entry.file_type() else { continue };
             if ft.is_file() {
                 total += entry.metadata().map(|m| m.len()).unwrap_or(0);
             } else if ft.is_dir() {
