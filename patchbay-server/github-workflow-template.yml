@@ -29,13 +29,15 @@ jobs:
       # ── Build tools — adjust to your project ──
       - uses: dtolnay/rust-toolchain@stable
 
-      # ── Install patchbay CLI ──
-      # Install pre-built binary via binstall (fast), or build from source.
+      # ── Install patchbay CLI from rolling release ──
       - name: Install patchbay CLI
         run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall patchbay-cli --git-url https://github.com/n0-computer/patchbay --no-confirm \
-            || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
+          ASSET="patchbay-x86_64-unknown-linux-musl"
+          URL="https://github.com/n0-computer/patchbay/releases/download/rolling/${ASSET}.tar.gz"
+          curl -fsSL "$URL" | tar xz -C /usr/local/bin "$ASSET"
+          mv /usr/local/bin/"$ASSET" /usr/local/bin/patchbay
+          chmod +x /usr/local/bin/patchbay
+          patchbay --version || patchbay --help | head -1
 
       # ── Run tests — replace with your own command ──
       # Use `patchbay test` which writes structured output to .patchbay/work/.
