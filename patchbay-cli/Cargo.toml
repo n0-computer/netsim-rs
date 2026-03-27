@@ -14,16 +14,12 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-clap = { version = "4", features = ["derive"] }
-patchbay = { workspace = true }
-patchbay-runner = { workspace = true }
-patchbay-vm = { workspace = true, optional = true }
-patchbay-server = { workspace = true, optional = true }
-patchbay-utils = { workspace = true }
-ctor = "0.6"
-nix = { version = "0.30", features = ["signal", "process"] }
+clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 open = "5"
+patchbay-server = { workspace = true, optional = true }
+patchbay-utils = { workspace = true }
+patchbay-vm = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,6 +27,12 @@ tar = "0.4"
 tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "process"] }
 toml = "1.0"
 tracing = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ctor = "0.6"
+nix = { version = "0.30", features = ["signal", "process"] }
+patchbay = { workspace = true }
+patchbay-runner = { workspace = true }
 
 [dev-dependencies]
 patchbay = { workspace = true }
