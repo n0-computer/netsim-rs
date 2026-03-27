@@ -277,6 +277,7 @@ tbody td {
     display: flex;
     flex: 1;
     overflow: hidden;
+    position: relative;
 }
 .logs-sidebar {
     width: 220px;
@@ -725,7 +726,7 @@ tbody td {
     padding: 16px;
 }
 
-/* ── Sims list (invocation view) ── */
+/* ── Sims list (group view) ── */
 .sims-list {
     padding: 1.5rem;
     max-width: 700px;

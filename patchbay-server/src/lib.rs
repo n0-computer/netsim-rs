@@ -39,6 +39,7 @@ const STATE_JSON: &str = "state.json";
 
 /// Per-node full tracing log suffix.
 const TRACING_JSONL_EXT: &str = "tracing.jsonl";
+const METRICS_JSONL_EXT: &str = "metrics.jsonl";
 
 /// Default bind address for the devtools server.
 pub const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
@@ -56,8 +57,8 @@ const RUN_SCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Metadata for a single Lab run directory.
 ///
-/// A directory is a run if it contains `events.jsonl`.
-#[derive(Debug, Clone, Serialize)]
+/// A directory is a run if it contains `events.jsonl` or `run.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunInfo {
     /// Directory name (e.g. `"20260303_143001-my-lab"`).
     pub name: String,
@@ -71,9 +72,10 @@ pub struct RunInfo {
     /// This is the per-sim lab state, not the CI test outcome — see
     /// [`RunManifest::test_outcome`] for the overall pass/fail from CI.
     pub status: Option<String>,
-    /// Invocation group (first path component for nested runs, `None` for flat/direct).
-    pub invocation: Option<String>,
-    /// CI manifest from `run.json` in the invocation directory, if present.
+    /// Group (first path component for nested runs, `None` for flat/direct).
+    #[serde(alias = "batch")]
+    pub group: Option<String>,
+    /// CI manifest from `run.json` in the group directory, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<RunManifest>,
 }
@@ -88,7 +90,7 @@ const MAX_SCAN_DEPTH: usize = 3;
 /// that contain `events.jsonl`.
 pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     // If the base dir itself is a run, serve only that.
-    if base.join(EVENTS_JSONL).exists() {
+    if base.join(EVENTS_JSONL).exists() || base.join(RUN_JSON).exists() {
         let name = base
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -99,7 +101,7 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
             path: base.to_path_buf(),
             label,
             status,
-            invocation: None,
+            group: None,
             manifest: read_run_json(base),
         }]);
     }
@@ -107,14 +109,14 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
-    // Attach run.json manifests from invocation directories.
+    // Attach run.json manifests from group directories.
     let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
-        let inv = run.invocation.clone().unwrap_or_else(|| run.name.clone());
+        let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
         let manifest = manifest_cache
-            .entry(inv.clone())
-            .or_insert_with(|| read_run_json(&base.join(&inv)))
+            .entry(group_key.clone())
+            .or_insert_with(|| read_run_json(&base.join(&group_key)))
             .clone();
         run.manifest = manifest;
     }
@@ -146,18 +148,18 @@ fn scan_runs_recursive(
         if !path.is_dir() {
             continue;
         }
-        if path.join(EVENTS_JSONL).exists() {
-            // Use the relative path from root as the run name so nested
-            // runs are addressable via the API (e.g. "sim-20260305/ping-e2e").
+        let has_events = path.join(EVENTS_JSONL).exists();
+        let has_run_json = path.join(RUN_JSON).exists();
+
+        if has_events {
+            // Leaf run: has events.jsonl → it's an actual lab output dir.
             let name = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .into_owned();
             let (label, status) = read_run_metadata(&path);
-            // Derive invocation from the first path component (the timestamped
-            // directory) when the run is nested more than one level deep.
-            let invocation = name
+            let group = name
                 .split('/')
                 .next()
                 .filter(|first| *first != name)
@@ -167,9 +169,13 @@ fn scan_runs_recursive(
                 path,
                 label,
                 status,
-                invocation,
+                group,
                 manifest: None, // populated after scan
             });
+        } else if has_run_json {
+            // Group directory: has run.json but no events.jsonl.
+            // Recurse to find child runs, they inherit this manifest.
+            scan_runs_recursive(root, &path, depth + 1, runs)?;
         } else {
             scan_runs_recursive(root, &path, depth + 1, runs)?;
         }
@@ -232,8 +238,14 @@ fn build_router(state: AppState) -> Router {
     let mut r = Router::new()
         .route("/", get(index_html))
         .route("/runs", get(index_html))
+        // SPA fallback: serve index.html for client-side routes.
+        .route("/run/{*rest}", get(index_html))
+        .route("/group/{*rest}", get(index_html))
+        .route("/compare/{*rest}", get(index_html))
+        .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
+        .route("/api/runs/{run}/manifest", get(get_run_manifest))
         .route("/api/runs/{run}/state", get(get_run_state))
         .route("/api/runs/{run}/events", get(run_events_sse))
         .route("/api/runs/{run}/events.json", get(run_events_json))
@@ -241,8 +253,13 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/{run}/logs/{*path}", get(get_run_log_file))
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
         .route(
+            "/api/groups/{name}/combined-results",
+            get(get_group_combined),
+        )
+        // Legacy alias — keep for backward-compat (links shared on Discord).
+        .route(
             "/api/invocations/{name}/combined-results",
-            get(get_invocation_combined),
+            get(get_group_combined),
         );
     if state.push.is_some() {
         r = r.route("/api/push/{project}", post(push_run));
@@ -343,8 +360,55 @@ async fn index_html() -> Html<&'static str> {
     Html(include_str!("../../ui/dist/index.html"))
 }
 
-async fn get_runs(State(state): State<AppState>) -> impl IntoResponse {
-    let runs = discover_runs(&state.base).unwrap_or_default();
+#[derive(Deserialize)]
+struct RunsQuery {
+    project: Option<String>,
+    kind: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn get_runs(
+    Query(params): Query<RunsQuery>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let mut runs = discover_runs(&state.base).unwrap_or_default();
+
+    // Filter by project (matched against manifest.project).
+    if let Some(ref project) = params.project {
+        runs.retain(|r| {
+            r.manifest
+                .as_ref()
+                .and_then(|m| m.project.as_deref())
+                .map(|p| p == project)
+                .unwrap_or(false)
+        });
+    }
+
+    // Filter by kind (matched against manifest.kind, e.g. "test" or "sim").
+    if let Some(ref kind) = params.kind {
+        runs.retain(|r| {
+            r.manifest
+                .as_ref()
+                .map(|m| {
+                    let k = serde_json::to_value(m.kind)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from));
+                    k.as_deref() == Some(kind.as_str())
+                })
+                .unwrap_or(false)
+        });
+    }
+
+    // Pagination.
+    let offset = params.offset.unwrap_or(0);
+    if offset > 0 {
+        runs = runs.into_iter().skip(offset).collect();
+    }
+    if let Some(limit) = params.limit {
+        runs.truncate(limit);
+    }
+
     (
         StatusCode::OK,
         [("content-type", "application/json")],
@@ -367,6 +431,31 @@ async fn runs_sse(
 #[derive(Deserialize)]
 struct EventsQuery {
     after: Option<u64>,
+}
+
+async fn get_run_manifest(
+    AxPath(run): AxPath<String>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let Some(run_dir) = safe_run_dir(&state.base, &run) else {
+        return (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            r#"{"error":"forbidden"}"#.to_string(),
+        );
+    };
+    match read_run_json(&run_dir) {
+        Some(manifest) => (
+            StatusCode::OK,
+            [("content-type", "application/json")],
+            serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            [("content-type", "application/json")],
+            r#"{"error":"run.json not found"}"#.to_string(),
+        ),
+    }
 }
 
 async fn get_run_state(
@@ -549,8 +638,8 @@ async fn get_run_file(
     serve_file(&file_path).await
 }
 
-/// Serve `combined-results.json` from an invocation directory.
-async fn get_invocation_combined(
+/// Serve `combined-results.json` from a group directory.
+async fn get_group_combined(
     AxPath(name): AxPath<String>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
@@ -561,8 +650,8 @@ async fn get_invocation_combined(
             r#"{"error":"forbidden"}"#.to_string(),
         );
     }
-    let inv_dir = state.base.join(&name);
-    let file = inv_dir.join("combined-results.json");
+    let group_dir = state.base.join(&name);
+    let file = group_dir.join("combined-results.json");
     // Verify the resolved path stays under base.
     let ok = file
         .canonicalize()
@@ -711,6 +800,8 @@ enum LogKind {
     TracingJsonl,
     /// Lab-level event log (`events.jsonl`).
     LabEvents,
+    /// Per-node metrics (`*.metrics.jsonl`).
+    Metrics,
     /// Generic JSON lines file (`*.jsonl`).
     Jsonl,
     /// Single JSON document (`*.json`).
@@ -733,6 +824,9 @@ struct LogEntry {
 fn detect_log_kind(filename: &str, sample: &[u8]) -> Option<LogKind> {
     if filename == EVENTS_JSONL {
         return Some(LogKind::LabEvents);
+    }
+    if filename.ends_with(&format!(".{METRICS_JSONL_EXT}")) {
+        return Some(LogKind::Metrics);
     }
     if filename.ends_with(&format!(".{TRACING_JSONL_EXT}")) {
         return Some(LogKind::TracingJsonl);
@@ -822,44 +916,15 @@ async fn scan_log_files(run_dir: &Path) -> Vec<LogEntry> {
 
 // ── Run manifest (run.json) ─────────────────────────────────────────
 
-/// Manifest included with pushed runs, providing CI context.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct RunManifest {
-    /// Project name (from URL path).
-    #[serde(default)]
-    pub project: String,
-    /// Git branch name.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// Git commit SHA.
-    #[serde(default)]
-    pub commit: Option<String>,
-    /// PR number.
-    #[serde(default)]
-    pub pr: Option<u64>,
-    /// PR URL.
-    #[serde(default)]
-    pub pr_url: Option<String>,
-    /// When this run was created.
-    #[serde(default)]
-    pub created_at: Option<String>,
-    /// Human-readable run title/label.
-    #[serde(default)]
-    pub title: Option<String>,
-    /// Overall CI test outcome (e.g. `"success"`, `"failure"`).
-    ///
-    /// This is the result of the CI test step, not the lab lifecycle status.
-    /// The lab lifecycle status lives in `state.json` as `RunInfo::status`
-    /// and tracks per-sim states like "running" or "finished".
-    #[serde(default, alias = "status")]
-    pub test_outcome: Option<String>,
-}
+pub use patchbay_utils::manifest::RunManifest;
 
 const RUN_JSON: &str = "run.json";
 
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
-    serde_json::from_str(&text).ok()
+    let mut manifest: RunManifest = serde_json::from_str(&text).ok()?;
+    manifest.resolve_test_dirs(dir);
+    Some(manifest)
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
@@ -907,27 +972,75 @@ async fn push_run(
         );
     }
 
-    // Extract tar.gz
+    // Extract tar.gz — iterate entries manually to reject unsafe paths.
     let decoder = flate2::read::GzDecoder::new(&body[..]);
     let mut archive = tar::Archive::new(decoder);
-    if let Err(e) = archive.unpack(&run_dir) {
-        // Clean up on failure
-        let _ = std::fs::remove_dir_all(&run_dir);
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("failed to extract archive: {e}"),
-        );
+    archive.set_preserve_permissions(false);
+    archive.set_unpack_xattrs(false);
+    archive.set_overwrite(false);
+
+    let entries = match archive.entries() {
+        Ok(e) => e,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("failed to read archive entries: {e}"),
+            );
+        }
+    };
+    for entry in entries {
+        let mut entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read archive entry: {e}"),
+                );
+            }
+        };
+        let path = match entry.path() {
+            Ok(p) => p.into_owned(),
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&run_dir);
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("failed to read entry path: {e}"),
+                );
+            }
+        };
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+        {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid path in archive".to_string(),
+            );
+        }
+        if let Err(e) = entry.unpack_in(&run_dir) {
+            let _ = std::fs::remove_dir_all(&run_dir);
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("failed to extract archive: {e}"),
+            );
+        }
     }
 
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
 
-    // run_name is the invocation name (first path component for all sims inside)
+    // run_name is the group name (first path component for all sims inside)
     let result = serde_json::json!({
         "ok": true,
         "project": project,
         "run": run_name,
-        "invocation": run_name,
+        "group": run_name,
+        "batch": run_name,       // backward compat
+        "invocation": run_name,  // backward compat (old CI templates read .invocation)
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())
@@ -984,7 +1097,7 @@ fn dir_size(path: &Path) -> u64 {
     let mut total = 0;
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
-            let ft = entry.file_type().unwrap_or_else(|_| unreachable!());
+            let Ok(ft) = entry.file_type() else { continue };
             if ft.is_file() {
                 total += entry.metadata().map(|m| m.len()).unwrap_or(0);
             } else if ft.is_dir() {

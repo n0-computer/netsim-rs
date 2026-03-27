@@ -24,8 +24,12 @@ pub(crate) struct ManifestSimSummary {
     pub(crate) error: Option<String>,
 }
 
+/// Per-sim execution report written to `manifest.json`.
+///
+/// Distinct from [`patchbay_utils::manifest::RunManifest`] which is the
+/// unified `run.json` metadata (git context, outcome, etc.).
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct RunManifest {
+pub(crate) struct SimRunReport {
     pub(crate) run: String,
     pub(crate) started_at: String,
     pub(crate) status: String,
@@ -70,8 +74,8 @@ pub(crate) fn now_stamp() -> String {
     chrono::Utc::now().format("%y%m%d-%H%M%S").to_string()
 }
 
-pub(crate) async fn write_run_manifest(run_root: &Path, manifest: &RunManifest) -> Result<()> {
-    write_json(run_root.join("manifest.json"), manifest).await
+pub(crate) async fn write_sim_report(run_root: &Path, report: &SimRunReport) -> Result<()> {
+    write_json(run_root.join("manifest.json"), report).await
 }
 
 pub(crate) async fn write_progress(run_root: &Path, progress: &RunProgress) -> Result<()> {

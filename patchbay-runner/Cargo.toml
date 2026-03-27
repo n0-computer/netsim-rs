@@ -8,20 +8,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "patchbay"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
-ctor = "0.6"
 flate2 = "1"
-patchbay = { path = "../patchbay" }
-patchbay-server = { path = "../patchbay-server", optional = true }
-patchbay-utils = { path = "../patchbay-utils" }
+patchbay = { workspace = true }
+patchbay-utils = { workspace = true }
 nix = { version = "0.30", features = ["signal", "process"] }
 rcgen = "0.14"
 regex = "1"
@@ -32,10 +26,6 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "proc
 toml = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-[features]
-default = ["serve"]
-serve = ["dep:patchbay-server"]
 
 [dev-dependencies]
 n0-tracing-test = "0.3.0"

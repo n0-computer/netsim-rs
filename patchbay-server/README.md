@@ -50,10 +50,10 @@ Body: tar.gz of the run directory
 Returns:
 
 ```json
-{"ok": true, "project": "myproject", "run": "myproject-20260320_120000-uuid", "invocation": "myproject-20260320_120000-uuid"}
+{"ok": true, "project": "myproject", "run": "myproject-20260320_120000-uuid", "group": "myproject-20260320_120000-uuid"}
 ```
 
-The `invocation` value is used for deep linking: `https://your-server/#/inv/{invocation}`
+The `group` value is used for deep linking: `https://your-server/batch/{group}`
 
 ## Flags
 

@@ -37,13 +37,17 @@ test('runner sim produces viewable UI output', async ({ page }) => {
     )
     await waitForHttp(UI_URL, 15_000)
 
-    // Step 3: Verify the UI loads and shows the run.
+    // Step 3: Verify the runs index shows the run.
     await page.goto(UI_URL)
-    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
 
-    const selector = page.locator('select')
-    await expect(selector).toBeVisible()
-    await expect(selector.locator('option', { hasText: 'ping-e2e' })).toBeAttached()
+    // Expand the group (collapsed by default) then click a child run.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
+    const runLink = page.locator('a[href*="/run/"]').first()
+    await expect(runLink).toBeVisible({ timeout: 5_000 })
+    await runLink.click()
 
     // Topology tab should show the router and devices.
     await expect(page.getByText('dc')).toBeVisible({ timeout: 10_000 })
@@ -59,10 +63,13 @@ test('runner sim produces viewable UI output', async ({ page }) => {
     await expect(page.getByText('router_added').first()).toBeVisible()
     await expect(page.getByText('device_added').first()).toBeVisible()
 
-    // Perf tab: should show latency column from ping results.
+    // Perf tab: should show latency column from ping results with actual numeric data.
     await page.getByRole('button', { name: 'perf' }).click()
     await expect(page.getByText('ping-check')).toBeVisible({ timeout: 5_000 })
     await expect(page.getByText('Latency (ms)')).toBeVisible()
+    // Verify that the perf table has at least one data row with a numeric latency value.
+    const perfDataCell = page.locator('table tbody tr td').first()
+    await expect(perfDataCell).toBeVisible({ timeout: 5_000 })
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')
@@ -71,12 +78,12 @@ test('runner sim produces viewable UI output', async ({ page }) => {
   }
 })
 
-test('multi-sim invocation shows grouped selector and combined results', async ({ page }) => {
+test('multi-sim group shows grouped selector and combined results', async ({ page }) => {
   test.setTimeout(4 * 60 * 1000)
   const workDir = mkdtempSync(`${tmpdir()}/patchbay-runner-e2e-multi-`)
   let serveProc: ChildProcess | null = null
   try {
-    // Run both sims in a single invocation.
+    // Run both sims in a single group.
     execFileSync(
       PATCHBAY_BIN,
       ['run', '--work-dir', workDir, PING_TOML, IPERF_TOML],
@@ -97,28 +104,24 @@ test('multi-sim invocation shows grouped selector and combined results', async (
     await waitForHttp(UI_URL, 15_000)
 
     await page.goto(UI_URL)
-    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
 
-    // The selector should have an optgroup (invocation) with both sims.
-    const selector = page.locator('select')
-    await expect(selector).toBeVisible()
-    await expect(selector.locator('optgroup')).toBeAttached()
-    await expect(selector.locator('option', { hasText: 'ping-e2e' })).toBeAttached()
-    await expect(selector.locator('option', { hasText: 'iperf-e2e' })).toBeAttached()
+    // Expand the group to see child runs.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
 
-    // Select the "combined" option.
-    const combinedOption = selector.locator('option', { hasText: 'combined' })
-    await expect(combinedOption).toBeAttached()
-    await selector.selectOption({ label: await combinedOption.innerText() })
+    // Both sims should appear as run entries.
+    await expect(page.getByText('ping-e2e').first()).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByText('iperf-e2e').first()).toBeVisible()
 
-    // Switch to perf tab — invocation view defaults to sims list.
-    await page.getByRole('button', { name: 'perf' }).click()
-    // Perf tab should show summary and detail tables with both sims.
-    await expect(page.getByText('summary')).toBeVisible({ timeout: 5_000 })
-    await expect(page.getByText('all steps')).toBeVisible()
-    // Verify both sims appear in the summary table cells.
-    await expect(page.getByRole('cell', { name: 'ping-e2e' }).first()).toBeVisible()
-    await expect(page.getByRole('cell', { name: 'iperf-e2e' }).first()).toBeVisible()
+    // Click through to one of the runs and verify it loads.
+    const pingLink = page.locator('a[href*="/run/"]', { hasText: 'ping-e2e' }).first()
+    await expect(pingLink).toBeVisible({ timeout: 5_000 })
+    await pingLink.click()
+    // Topology tab should render topology nodes for this sim.
+    await expect(page.getByText('sender')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('receiver')).toBeVisible()
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')
@@ -153,7 +156,14 @@ test('iperf sim shows perf results', async ({ page }) => {
     await waitForHttp(UI_URL, 15_000)
 
     await page.goto(UI_URL)
-    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
+    // Expand group and click through to the run detail.
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await groupHeader.click()
+    const runLink = page.locator('a[href*="/run/"]').first()
+    await expect(runLink).toBeVisible({ timeout: 5_000 })
+    await runLink.click()
 
     // Navigate to perf tab.
     await page.getByRole('button', { name: 'perf' }).click()

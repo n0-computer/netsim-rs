@@ -74,34 +74,29 @@ test('push run results and view via deep link', async ({ page }) => {
       body: tarGz,
     })
     expect(pushRes.status).toBe(200)
-    const pushBody = await pushRes.json() as { ok: boolean; invocation: string; project: string }
+    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string }
     expect(pushBody.ok).toBe(true)
     expect(pushBody.project).toBe('test-project')
-    expect(pushBody.invocation).toBeTruthy()
+    expect(pushBody.group).toBeTruthy()
 
-    // Step 4: Verify the run appears in the API.
+    // Step 4: Verify the run appears in the API (allow time for discovery).
+    await new Promise(r => setTimeout(r, 3000))
     const runsRes = await fetch(`${SERVE_URL}/api/runs`)
-    const runs = await runsRes.json() as Array<{ name: string; invocation: string | null }>
+    const runs = await runsRes.json() as Array<{ name: string; group: string | null }>
     expect(runs.length).toBeGreaterThan(0)
-    // All runs should share the same invocation (the push dir name).
-    const inv = runs[0].invocation
-    expect(inv).toBe(pushBody.invocation)
+    // The pushed run should belong to a group matching the push dir.
+    const run = runs.find(r => r.group === pushBody.group)
+    expect(run).toBeTruthy()
 
-    // Step 5: Open the deep link and verify the UI shows the run.
-    await page.goto(`${SERVE_URL}/#/inv/${pushBody.invocation}`)
+    // Step 5: Open the runs index and verify pushed run appears with manifest data.
+    await page.goto(SERVE_URL)
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
 
-    // The topbar should show "patchbay".
-    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
-
-    // The sims tab should list the sim(s) from this push.
-    const simEntry = page.locator('.run-entry', { hasText: 'ping-e2e' }).first()
-    await expect(simEntry).toBeVisible({ timeout: 10_000 })
-
-    // Click through to an individual sim and verify topology loads.
-    await simEntry.click()
-    await expect(page.getByText('dc')).toBeVisible({ timeout: 10_000 })
-    await expect(page.getByText('sender')).toBeVisible()
-    await expect(page.getByText('receiver')).toBeVisible()
+    // The group header should show manifest data (branch, commit).
+    const groupHeader = page.locator('.run-group-header').first()
+    await expect(groupHeader).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('feat/test').first()).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByText('abc1234').first()).toBeVisible()
 
     // Step 6: Verify push auth — request without key should fail.
     const noAuthRes = await fetch(`${SERVE_URL}/api/push/test-project`, {

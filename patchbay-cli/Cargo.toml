@@ -1,0 +1,49 @@
+[package]
+name = "patchbay-cli"
+version = "0.1.0"
+description = "Unified CLI for patchbay simulations (native and VM)"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "patchbay"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive"] }
+patchbay = { workspace = true }
+patchbay-runner = { workspace = true }
+patchbay-vm = { workspace = true, optional = true }
+patchbay-server = { workspace = true, optional = true }
+patchbay-utils = { workspace = true }
+ctor = "0.6"
+nix = { version = "0.30", features = ["signal", "process"] }
+flate2 = "1"
+open = "5"
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tar = "0.4"
+tokio = { version = "1", features = ["rt", "macros", "sync", "time", "fs", "process"] }
+toml = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+patchbay = { workspace = true }
+serde_json = "1"
+tempfile = "3"
+
+[features]
+default = ["serve", "upload", "vm"]
+serve = ["dep:patchbay-server"]
+upload = ["dep:reqwest"]
+vm = ["dep:patchbay-vm"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/rolling/patchbay-{ target }.tar.gz"
+bin-dir = "{ bin }-{ target }{ binary-ext }"
+pkg-fmt = "tgz"

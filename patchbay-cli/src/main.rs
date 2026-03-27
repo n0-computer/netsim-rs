@@ -1,9 +1,15 @@
-//! Runs the `patchbay` CLI entrypoint.
+//! Unified CLI entrypoint for patchbay simulations (native and VM).
 
-mod sim;
+mod compare;
+mod init;
+mod test;
+#[cfg(feature = "upload")]
+mod upload;
+mod util;
 
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     time::Duration,
@@ -12,15 +18,21 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use patchbay::check_caps;
+use patchbay_runner::sim;
 #[cfg(feature = "serve")]
 use patchbay_server::DEFAULT_UI_BIND;
 #[cfg(not(feature = "serve"))]
 const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
+#[cfg(feature = "vm")]
+use patchbay_vm::VmOps;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
 #[command(name = "patchbay", about = "Run a patchbay simulation")]
 struct Cli {
+    /// Verbose output (stream subcommand output live).
+    #[arg(short = 'v', long, global = true)]
+    verbose: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -34,7 +46,7 @@ enum Command {
         sims: Vec<PathBuf>,
 
         /// Work directory for logs, binaries, and results.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
 
         /// Binary override in `<name>:<mode>:<value>` form.
@@ -71,7 +83,7 @@ enum Command {
         #[arg()]
         sims: Vec<PathBuf>,
         /// Work directory for caches and prepared outputs.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         /// Binary override in `<name>:<mode>:<value>` form.
         #[arg(long = "binary")]
@@ -91,7 +103,7 @@ enum Command {
         /// Output directory containing lab run subdirectories.
         ///
         /// Ignored when `--testdir` is set.
-        #[arg(default_value = ".patchbay-work")]
+        #[arg(default_value = ".patchbay/work")]
         outdir: PathBuf,
         /// Serve `<cargo-target-dir>/testdir-current` instead of a path.
         ///
@@ -106,14 +118,16 @@ enum Command {
         open: bool,
     },
     /// Build topology from sim/topology config for interactive namespace debugging.
+    #[cfg(target_os = "linux")]
     Inspect {
         /// Sim TOML or topology TOML file path.
         input: PathBuf,
         /// Work directory for inspect session metadata.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
     },
     /// Run a command inside a node namespace from an inspect session.
+    #[cfg(target_os = "linux")]
     RunIn {
         /// Device or router name from the inspected topology.
         node: String,
@@ -121,12 +135,176 @@ enum Command {
         #[arg(long)]
         inspect: Option<String>,
         /// Work directory containing inspect session metadata.
-        #[arg(long, default_value = ".patchbay-work")]
+        #[arg(long, default_value = ".patchbay/work")]
         work_dir: PathBuf,
         /// Command and args to execute in the node namespace.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         cmd: Vec<String>,
     },
+    /// Run tests (delegates to cargo test on native, VM test flow on VM).
+    Test {
+        #[command(flatten)]
+        args: test::TestArgs,
+
+        /// Persist run output to `.patchbay/work/run-{timestamp}/`.
+        #[arg(long)]
+        persist: bool,
+
+        /// Force VM backend.
+        #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+        vm: Option<String>,
+    },
+    /// Compare test or sim results across git refs.
+    Compare {
+        #[command(subcommand)]
+        command: CompareCommand,
+    },
+    /// Upload a run/compare directory to a patchbay-server instance.
+    Upload {
+        /// Directory to upload (e.g. .patchbay/work/compare-20260325_120000).
+        dir: PathBuf,
+        /// Project name for scoping on the server.
+        #[arg(long, env = "PATCHBAY_PROJECT")]
+        project: String,
+        /// Server URL (e.g. https://patchbay.example.com).
+        #[arg(long, env = "PATCHBAY_URL")]
+        url: String,
+        /// API key for authentication.
+        #[arg(long, env = "PATCHBAY_API_KEY")]
+        api_key: String,
+    },
+    /// VM management and simulation execution.
+    #[cfg(feature = "vm")]
+    Vm {
+        #[command(subcommand)]
+        command: VmCommand,
+        /// Which VM backend to use.
+        #[arg(long, default_value = "auto", global = true)]
+        backend: patchbay_vm::Backend,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompareCommand {
+    /// Compare test results between git refs.
+    ///
+    /// Usage: patchbay compare test <ref> [ref2] [-- test-filter-and-args]
+    Test {
+        /// Git ref to compare (left side).
+        left_ref: String,
+
+        /// Second git ref (right side). If omitted, compares against current worktree.
+        right_ref: Option<String>,
+
+        /// Force rebuild even if a cached run exists for the commit.
+        #[arg(long)]
+        force_build: bool,
+
+        /// Fail instead of building if no cached run exists for a ref.
+        #[arg(long)]
+        no_ref_build: bool,
+
+        #[command(flatten)]
+        args: test::TestArgs,
+    },
+    /// Compare sim results between git refs.
+    Run {
+        /// Git ref to compare (left side).
+        left_ref: String,
+
+        /// Second git ref (right side).
+        right_ref: Option<String>,
+
+        /// Sim TOML files or directories.
+        #[arg(long = "sim", required = true)]
+        sims: Vec<PathBuf>,
+    },
+}
+
+/// VM sub-subcommands (mirrors patchbay-vm's standalone CLI).
+#[cfg(feature = "vm")]
+#[derive(Subcommand)]
+enum VmCommand {
+    /// Boot or reuse VM and ensure mounts.
+    Up {
+        #[arg(long)]
+        recreate: bool,
+    },
+    /// Stop VM and helper processes.
+    Down,
+    /// Show VM running status.
+    Status,
+    /// Best-effort cleanup of VM helper artifacts/processes.
+    Cleanup,
+    /// Execute command in the guest (SSH for QEMU, exec for container).
+    Ssh {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        cmd: Vec<String>,
+    },
+    /// Run one or more sims in VM using guest patchbay binary.
+    Run {
+        #[arg(required = true)]
+        sims: Vec<PathBuf>,
+        #[arg(long, default_value = ".patchbay/work")]
+        work_dir: PathBuf,
+        #[arg(long = "binary")]
+        binary_overrides: Vec<String>,
+        #[arg(short = 'v', long, default_value_t = false)]
+        verbose: bool,
+        #[arg(long)]
+        recreate: bool,
+        #[arg(long, default_value = "latest")]
+        patchbay_version: String,
+        #[arg(long, default_value_t = false)]
+        open: bool,
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
+        bind: String,
+    },
+    /// Serve embedded UI + work directory over HTTP.
+    Serve {
+        #[arg(long, default_value = ".patchbay/work")]
+        work_dir: PathBuf,
+        /// Serve `<work-dir>/binaries/tests/testdir-current` instead of work_dir.
+        #[arg(long, default_value_t = false)]
+        testdir: bool,
+        #[arg(long, default_value = DEFAULT_UI_BIND)]
+        bind: String,
+        #[arg(long, default_value_t = false)]
+        open: bool,
+    },
+    /// Build and run tests in VM.
+    Test {
+        /// Test name filter (passed to test binaries at runtime).
+        #[arg()]
+        filter: Option<String>,
+        #[arg(long, default_value_t = patchbay_vm::default_test_target())]
+        target: String,
+        #[arg(short = 'p', long = "package")]
+        packages: Vec<String>,
+        #[arg(long = "test")]
+        tests: Vec<String>,
+        #[arg(short = 'j', long)]
+        jobs: Option<u32>,
+        #[arg(short = 'F', long)]
+        features: Vec<String>,
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        lib: bool,
+        #[arg(long)]
+        no_fail_fast: bool,
+        #[arg(long)]
+        recreate: bool,
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
+    },
+}
+
+fn resolve_project_root(opt: Option<PathBuf>) -> Result<PathBuf> {
+    match opt {
+        Some(p) => Ok(p),
+        None => std::env::current_dir().context("resolve current directory"),
+    }
 }
 
 fn main() -> Result<()> {
@@ -171,10 +349,7 @@ async fn tokio_main() -> Result<()> {
                 #[cfg(not(feature = "serve"))]
                 bail!("--open requires the `serve` feature");
             }
-            let project_root = match project_root {
-                Some(p) => p,
-                None => std::env::current_dir().context("resolve current directory")?,
-            };
+            let project_root = resolve_project_root(project_root)?;
             let sims = resolve_sim_args(sims, &project_root)?;
             let res = sim::run_sims(
                 sims,
@@ -201,10 +376,7 @@ async fn tokio_main() -> Result<()> {
             no_build,
             project_root,
         } => {
-            let project_root = match project_root {
-                Some(p) => p,
-                None => std::env::current_dir().context("resolve current directory")?,
-            };
+            let project_root = resolve_project_root(project_root)?;
             let sims = resolve_sim_args(sims, &project_root)?;
             sim::prepare_sims(
                 sims,
@@ -234,13 +406,255 @@ async fn tokio_main() -> Result<()> {
             }
             patchbay_server::serve(dir, &bind).await
         }
+        #[cfg(target_os = "linux")]
         Command::Inspect { input, work_dir } => inspect_command(input, work_dir).await,
+        #[cfg(target_os = "linux")]
         Command::RunIn {
             node,
             inspect,
             work_dir,
             cmd,
         } => run_in_command(node, inspect, work_dir, cmd),
+        Command::Test { args, persist, vm } => {
+            #[cfg(feature = "vm")]
+            if let Some(vm_backend) = vm {
+                let backend = match vm_backend.as_str() {
+                    "auto" => patchbay_vm::Backend::Auto.resolve(),
+                    "qemu" => patchbay_vm::Backend::Qemu,
+                    "container" => patchbay_vm::Backend::Container,
+                    other => bail!("unknown VM backend: {other}"),
+                };
+                return test::run_vm(args, backend);
+            }
+            #[cfg(not(feature = "vm"))]
+            if vm.is_some() {
+                bail!("VM support not compiled (enable the `vm` feature)");
+            }
+            test::run_native(args, cli.verbose, persist)
+        }
+        Command::Compare { command } => {
+            let cwd = std::env::current_dir().context("get cwd")?;
+            let work_dir = cwd.join(".patchbay/work");
+            match command {
+                CompareCommand::Test {
+                    left_ref,
+                    right_ref,
+                    force_build,
+                    no_ref_build,
+                    args,
+                } => {
+                    use patchbay_utils::manifest::{self as mf, RunKind};
+
+                    let right_label = right_ref.as_deref().unwrap_or("worktree");
+                    println!(
+                        "patchbay compare test: {} \u{2194} {}",
+                        left_ref, right_label
+                    );
+
+                    // Helper: resolve results for a ref, using cache or building.
+                    let resolve_ref_results =
+                        |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
+                            let sha = mf::resolve_ref(git_ref)
+                                .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
+
+                            // Check cache (unless --force-build).
+                            if !force_build {
+                                if let Some((_dir, manifest)) =
+                                    mf::find_run_for_commit(&work_dir, &sha, RunKind::Test)
+                                {
+                                    println!("Using cached run for {label} ({sha:.8})");
+                                    return Ok(manifest.tests);
+                                }
+                            }
+
+                            // No cache — fail if --no-ref-build.
+                            if no_ref_build {
+                                bail!(
+                                    "no cached run for {label} ({sha:.8}); \
+                                 run `patchbay test --persist` on that ref first, \
+                                 or remove --no-ref-build"
+                                );
+                            }
+
+                            // Build in worktree.
+                            println!("Running tests in {label} ...");
+                            let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
+                            let (results, _output) =
+                                compare::run_tests_in_dir(&tree_dir, &args, cli.verbose)?;
+
+                            // Persist the run so future compares can reuse it.
+                            compare::persist_worktree_run(&tree_dir, &results, &sha)?;
+
+                            compare::cleanup_worktree(&tree_dir)?;
+                            Ok(results)
+                        };
+
+                    let left_results = resolve_ref_results(&left_ref, &left_ref)?;
+
+                    let right_results = if let Some(ref r) = right_ref {
+                        resolve_ref_results(r, r)?
+                    } else {
+                        // Compare against current worktree: always run fresh.
+                        println!("Running tests in worktree ...");
+                        let (results, _output) =
+                            compare::run_tests_in_dir(&cwd, &args, cli.verbose)?;
+                        results
+                    };
+
+                    // Compare
+                    let result = compare::compare_results(&left_results, &right_results);
+                    compare::print_summary(
+                        &left_ref,
+                        right_label,
+                        &left_results,
+                        &right_results,
+                        &result,
+                    );
+
+                    if result.regressions > 0 {
+                        bail!("{} regressions detected", result.regressions);
+                    }
+                    Ok(())
+                }
+                CompareCommand::Run {
+                    sims: _,
+                    left_ref: _,
+                    right_ref: _,
+                } => {
+                    // TODO: implement compare run (sim comparison)
+                    bail!("compare run is not yet implemented");
+                }
+            }
+        }
+        Command::Upload {
+            dir,
+            project,
+            url,
+            api_key,
+        } => {
+            if !dir.exists() {
+                bail!("directory does not exist: {}", dir.display());
+            }
+            #[cfg(feature = "upload")]
+            {
+                upload::upload(&dir, &project, &url, &api_key)
+            }
+            #[cfg(not(feature = "upload"))]
+            {
+                let _ = (&dir, &project, &url, &api_key);
+                bail!("upload support not compiled in (enable the `upload` feature)")
+            }
+        }
+        #[cfg(feature = "vm")]
+        Command::Vm { command, backend } => dispatch_vm(command, backend).await,
+    }
+}
+
+/// Dispatch VM subcommands to the patchbay-vm library.
+#[cfg(feature = "vm")]
+async fn dispatch_vm(command: VmCommand, backend: patchbay_vm::Backend) -> Result<()> {
+    let backend = backend.resolve();
+
+    match command {
+        VmCommand::Up { recreate } => backend.up(recreate),
+        VmCommand::Down => backend.down(),
+        VmCommand::Status => backend.status(),
+        VmCommand::Cleanup => backend.cleanup(),
+        VmCommand::Ssh { cmd } => backend.exec(cmd),
+        VmCommand::Run {
+            sims,
+            work_dir,
+            binary_overrides,
+            verbose,
+            recreate,
+            patchbay_version,
+            open,
+            bind,
+        } => {
+            if open {
+                let url = format!("http://{bind}");
+                println!("patchbay UI: {url}");
+                let _ = open::that(&url);
+                let work = work_dir.clone();
+                let bind_clone = bind.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = patchbay_server::serve(work, &bind_clone).await {
+                        tracing::error!("server error: {e}");
+                    }
+                });
+            }
+            let args = patchbay_vm::RunVmArgs {
+                sim_inputs: sims,
+                work_dir,
+                binary_overrides,
+                verbose,
+                recreate,
+                patchbay_version,
+            };
+            let res = backend.run_sims(args);
+            if open && res.is_ok() {
+                println!("run finished; server still running (Ctrl-C to exit)");
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+            }
+            res
+        }
+        VmCommand::Serve {
+            work_dir,
+            testdir,
+            bind,
+            open,
+        } => {
+            let dir = if testdir {
+                work_dir
+                    .join("binaries")
+                    .join("tests")
+                    .join("testdir-current")
+            } else {
+                work_dir
+            };
+            println!("patchbay: serving {} at http://{bind}/", dir.display());
+            if open {
+                let url = format!("http://{bind}");
+                let _ = open::that(&url);
+            }
+            patchbay_server::serve(dir, &bind).await
+        }
+        VmCommand::Test {
+            filter,
+            target,
+            packages,
+            tests,
+            jobs,
+            features,
+            release,
+            lib,
+            no_fail_fast,
+            recreate,
+            cargo_args,
+        } => {
+            let test_args = test::TestArgs {
+                include_ignored: false,
+                ignored: false,
+                packages,
+                tests,
+                jobs,
+                features,
+                release,
+                lib,
+                no_fail_fast,
+                extra_args: {
+                    let mut args = Vec::new();
+                    if let Some(f) = filter {
+                        args.push(f);
+                    }
+                    args.extend(cargo_args);
+                    args
+                },
+            };
+            backend.run_tests(test_args.into_vm_args(target, recreate))
+        }
     }
 }
 
@@ -307,6 +721,7 @@ fn resolve_testdir_native() -> Result<PathBuf> {
     Ok(PathBuf::from(target_dir).join("testdir-current"))
 }
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InspectSession {
     prefix: String,
@@ -316,18 +731,22 @@ struct InspectSession {
     node_keeper_pids: HashMap<String, u32>,
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_dir(work_dir: &std::path::Path) -> PathBuf {
     work_dir.join("inspect")
 }
 
+#[cfg(target_os = "linux")]
 fn inspect_session_path(work_dir: &std::path::Path, prefix: &str) -> PathBuf {
     inspect_dir(work_dir).join(format!("{prefix}.json"))
 }
 
+#[cfg(target_os = "linux")]
 fn env_key_suffix(name: &str) -> String {
     patchbay::util::sanitize_for_env_key(name)
 }
 
+#[cfg(target_os = "linux")]
 fn load_topology_for_inspect(
     input: &std::path::Path,
 ) -> Result<(patchbay::config::LabConfig, bool)> {
@@ -350,6 +769,7 @@ fn load_topology_for_inspect(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn keeper_commmand() -> ProcessCommand {
     let mut cmd = ProcessCommand::new("sh");
     cmd.args(["-lc", "while :; do sleep 3600; done"])
@@ -359,6 +779,7 @@ fn keeper_commmand() -> ProcessCommand {
     cmd
 }
 
+#[cfg(target_os = "linux")]
 async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     check_caps()?;
 
@@ -440,6 +861,7 @@ async fn inspect_command(input: PathBuf, work_dir: PathBuf) -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn resolve_inspect_ref(inspect: Option<String>) -> Result<String> {
     if let Some(value) = inspect {
         let trimmed = value.trim();
@@ -457,6 +879,7 @@ fn resolve_inspect_ref(inspect: Option<String>) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn load_inspect_session(work_dir: &std::path::Path, inspect_ref: &str) -> Result<InspectSession> {
     let as_path = PathBuf::from(inspect_ref);
     let session_path = if as_path.extension().and_then(|v| v.to_str()) == Some("json")
@@ -472,6 +895,7 @@ fn load_inspect_session(work_dir: &std::path::Path, inspect_ref: &str) -> Result
         .with_context(|| format!("parse inspect session {}", session_path.display()))
 }
 
+#[cfg(target_os = "linux")]
 fn run_in_command(
     node: String,
     inspect: Option<String>,
@@ -517,12 +941,14 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_key_suffix_normalizes_names() {
         assert_eq!(env_key_suffix("relay"), "relay");
         assert_eq!(env_key_suffix("fetcher-1"), "fetcher_1");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_session_path_uses_prefix_json() {
         let base = PathBuf::from("/tmp/patchbay-work");
@@ -530,6 +956,7 @@ mod tests {
         assert!(path.ends_with("inspect/lab-p123.json"));
     }
 
+    #[cfg(target_os = "linux")]
     fn write_temp_file(dir: &Path, rel: &str, body: &str) -> PathBuf {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
@@ -539,6 +966,7 @@ mod tests {
         path
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_loader_detects_sim_input() {
         let root = std::env::temp_dir().join(format!(
@@ -558,6 +986,7 @@ mod tests {
         assert!(is_sim);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn inspect_loader_detects_topology_input() {
         let root = std::env::temp_dir().join(format!(

@@ -27,18 +27,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build patchbay (linux musl)
-        run: cargo build -p patchbay-runner --bin patchbay --release --target x86_64-unknown-linux-musl
+        run: cargo build -p patchbay-cli --release --target x86_64-unknown-linux-musl
 
       - name: Build patchbay-vm (linux musl)
         run: cargo build -p patchbay-vm --release --target x86_64-unknown-linux-musl
+
+      - name: Build patchbay-serve (linux musl)
+        run: cargo build -p patchbay-server --release --target x86_64-unknown-linux-musl
 
       - name: Package linux artifacts
         run: |
           mkdir -p dist
           cp target/x86_64-unknown-linux-musl/release/patchbay dist/patchbay-x86_64-unknown-linux-musl
           cp target/x86_64-unknown-linux-musl/release/patchbay-vm dist/patchbay-vm-x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/patchbay-serve dist/patchbay-serve-x86_64-unknown-linux-musl
           tar -C dist -czf dist/patchbay-x86_64-unknown-linux-musl.tar.gz patchbay-x86_64-unknown-linux-musl
           tar -C dist -czf dist/patchbay-vm-x86_64-unknown-linux-musl.tar.gz patchbay-vm-x86_64-unknown-linux-musl
+          tar -C dist -czf dist/patchbay-serve-x86_64-unknown-linux-musl.tar.gz patchbay-serve-x86_64-unknown-linux-musl
 
       - uses: actions/upload-artifact@v4
         with:

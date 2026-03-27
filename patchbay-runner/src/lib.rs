@@ -8,8 +8,7 @@ pub use patchbay::{
 };
 pub use patchbay_utils::assets::BinaryOverride;
 
-mod init;
-pub(crate) mod sim;
+pub mod sim;
 
 use std::{path::PathBuf, time::Duration};
 

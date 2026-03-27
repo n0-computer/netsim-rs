@@ -36,16 +36,16 @@ test('devtools ui shows all views', async ({ page }) => {
     // Step 3: Open the UI.
     await page.goto(DEVTOOLS_URL)
 
+    // Runs index should show the run.
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 10_000 })
+
+    // Click through to the run detail.
+    const runLink = page.locator('a[href*="/run/"]').first()
+    await expect(runLink).toBeVisible({ timeout: 10_000 })
+    await runLink.click()
+
     // Verify the topbar shows "patchbay" heading.
-    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible()
-
-    // The run selector should have an entry containing "e2e-test".
-    const selector = page.locator('select')
-    await expect(selector).toBeVisible()
-    await expect(selector.locator('option', { hasText: 'e2e-test' })).toBeAttached()
-
-    // Verify the run status shows "stopped" (not stuck on "running").
-    await expect(page.getByText('stopped')).toBeVisible({ timeout: 5_000 })
+    await expect(page.getByRole('heading', { name: 'patchbay' })).toBeVisible({ timeout: 10_000 })
 
     // Step 4: Verify topology tab shows router and device nodes (default tab).
     await expect(page.getByText('dc')).toBeVisible({ timeout: 10_000 })

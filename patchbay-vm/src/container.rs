@@ -27,7 +27,7 @@ use crate::{
 // Constants
 // ---------------------------------------------------------------------------
 
-const CONTAINER_STATE_DIR: &str = ".container-vm";
+const CONTAINER_STATE_DIR: &str = ".patchbay/vm";
 const DEFAULT_CONTAINER_NAME: &str = "patchbay";
 const DEFAULT_IMAGE: &str = "debian:trixie-slim";
 
@@ -84,7 +84,7 @@ impl ContainerConfig {
             Ok(dir) => dir,
             Err(_) => cwd.join("target"),
         };
-        let default_work = cwd.join(".patchbay-work");
+        let default_work = cwd.join(".patchbay/work");
 
         Ok(Self {
             name: env_or("CONTAINER_VM_NAME", DEFAULT_CONTAINER_NAME),

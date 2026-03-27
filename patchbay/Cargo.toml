@@ -8,7 +8,11 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[features]
+iroh-metrics = ["dep:iroh-metrics"]
+
 [dependencies]
+iroh-metrics = { version = "0.38", optional = true }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 derive_more = { version = "2.1.1", features = ["debug", "display"] }

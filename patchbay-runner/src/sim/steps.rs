@@ -851,7 +851,7 @@ pub(crate) fn join_pump(handle: thread::JoinHandle<Result<()>>, label: &str) -> 
     }
 }
 
-pub(crate) fn parse_duration(s: &str) -> Result<Duration> {
+pub fn parse_duration(s: &str) -> Result<Duration> {
     if let Some(n) = s.strip_suffix("ms") {
         return Ok(Duration::from_millis(
             n.trim().parse().context("parse milliseconds")?,

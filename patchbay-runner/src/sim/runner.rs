@@ -20,7 +20,7 @@ use crate::sim::{
     env::SimEnv,
     progress::{
         collect_run_environment, format_timestamp, now_stamp, write_json, write_progress,
-        write_run_manifest, ManifestSimSummary, ProgressSim, RunManifest, RunProgress,
+        write_sim_report, ManifestSimSummary, ProgressSim, RunProgress, SimRunReport,
     },
     report::{
         print_run_summary_table_for_runs, write_combined_results_for_runs, write_results,
@@ -201,8 +201,8 @@ pub async fn run_sims(
     };
     write_progress(&run_root, &progress).await?;
     let initial_manifest =
-        build_run_manifest(&run_root, run_start, None, None, None, &progress, &[])?;
-    write_run_manifest(&run_root, &initial_manifest).await?;
+        build_sim_report(&run_root, run_start, None, None, None, &progress, &[])?;
+    write_sim_report(&run_root, &initial_manifest).await?;
 
     let mut sim_dir_names = Vec::new();
     let mut outcomes = Vec::new();
@@ -254,8 +254,8 @@ pub async fn run_sims(
             .await
             .context("write incremental combined results")?;
         let running_manifest =
-            build_run_manifest(&run_root, run_start, None, None, None, &progress, &outcomes)?;
-        write_run_manifest(&run_root, &running_manifest).await?;
+            build_sim_report(&run_root, run_start, None, None, None, &progress, &outcomes)?;
+        write_sim_report(&run_root, &running_manifest).await?;
     }
     write_combined_results_for_runs(&run_root, &sim_dir_names)
         .await
@@ -266,7 +266,7 @@ pub async fn run_sims(
     progress.status = "done".to_string();
     progress.updated_at = format_timestamp(run_end);
     write_progress(&run_root, &progress).await?;
-    let run_manifest = build_run_manifest(
+    let run_manifest = build_sim_report(
         &run_root,
         run_start,
         Some(run_end),
@@ -275,7 +275,7 @@ pub async fn run_sims(
         &progress,
         &outcomes,
     )?;
-    write_run_manifest(&run_root, &run_manifest).await?;
+    write_sim_report(&run_root, &run_manifest).await?;
     let failed: Vec<&SimRunOutcome> = outcomes.iter().filter(|outcome| !outcome.success).collect();
     if !failed.is_empty() {
         let mut msg = String::from("one or more simulations failed:");
@@ -742,7 +742,7 @@ fn prepare_run_root(work_root: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(work_root)
         .with_context(|| format!("create work root {}", work_root.display()))?;
     let stamp = now_stamp();
-    let run_base = format!("sim-{}", stamp);
+    let run_base = format!("run-{}", stamp);
     let run_dir = create_unique_dir(work_root, &run_base)?;
     let run_name = run_dir
         .file_name()
@@ -962,7 +962,7 @@ async fn write_sim_summary(run_work_dir: &Path, summary: &SimSummary) -> Result<
     write_json(run_work_dir.join("sim.json"), summary).await
 }
 
-fn build_run_manifest(
+fn build_sim_report(
     run_root: &Path,
     started_at: SystemTime,
     ended_at: Option<SystemTime>,
@@ -970,7 +970,7 @@ fn build_run_manifest(
     success: Option<bool>,
     progress: &RunProgress,
     outcomes: &[SimRunOutcome],
-) -> Result<RunManifest> {
+) -> Result<SimRunReport> {
     let run = run_root
         .file_name()
         .and_then(|s| s.to_str())
@@ -1006,7 +1006,7 @@ fn build_run_manifest(
             }
         })
         .collect();
-    Ok(RunManifest {
+    Ok(SimRunReport {
         run,
         started_at: format_timestamp(started_at),
         status: progress.status.clone(),
