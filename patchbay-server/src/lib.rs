@@ -1039,7 +1039,8 @@ async fn push_run(
         "project": project,
         "run": run_name,
         "group": run_name,
-        "batch": run_name,  // backward compat
+        "batch": run_name,       // backward compat
+        "invocation": run_name,  // backward compat (old CI templates read .invocation)
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())
