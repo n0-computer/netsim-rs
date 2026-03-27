@@ -24,7 +24,7 @@ ctor = "0.6"
 nix = { version = "0.30", features = ["signal", "process"] }
 flate2 = "1"
 open = "5"
-reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tar = "0.4"
