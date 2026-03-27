@@ -12,7 +12,15 @@ use patchbay::check_caps;
 use patchbay_runner::sim;
 use serde::{Deserialize, Serialize};
 
-/// Initialize user namespaces (must be called before tokio starts threads).
+/// Bootstrap user namespaces before main() — required for test binaries
+/// where main() is not our code (nextest spawns each test as a process).
+#[ctor::ctor]
+fn _init_userns() {
+    // Safety: called from .init_array before main() and before any threads.
+    unsafe { patchbay::init_userns_for_ctor() };
+}
+
+/// Initialize user namespaces (called from main() as well for the CLI binary).
 pub fn init() -> Result<()> {
     patchbay::init_userns()
 }
