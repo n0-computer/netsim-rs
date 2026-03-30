@@ -383,6 +383,47 @@ fn parse_nextest_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
+/// Parse nextest libtest-json output into test results.
+///
+/// Expects JSONL lines like: `{"type":"test","event":"ok","name":"...","exec_time":1.23}`
+pub fn parse_nextest_json(output: &str) -> Vec<TestResult> {
+    let mut results = Vec::new();
+    for line in output.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("test") {
+            continue;
+        }
+        let event = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
+        if event == "started" {
+            continue;
+        }
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let status = match event {
+            "ok" => TestStatus::Pass,
+            "failed" => TestStatus::Fail,
+            "ignored" => TestStatus::Ignored,
+            _ => continue,
+        };
+        let duration = v
+            .get("exec_time")
+            .and_then(|t| t.as_f64())
+            .map(Duration::from_secs_f64);
+        results.push(TestResult {
+            name,
+            status,
+            duration,
+            dir: None,
+        });
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +507,30 @@ test result: FAILED. 1 passed; 1 failed; 1 ignored;
         assert_eq!(json, r#"{"d":null}"#);
         let t3: T = serde_json::from_str(&json).unwrap();
         assert_eq!(none, t3);
+    }
+
+    #[test]
+    fn test_parse_nextest_json() {
+        let output = r#"{"type":"suite","event":"started","test_count":3,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"test","event":"started","name":"iroh::patchbay$holepunch_simple"}
+{"type":"test","event":"ignored","name":"iroh::patchbay$holepunch_cgnat"}
+{"type":"test","event":"ok","name":"iroh::patchbay$holepunch_simple","exec_time":4.5}
+{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":1,"measured":0,"filtered_out":5,"exec_time":4.5,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"suite","event":"started","test_count":1,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"test","event":"started","name":"iroh::patchbay$switch_uplink"}
+{"type":"test","event":"failed","name":"iroh::patchbay$switch_uplink","exec_time":10.0}
+{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}"#;
+        let results = parse_nextest_json(output);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].name, "iroh::patchbay$holepunch_cgnat");
+        assert_eq!(results[0].status, TestStatus::Ignored);
+        assert_eq!(results[0].duration, None);
+        assert_eq!(results[1].name, "iroh::patchbay$holepunch_simple");
+        assert_eq!(results[1].status, TestStatus::Pass);
+        assert_eq!(results[1].duration, Some(Duration::from_millis(4500)));
+        assert_eq!(results[2].name, "iroh::patchbay$switch_uplink");
+        assert_eq!(results[2].status, TestStatus::Fail);
+        assert_eq!(results[2].duration, Some(Duration::from_secs(10)));
     }
 
     #[test]

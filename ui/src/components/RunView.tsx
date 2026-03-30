@@ -28,9 +28,11 @@ interface RunViewProps {
   activeTab: RunTab
   onTabChange: (tab: RunTab) => void
   externalControls?: ExternalControls
+  /** When true, data fetches are complete (distinguishes "loading" from "no data"). */
+  loaded?: boolean
 }
 
-export default function RunView({ run, state, events, logs, results, activeTab, onTabChange, externalControls }: RunViewProps) {
+export default function RunView({ run, state, events, logs, results, activeTab, onTabChange, externalControls, loaded = true }: RunViewProps) {
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [selectedKind, setSelectedKind] = useState<'router' | 'device' | 'ix'>('router')
   const [logJump, setLogJump] = useState<{ node: string; path: string; timeLabel: string; nonce: number } | null>(null)
@@ -98,7 +100,7 @@ export default function RunView({ run, state, events, logs, results, activeTab, 
           </div>
         )}
         {tab === 'topology' && !state && (
-          <div className="empty">Loading lab state...</div>
+          <div className="empty">{loaded ? 'No topology data for this run' : 'Loading lab state...'}</div>
         )}
 
         {tab === 'logs' && (

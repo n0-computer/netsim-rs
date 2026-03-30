@@ -6,6 +6,8 @@
 #   3. If your tests need a self-hosted runner, update runs-on accordingly
 #
 # For server setup see: https://github.com/n0-computer/patchbay/tree/main/patchbay-server
+#
+# No patchbay binary required in CI — just nextest + curl.
 
 name: Patchbay Tests
 
@@ -28,27 +30,23 @@ jobs:
 
       # ── Build tools — adjust to your project ──
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
 
-      # ── Install patchbay CLI from rolling release ──
-      - name: Install patchbay CLI
-        run: |
-          ASSET="patchbay-x86_64-unknown-linux-musl"
-          URL="https://github.com/n0-computer/patchbay/releases/download/rolling/${ASSET}.tar.gz"
-          curl -fsSL "$URL" | tar xz -C /usr/local/bin "$ASSET"
-          mv /usr/local/bin/"$ASSET" /usr/local/bin/patchbay
-          chmod +x /usr/local/bin/patchbay
-          patchbay --version || patchbay --help | head -1
-
-      # ── Run tests — replace with your own command ──
-      # Use `patchbay test` which writes structured output to .patchbay/work/.
-      # --persist keeps the run directory after tests complete.
+      # ── Run tests with nextest JSON output ──
       - name: Run tests
         id: tests
-        run: patchbay test --persist -p my-crate --test my-test
+        run: |
+          NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 \
+          cargo nextest run \
+            --message-format libtest-json \
+            -p my-crate --test my-test \
+            > .patchbay-results.jsonl
         env:
           RUST_LOG: ${{ runner.debug && 'TRACE' || 'DEBUG' }}
+          PATCHBAY_OUTDIR: ${{ github.workspace }}/.patchbay-testdir
 
       # ── Upload results to patchbay-serve ──
+      # The server parses nextest JSONL and creates run.json automatically.
       - name: Upload results
         id: upload
         if: always()
@@ -59,18 +57,25 @@ jobs:
           set -euo pipefail
           PROJECT="${{ github.event.repository.name }}"
 
-          # Find the most recent run directory
-          RUN_DIR=$(ls -dt .patchbay/work/run-* 2>/dev/null | head -1)
-          if [ -z "$RUN_DIR" ]; then
-            echo "No run directory found, skipping upload"
-            exit 0
+          # Collect output into a directory for upload
+          UPLOAD_DIR=$(mktemp -d)
+          # Include nextest results
+          cp .patchbay-results.jsonl "$UPLOAD_DIR/test-results.jsonl" 2>/dev/null || true
+          # Include test output (testdir, metrics, events) if present
+          if [ -d ".patchbay-testdir" ]; then
+            cp -rL .patchbay-testdir/* "$UPLOAD_DIR/" 2>/dev/null || true
           fi
 
-          VIEW_URL=$(patchbay upload "$RUN_DIR" \
-            --project "$PROJECT" \
-            --url "$PATCHBAY_URL" \
-            --api-key "$PATCHBAY_API_KEY")
+          # Upload as tar.gz
+          BODY=$(tar czf - -C "$UPLOAD_DIR" . | curl -sS -X POST \
+            -H "Authorization: Bearer $PATCHBAY_API_KEY" \
+            -H "Content-Type: application/gzip" \
+            --data-binary @- \
+            "$PATCHBAY_URL/api/push/$PROJECT")
+
+          VIEW_URL=$(echo "$BODY" | jq -r '.view_url // empty')
           echo "view_url=$VIEW_URL" >> "$GITHUB_OUTPUT"
+          rm -rf "$UPLOAD_DIR"
 
       # ── Post or update PR comment ──
       - name: Comment on PR
@@ -86,9 +91,10 @@ jobs:
             const commitUrl = `${{ github.server_url }}/${{ github.repository }}/commit/${sha}`;
             const date = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
             const viewUrl = '${{ steps.upload.outputs.view_url }}';
+            const viewLine = viewUrl ? ` | [view results](${viewUrl})` : '';
             const body = [
               marker,
-              `${icon} **patchbay:** ${status} | [view results](${viewUrl})`,
+              `${icon} **patchbay:** ${status}${viewLine}`,
               `<sub>${date} · [\`${shortSha}\`](${commitUrl})</sub>`,
             ].join('\n');
 

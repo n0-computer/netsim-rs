@@ -89,7 +89,7 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
   const [leftManifest, setLeftManifest] = useState<RunManifest | null>(null)
   const [rightManifest, setRightManifest] = useState<RunManifest | null>(null)
   const [loading, setLoading] = useState(true)
-  const [sharedTab, setSharedTab] = useState<RunTab>('topology')
+  const [sharedTab, setSharedTab] = useState<RunTab>('logs')
 
   useEffect(() => {
     setLoading(true)
@@ -327,9 +327,11 @@ function SplitRunPanel({ runName, activeTab, onTabChange, sharedControls }: {
   const [events, setEvents] = useState<LabEvent[]>([])
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [results, setResults] = useState<SimResults | null>(null)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let dead = false
+    setLoaded(false)
     Promise.all([
       fetchState(runName),
       fetchEvents(runName),
@@ -341,6 +343,7 @@ function SplitRunPanel({ runName, activeTab, onTabChange, sharedControls }: {
       setEvents(e ?? [])
       setLogs(l)
       setResults(r)
+      setLoaded(true)
     })
     return () => { dead = true }
   }, [runName])
@@ -363,6 +366,7 @@ function SplitRunPanel({ runName, activeTab, onTabChange, sharedControls }: {
       activeTab={activeTab}
       onTabChange={onTabChange}
       externalControls={externalControls}
+      loaded={loaded}
     />
   )
 }

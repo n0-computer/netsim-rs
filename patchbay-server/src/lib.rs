@@ -151,31 +151,41 @@ fn scan_runs_recursive(
         let has_events = path.join(EVENTS_JSONL).exists();
         let has_run_json = path.join(RUN_JSON).exists();
 
-        if has_events {
-            // Leaf run: has events.jsonl → it's an actual lab output dir.
-            let name = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            let (label, status) = read_run_metadata(&path);
-            let group = name
-                .split('/')
-                .next()
-                .filter(|first| *first != name)
-                .map(str::to_string);
-            runs.push(RunInfo {
-                name,
-                path,
-                label,
-                status,
-                group,
-                manifest: None, // populated after scan
-            });
-        } else if has_run_json {
-            // Group directory: has run.json but no events.jsonl.
-            // Recurse to find child runs, they inherit this manifest.
-            scan_runs_recursive(root, &path, depth + 1, runs)?;
+        if has_events || has_run_json {
+            // Check if this is a leaf run or a group with children.
+            let has_child_dirs = fs::read_dir(&path)
+                .map(|rd| {
+                    rd.flatten()
+                        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                })
+                .unwrap_or(false);
+
+            if has_run_json && !has_events && has_child_dirs {
+                // Group directory: has run.json, no events.jsonl, has subdirs.
+                // Recurse to find child runs that inherit this manifest.
+                scan_runs_recursive(root, &path, depth + 1, runs)?;
+            } else {
+                // Leaf run: has events.jsonl or run.json without children.
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                let (label, status) = read_run_metadata(&path);
+                let group = name
+                    .split('/')
+                    .next()
+                    .filter(|first| *first != name)
+                    .map(str::to_string);
+                runs.push(RunInfo {
+                    name,
+                    path,
+                    label,
+                    status,
+                    group,
+                    manifest: None, // populated after scan
+                });
+            }
         } else {
             scan_runs_recursive(root, &path, depth + 1, runs)?;
         }
@@ -1030,8 +1040,69 @@ async fn push_run(
         }
     }
 
+    // Auto-generate run.json from nextest JSONL if not already present.
+    let run_json_path = run_dir.join("run.json");
+    if !run_json_path.exists() {
+        let nextest_jsonl = run_dir.join("test-results.jsonl");
+        let results = if nextest_jsonl.exists() {
+            let content = std::fs::read_to_string(&nextest_jsonl).unwrap_or_default();
+            patchbay_utils::manifest::parse_nextest_json(&content)
+        } else {
+            Vec::new()
+        };
+        let pass = results
+            .iter()
+            .filter(|r| r.status == patchbay_utils::manifest::TestStatus::Pass)
+            .count() as u32;
+        let fail = results
+            .iter()
+            .filter(|r| r.status == patchbay_utils::manifest::TestStatus::Fail)
+            .count() as u32;
+        let total = results.len() as u32;
+        let manifest = patchbay_utils::manifest::RunManifest {
+            kind: patchbay_utils::manifest::RunKind::Test,
+            project: Some(project.clone()),
+            commit: None,
+            branch: None,
+            dirty: false,
+            pr: None,
+            pr_url: None,
+            title: None,
+            started_at: Some(chrono::Utc::now()),
+            ended_at: None,
+            runtime: None,
+            outcome: if fail > 0 {
+                Some("fail".into())
+            } else if pass > 0 {
+                Some("pass".into())
+            } else {
+                None
+            },
+            pass: if total > 0 { Some(pass) } else { None },
+            fail: if total > 0 { Some(fail) } else { None },
+            total: if total > 0 { Some(total) } else { None },
+            tests: results,
+            os: None,
+            arch: None,
+            patchbay_version: None,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+            let _ = std::fs::write(&run_json_path, json);
+        }
+    }
+
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
+
+    let view_url = format!(
+        "{}/run/{}",
+        headers
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| headers.get("host").and_then(|v| v.to_str().ok()))
+            .unwrap_or(""),
+        run_name
+    );
 
     // run_name is the group name (first path component for all sims inside)
     let result = serde_json::json!({
@@ -1041,6 +1112,7 @@ async fn push_run(
         "group": run_name,
         "batch": run_name,       // backward compat
         "invocation": run_name,  // backward compat (old CI templates read .invocation)
+        "view_url": view_url,
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())

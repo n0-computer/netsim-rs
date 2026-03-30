@@ -3,11 +3,10 @@
 use std::{
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
-use patchbay_utils::manifest::{self, RunKind, RunManifest, TestResult, TestStatus};
+use patchbay_utils::manifest::{self, RunKind, RunManifest, TestStatus};
 
 /// Shared test arguments used by both `patchbay test` and `patchbay compare test`.
 #[derive(Debug, Clone, clap::Args)]
@@ -166,43 +165,8 @@ pub fn has_nextest() -> bool {
 }
 
 /// Parse nextest JSON (libtest format) lines into TestResults.
-pub fn parse_nextest_json(stdout: &str) -> Vec<TestResult> {
-    let mut results = Vec::new();
-    for line in stdout.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if v.get("type").and_then(|t| t.as_str()) != Some("test") {
-            continue;
-        }
-        let event = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
-        if event == "started" {
-            continue;
-        }
-        let name = v
-            .get("name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("")
-            .to_string();
-        let status = match event {
-            "ok" => TestStatus::Pass,
-            "failed" => TestStatus::Fail,
-            "ignored" => TestStatus::Ignored,
-            _ => continue,
-        };
-        let duration = v
-            .get("exec_time")
-            .and_then(|t| t.as_f64())
-            .map(Duration::from_secs_f64);
-        results.push(TestResult {
-            name,
-            status,
-            duration,
-            dir: None,
-        });
-    }
-    results
-}
+/// Re-exports from patchbay_utils for use by compare.rs.
+pub use manifest::parse_nextest_json;
 
 /// Resolve `target_directory` from cargo metadata.
 fn cargo_target_dir() -> Option<PathBuf> {

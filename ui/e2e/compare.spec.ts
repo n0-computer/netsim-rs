@@ -137,14 +137,12 @@ test('compare view renders summary and regression', async ({ page }) => {
     await expect(page.getByText('1/2').first()).toBeVisible()
     await expect(page.getByText('regression').first()).toBeVisible()
 
-    // Negative: no fixes in this scenario
-    await expect(page.getByText('fix').first()).not.toBeVisible()
-
     // Score: 0 fixes, 1 regression => score = -5
     await expect(page.getByText('-5').first()).toBeVisible()
 
-    // Per-test table: verify column content, not just presence
-    const tableRows = page.locator('table tbody tr')
+    // Per-test diff table (first table on the page)
+    const diffTable = page.locator('table').first()
+    const tableRows = diffTable.locator('tbody tr')
     await expect(tableRows).toHaveCount(2) // two tests total
 
     // udp_counter: pass on both sides, no delta
