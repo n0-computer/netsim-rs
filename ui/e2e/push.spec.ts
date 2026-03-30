@@ -74,10 +74,19 @@ test('push run results and view via deep link', async ({ page }) => {
       body: tarGz,
     })
     expect(pushRes.status).toBe(200)
-    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string }
+    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string; view_url?: string; [key: string]: unknown }
     expect(pushBody.ok).toBe(true)
     expect(pushBody.project).toBe('test-project')
     expect(pushBody.group).toBeTruthy()
+
+    // view_url must use /group/ prefix
+    expect(pushBody.view_url).toBeTruthy()
+    expect(pushBody.view_url).toContain('/group/')
+
+    // No legacy batch/invocation terminology in response
+    const responseKeys = Object.keys(pushBody)
+    expect(responseKeys).not.toContain('batch')
+    expect(responseKeys).not.toContain('invocation')
 
     // Step 4: Verify the run appears in the API (allow time for discovery).
     await new Promise(r => setTimeout(r, 3000))
@@ -119,5 +128,69 @@ test('push run results and view via deep link', async ({ page }) => {
     }
     rmSync(simWorkDir, { recursive: true, force: true })
     rmSync(serveDataDir, { recursive: true, force: true })
+  }
+})
+
+test('push nextest JSONL without run.json — server creates manifest', async ({ page }) => {
+  test.setTimeout(2 * 60 * 1000)
+  const uploadDir = mkdtempSync(`${tmpdir()}/patchbay-nextest-push-`)
+  const serveDir = mkdtempSync(`${tmpdir()}/patchbay-nextest-serve-`)
+  let serveProc: ChildProcess | null = null
+
+  // Mock nextest libtest-json output
+  const NEXTEST_JSONL = [
+    '{"type":"suite","event":"started","test_count":3}',
+    '{"type":"test","event":"started","name":"my_crate::tests::foo"}',
+    '{"type":"test","event":"ok","name":"my_crate::tests::foo","exec_time":0.5}',
+    '{"type":"test","event":"started","name":"my_crate::tests::bar"}',
+    '{"type":"test","event":"failed","name":"my_crate::tests::bar","exec_time":1.2}',
+    '{"type":"test","event":"started","name":"my_crate::tests::baz"}',
+    '{"type":"test","event":"ok","name":"my_crate::tests::baz","exec_time":0.3}',
+    '{"type":"suite","event":"failed","passed":2,"failed":1,"ignored":0}',
+  ].join('\n')
+
+  try {
+    writeFileSync(path.join(uploadDir, 'test-results.jsonl'), NEXTEST_JSONL)
+
+    serveProc = spawn(
+      PATCHBAY_SERVE_BIN,
+      ['--accept-push', '--api-key', API_KEY, '--data-dir', serveDir, '--http-bind', SERVE_BIND],
+      { cwd: REPO_ROOT, stdio: 'inherit' },
+    )
+    await waitForHttp(`${SERVE_URL}/api/runs`, 15_000)
+
+    // Push the tar.gz (no run.json inside — only test-results.jsonl)
+    const tarGz = execSync(`tar -czf - -C "${uploadDir}" .`)
+    const pushRes = await fetch(`${SERVE_URL}/api/push/nextest-project`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${API_KEY}`,
+        'Content-Type': 'application/gzip',
+      },
+      body: tarGz,
+    })
+    expect(pushRes.status).toBe(200)
+    const body = await pushRes.json() as { ok: boolean; group: string; view_url?: string }
+    expect(body.ok).toBe(true)
+
+    // Server should have auto-created run.json from the nextest JSONL
+    await new Promise(r => setTimeout(r, 2000))
+    const runsRes = await fetch(`${SERVE_URL}/api/runs`)
+    const runs = await runsRes.json() as Array<{ name: string; manifest?: Record<string, unknown> | null }>
+    const run = runs.find(r => r.manifest?.project === 'nextest-project')
+    expect(run).toBeTruthy()
+    expect(run!.manifest!.kind).toBe('test')
+    expect(run!.manifest!.pass).toBe(2)
+    expect(run!.manifest!.fail).toBe(1)
+    expect(run!.manifest!.total).toBe(3)
+    // Verify test-level results
+    const tests = run!.manifest!.tests as Array<{ name: string; status: string }>
+    expect(tests).toHaveLength(3)
+    expect(tests.find(t => t.name === 'my_crate::tests::foo')?.status).toBe('pass')
+    expect(tests.find(t => t.name === 'my_crate::tests::bar')?.status).toBe('fail')
+  } finally {
+    if (serveProc && !serveProc.killed) serveProc.kill('SIGTERM')
+    rmSync(uploadDir, { recursive: true, force: true })
+    rmSync(serveDir, { recursive: true, force: true })
   }
 })

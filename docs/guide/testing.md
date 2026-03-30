@@ -112,8 +112,11 @@ On Linux, tests run natively. Install patchbay's CLI if you want the
 `serve` command for viewing results:
 
 ```bash
-cargo binstall patchbay-cli --no-confirm \
-  || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
+# From rolling release (fast):
+curl -fsSL https://github.com/n0-computer/patchbay/releases/download/rolling/patchbay-x86_64-unknown-linux-musl.tar.gz \
+  | tar xz -C ~/.cargo/bin && mv ~/.cargo/bin/patchbay-x86_64-unknown-linux-musl ~/.cargo/bin/patchbay
+# Or build from source:
+cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
 ```
 
 Then run your tests and serve the output:
@@ -247,11 +250,14 @@ Install the patchbay CLI in your workflow, then add these steps **after**
 the test step:
 
 ```yaml
-    # Install patchbay CLI (binstall for speed, cargo install as fallback)
+    # Install patchbay CLI from rolling release
     - name: Install patchbay CLI
       run: |
-        cargo binstall patchbay-cli --no-confirm 2>/dev/null \
-          || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
+        ASSET="patchbay-x86_64-unknown-linux-musl"
+        curl -fsSL "https://github.com/n0-computer/patchbay/releases/download/rolling/${ASSET}.tar.gz" \
+          | tar xz -C /usr/local/bin "$ASSET"
+        mv /usr/local/bin/"$ASSET" /usr/local/bin/patchbay
+        chmod +x /usr/local/bin/patchbay
 
     # Run tests with patchbay (--persist keeps the run directory)
     - name: Run tests

@@ -73,7 +73,6 @@ pub struct RunInfo {
     /// [`RunManifest::test_outcome`] for the overall pass/fail from CI.
     pub status: Option<String>,
     /// Group (first path component for nested runs, `None` for flat/direct).
-    #[serde(alias = "batch")]
     pub group: Option<String>,
     /// CI manifest from `run.json` in the group directory, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,16 +108,65 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
-    // Attach run.json manifests from group directories.
-    let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
+    // Add standalone groups: dirs with run.json but no leaf children found.
+    // These are e.g. nextest-only pushes without per-test event dirs.
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // Skip if we already have runs in this group.
+            let already_found = runs
+                .iter()
+                .any(|r| r.group.as_deref() == Some(&name) || r.name == name);
+            if already_found {
+                continue;
+            }
+            // If it has run.json, add as a standalone entry.
+            if path.join(RUN_JSON).exists() {
+                runs.push(RunInfo {
+                    name: name.clone(),
+                    path,
+                    label: None,
+                    status: None,
+                    group: None,
+                    manifest: None,
+                });
+            }
+        }
+    }
+
+    // Attach run.json manifests: own dir first, then inherit from group dir.
+    let mut group_manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
-        let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
-        let manifest = manifest_cache
-            .entry(group_key.clone())
-            .or_insert_with(|| read_run_json(&base.join(&group_key)))
-            .clone();
-        run.manifest = manifest;
+        // 1. Check if the run's own dir has run.json.
+        let mut own_manifest = read_run_json(&run.path);
+        if let Some(ref mut m) = own_manifest {
+            merge_nextest_results(&run.path, m);
+            run.manifest = own_manifest;
+        } else {
+            // 2. Inherit from group dir (first path segment).
+            let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
+            let group_manifest = group_manifest_cache
+                .entry(group_key.clone())
+                .or_insert_with(|| {
+                    let group_dir = base.join(&group_key);
+                    let mut m = read_run_json(&group_dir);
+                    // If group dir has both run.json AND test-results.jsonl, merge.
+                    if let Some(ref mut manifest) = m {
+                        merge_nextest_results(&group_dir, manifest);
+                    }
+                    m
+                })
+                .clone();
+            run.manifest = group_manifest;
+        }
     }
 
     runs.sort_by(|a, b| b.name.cmp(&a.name));
@@ -148,11 +196,9 @@ fn scan_runs_recursive(
         if !path.is_dir() {
             continue;
         }
-        let has_events = path.join(EVENTS_JSONL).exists();
-        let has_run_json = path.join(RUN_JSON).exists();
 
-        if has_events {
-            // Leaf run: has events.jsonl → it's an actual lab output dir.
+        if path.join(EVENTS_JSONL).exists() {
+            // Leaf run: directory contains events.jsonl (the only leaf indicator).
             let name = path
                 .strip_prefix(root)
                 .unwrap_or(&path)
@@ -172,11 +218,8 @@ fn scan_runs_recursive(
                 group,
                 manifest: None, // populated after scan
             });
-        } else if has_run_json {
-            // Group directory: has run.json but no events.jsonl.
-            // Recurse to find child runs, they inherit this manifest.
-            scan_runs_recursive(root, &path, depth + 1, runs)?;
         } else {
+            // No events.jsonl → recurse (regardless of run.json presence).
             scan_runs_recursive(root, &path, depth + 1, runs)?;
         }
     }
@@ -242,7 +285,6 @@ fn build_router(state: AppState) -> Router {
         .route("/run/{*rest}", get(index_html))
         .route("/group/{*rest}", get(index_html))
         .route("/compare/{*rest}", get(index_html))
-        .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/manifest", get(get_run_manifest))
@@ -254,11 +296,6 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
         .route(
             "/api/groups/{name}/combined-results",
-            get(get_group_combined),
-        )
-        // Legacy alias — keep for backward-compat (links shared on Discord).
-        .route(
-            "/api/invocations/{name}/combined-results",
             get(get_group_combined),
         );
     if state.push.is_some() {
@@ -445,11 +482,23 @@ async fn get_run_manifest(
         );
     };
     match read_run_json(&run_dir) {
-        Some(manifest) => (
-            StatusCode::OK,
-            [("content-type", "application/json")],
-            serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
-        ),
+        Some(mut manifest) => {
+            // If this is a group directory (no events.jsonl), prefix test dirs
+            // with the run name so they are navigable as full paths.
+            let is_group = !run_dir.join(EVENTS_JSONL).exists();
+            if is_group {
+                for test in &mut manifest.tests {
+                    if let Some(ref dir) = test.dir {
+                        test.dir = Some(format!("{run}/{dir}"));
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
+            )
+        }
         None => (
             StatusCode::NOT_FOUND,
             [("content-type", "application/json")],
@@ -919,12 +968,47 @@ async fn scan_log_files(run_dir: &Path) -> Vec<LogEntry> {
 pub use patchbay_utils::manifest::RunManifest;
 
 const RUN_JSON: &str = "run.json";
+const TEST_RESULTS_JSONL: &str = "test-results.jsonl";
 
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
     let mut manifest: RunManifest = serde_json::from_str(&text).ok()?;
-    manifest.resolve_test_dirs(dir);
+    manifest.build_test_list(dir);
     Some(manifest)
+}
+
+/// If `test-results.jsonl` exists in `dir`, parse it and add any tests NOT
+/// already present in the manifest's tests array (matched by name).
+fn merge_nextest_results(dir: &Path, manifest: &mut RunManifest) {
+    let results_path = dir.join(TEST_RESULTS_JSONL);
+    let Ok(content) = fs::read_to_string(&results_path) else {
+        return;
+    };
+    let nextest_results = patchbay_utils::manifest::parse_nextest_json(&content);
+    let existing: std::collections::HashSet<&str> =
+        manifest.tests.iter().map(|t| t.name.as_str()).collect();
+    let new_tests: Vec<_> = nextest_results
+        .into_iter()
+        .filter(|r| !existing.contains(r.name.as_str()))
+        .collect();
+    manifest.tests.extend(new_tests);
+    // Recompute counts from the merged tests list.
+    let pass = manifest
+        .tests
+        .iter()
+        .filter(|t| t.status == patchbay_utils::manifest::TestStatus::Pass)
+        .count() as u32;
+    let fail = manifest
+        .tests
+        .iter()
+        .filter(|t| t.status == patchbay_utils::manifest::TestStatus::Fail)
+        .count() as u32;
+    let total = manifest.tests.len() as u32;
+    if total > 0 {
+        manifest.pass = Some(pass);
+        manifest.fail = Some(fail);
+        manifest.total = Some(total);
+    }
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
@@ -1030,8 +1114,64 @@ async fn push_run(
         }
     }
 
+    // Merge test-results.jsonl into run.json if both exist, or create minimal manifest.
+    let run_json_path = run_dir.join("run.json");
+    if run_json_path.exists() {
+        // run.json exists (CI created it). Merge nextest results if available.
+        if let Ok(text) = std::fs::read_to_string(&run_json_path) {
+            if let Ok(mut manifest) =
+                serde_json::from_str::<patchbay_utils::manifest::RunManifest>(&text)
+            {
+                merge_nextest_results(&run_dir, &mut manifest);
+                if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+                    let _ = std::fs::write(&run_json_path, json);
+                }
+            }
+        }
+    } else {
+        // No run.json — backward compat: create a minimal manifest.
+        tracing::warn!(
+            "push for project '{}' has no run.json; creating minimal manifest",
+            project
+        );
+        let manifest = patchbay_utils::manifest::RunManifest {
+            kind: patchbay_utils::manifest::RunKind::Test,
+            project: Some(project.clone()),
+            commit: None,
+            branch: None,
+            dirty: false,
+            pr: None,
+            pr_url: None,
+            title: None,
+            started_at: Some(chrono::Utc::now()),
+            ended_at: None,
+            runtime: None,
+            outcome: None,
+            pass: None,
+            fail: None,
+            total: None,
+            tests: Vec::new(),
+            os: None,
+            arch: None,
+            patchbay_version: None,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+            let _ = std::fs::write(&run_json_path, json);
+        }
+    }
+
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
+
+    let view_url = format!(
+        "{}/group/{}",
+        headers
+            .get("origin")
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| headers.get("host").and_then(|v| v.to_str().ok()))
+            .unwrap_or(""),
+        run_name
+    );
 
     // run_name is the group name (first path component for all sims inside)
     let result = serde_json::json!({
@@ -1039,8 +1179,7 @@ async fn push_run(
         "project": project,
         "run": run_name,
         "group": run_name,
-        "batch": run_name,       // backward compat
-        "invocation": run_name,  // backward compat (old CI templates read .invocation)
+        "view_url": view_url,
     });
 
     (StatusCode::OK, serde_json::to_string(&result).unwrap())

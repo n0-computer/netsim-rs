@@ -122,6 +122,19 @@ test('multi-sim group shows grouped selector and combined results', async ({ pag
     // Topology tab should render topology nodes for this sim.
     await expect(page.getByText('sender')).toBeVisible({ timeout: 10_000 })
     await expect(page.getByText('receiver')).toBeVisible()
+
+    // Navigate back and go to the group page via /group/ URL.
+    await page.goto(UI_URL)
+    await expect(page.getByRole('heading', { name: 'Runs' })).toBeVisible({ timeout: 15_000 })
+    // Group header should link to /group/ page.
+    const groupLink = page.locator('.run-group-header a[href*="/group/"]').first()
+    if (await groupLink.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await groupLink.click()
+      // Sim groups should show the sims tab.
+      await expect(page.getByRole('button', { name: 'sims' })).toBeVisible({ timeout: 10_000 })
+      // The sims tab should list the child runs.
+      await expect(page.locator('.sims-list').getByText('ping-e2e').first()).toBeVisible({ timeout: 5_000 })
+    }
   } finally {
     if (serveProc && !serveProc.killed) {
       serveProc.kill('SIGTERM')

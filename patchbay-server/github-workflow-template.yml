@@ -2,8 +2,8 @@
 #
 # Prerequisites:
 #   1. Set repository secrets PATCHBAY_URL and PATCHBAY_API_KEY
-#   2. Adjust the "Run tests" step to match your test command
-#   3. If your tests need a self-hosted runner, update runs-on accordingly
+#   2. Adjust the test command (nextest profile, filter) to match your project
+#   3. No patchbay binary required — just nextest + curl
 #
 # For server setup see: https://github.com/n0-computer/patchbay/tree/main/patchbay-server
 
@@ -12,92 +12,112 @@ name: Patchbay Tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
 
 concurrency:
   group: patchbay-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  RUST_BACKTRACE: 1
+  NEXTEST_VERSION: "0.9.132"
+
 jobs:
   patchbay_tests:
     name: Patchbay Tests
+    permissions:
+      contents: read
+      pull-requests: write
     timeout-minutes: 45
+    # Patchbay tests require Linux with user namespace support.
+    # Use self-hosted runners or ubuntu-latest (adjust as needed).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - name: Enable unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        continue-on-error: true
 
-      # ── Build tools — adjust to your project ──
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
 
-      # ── Install patchbay CLI ──
-      # Install pre-built binary via binstall (fast), or build from source.
-      - name: Install patchbay CLI
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall patchbay-cli --git-url https://github.com/n0-computer/patchbay --no-confirm \
-            || cargo install patchbay-cli --git https://github.com/n0-computer/patchbay
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
 
-      # ── Run tests — replace with your own command ──
-      # Use `patchbay test` which writes structured output to .patchbay/work/.
-      # --persist keeps the run directory after tests complete.
-      - name: Run tests
+      # ── Run tests ──
+      # Adjust: -p <crate>, --test <target>, profile, filter as needed.
+      # RUSTFLAGS --cfg patchbay_tests enables #[cfg(patchbay_tests)] test gates.
+      - name: Run patchbay tests
         id: tests
-        run: patchbay test --persist -p my-crate --test my-test
+        run: cargo nextest run --profile patchbay --release --message-format libtest-json-plus > test-results.jsonl
         env:
           RUST_LOG: ${{ runner.debug && 'TRACE' || 'DEBUG' }}
+          NEXTEST_EXPERIMENTAL_LIBTEST_JSON: "1"
+          RUSTFLAGS: "--cfg patchbay_tests"
 
-      # ── Upload results to patchbay-serve ──
-      - name: Upload results
-        id: upload
+      # ── Push results to patchbay-serve ──
+      # Uploads testdir output + nextest JSON + a run.json manifest with CI context.
+      - name: Push results
         if: always()
         env:
           PATCHBAY_URL: ${{ secrets.PATCHBAY_URL }}
           PATCHBAY_API_KEY: ${{ secrets.PATCHBAY_API_KEY }}
         run: |
           set -euo pipefail
-          PROJECT="${{ github.event.repository.name }}"
+          TESTDIR="$(cargo metadata --format-version=1 --no-deps | jq -r .target_directory)/testdir-current"
+          [ ! -d "$TESTDIR" ] && echo "No testdir output, skipping" && exit 0
 
-          # Find the most recent run directory
-          RUN_DIR=$(ls -dt .patchbay/work/run-* 2>/dev/null | head -1)
-          if [ -z "$RUN_DIR" ]; then
-            echo "No run directory found, skipping upload"
-            exit 0
-          fi
+          cp test-results.jsonl "$TESTDIR/test-results.jsonl"
+          jq -n \
+            --arg project "${{ github.event.repository.name }}" \
+            --arg branch "${{ github.head_ref || github.ref_name }}" \
+            --arg commit "${{ github.sha }}" \
+            --argjson pr ${{ github.event.pull_request.number || 'null' }} \
+            --arg pr_url "${{ github.event.pull_request.html_url || '' }}" \
+            --arg title "${{ github.event.pull_request.title || github.event.head_commit.message || '' }}" \
+            --arg outcome "${{ steps.tests.outcome }}" \
+            '{kind: "test", $project, $branch, $commit, $pr, $pr_url, $title, test_outcome: $outcome, created_at: (now | todate)}' \
+            > "$TESTDIR/run.json"
 
-          VIEW_URL=$(patchbay upload "$RUN_DIR" \
-            --project "$PROJECT" \
-            --url "$PATCHBAY_URL" \
-            --api-key "$PATCHBAY_API_KEY")
-          echo "view_url=$VIEW_URL" >> "$GITHUB_OUTPUT"
+          RESPONSE=$(tar -czf - -C "$TESTDIR" . | \
+            curl -s -w "\n%{http_code}" -X POST \
+              -H "Authorization: Bearer $PATCHBAY_API_KEY" \
+              -H "Content-Type: application/gzip" \
+              --data-binary @- "$PATCHBAY_URL/api/push/${{ github.event.repository.name }}")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          [ "$HTTP_CODE" != "200" ] && echo "Push failed ($HTTP_CODE): $BODY" && exit 1
+
+          echo "PATCHBAY_VIEW_URL=$(echo "$BODY" | jq -r '.view_url // empty')" >> "$GITHUB_ENV"
 
       # ── Post or update PR comment ──
       - name: Comment on PR
-        if: always() && github.event.pull_request
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const marker = '<!-- patchbay-results -->';
-            const status = '${{ steps.tests.outcome }}';
-            const icon = status === 'success' ? '✅' : '❌';
-            const sha = '${{ github.sha }}';
-            const shortSha = sha.slice(0, 7);
-            const commitUrl = `${{ github.server_url }}/${{ github.repository }}/commit/${sha}`;
-            const date = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-            const viewUrl = '${{ steps.upload.outputs.view_url }}';
-            const body = [
-              marker,
-              `${icon} **patchbay:** ${status} | [view results](${viewUrl})`,
-              `<sub>${date} · [\`${shortSha}\`](${commitUrl})</sub>`,
-            ].join('\n');
+        if: always() && env.PATCHBAY_VIEW_URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          STATUS="${{ steps.tests.outcome }}"
+          ICON=$([[ "$STATUS" == "success" ]] && echo "✅" || echo "❌")
+          MARKER="<!-- patchbay-results -->"
+          printf -v BODY '%s\n%s\n%s' \
+            "$MARKER" \
+            "$ICON **patchbay:** $STATUS | $PATCHBAY_VIEW_URL" \
+            "<sub>$(date -u '+%Y-%m-%d %H:%M:%S UTC') · [\`${SHA:0:7}\`](${{ github.server_url }}/$GH_REPO/commit/$SHA)</sub>"
 
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner, repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            const params = { owner: context.repo.owner, repo: context.repo.repo };
-            if (existing) {
-              await github.rest.issues.updateComment({ ...params, comment_id: existing.id, body });
-            } else {
-              await github.rest.issues.createComment({ ...params, issue_number: context.issue.number, body });
-            }
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --state open --json number -q '.[0].number')
+          fi
+          [ -z "$PR_NUMBER" ] && echo "No PR found, skipping comment" && exit 0
+
+          EXISTING=$(gh api --paginate "repos/$GH_REPO/issues/$PR_NUMBER/comments" --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -1)
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/$GH_REPO/issues/comments/$EXISTING" -X PATCH -f body="$BODY"
+          else
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+          fi

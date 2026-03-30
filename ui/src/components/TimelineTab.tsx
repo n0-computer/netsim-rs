@@ -142,12 +142,13 @@ export default function TimelineTab({ base, logs, labEvents, onJumpToLog }: Prop
     const all = logs.filter(
       (l) =>
         l.node !== '_run' &&
-        (l.kind === 'jsonl' || l.kind === 'ansi_text' || l.kind === 'text'),
+        (l.kind === 'jsonl' || l.kind === 'tracing_jsonl' || l.kind === 'ansi_text' || l.kind === 'text'),
     )
     // If a node has a structured jsonl log, skip its text/ansi logs to avoid
     // duplicate events (the same _events:: entries appear in both formats).
-    const nodesWithJsonl = new Set(all.filter((l) => l.kind === 'jsonl').map((l) => l.node))
-    return all.filter((l) => l.kind === 'jsonl' || !nodesWithJsonl.has(l.node))
+    const isJsonl = (k: string) => k === 'jsonl' || k === 'tracing_jsonl'
+    const nodesWithJsonl = new Set(all.filter((l) => isJsonl(l.kind)).map((l) => l.node))
+    return all.filter((l) => isJsonl(l.kind) || !nodesWithJsonl.has(l.node))
   }, [logs])
   const candidateKey = useMemo(() => candidateLogs.map((l) => `${l.node}:${l.path}:${l.kind}`).join('|'), [candidateLogs])
 

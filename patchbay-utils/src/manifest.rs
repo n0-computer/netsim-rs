@@ -154,36 +154,64 @@ pub struct RunManifest {
 }
 
 impl RunManifest {
-    /// Populate `dir` fields by scanning the run directory for subdirs that
-    /// contain `events.jsonl`, then matching them to test results by the bare
-    /// function name (last path segment of the dir, last token of the nextest name).
-    pub fn resolve_test_dirs(&mut self, run_dir: &std::path::Path) {
-        // Collect all dirs with events.jsonl, recursively (up to 2 levels).
+    /// Build the combined test list from on-disk directories and nextest results.
+    ///
+    /// 1. Scan child dirs for `events.jsonl` via [`collect_event_dirs`] to get
+    ///    the authoritative list of test output directories.
+    /// 2. Create a [`TestResult`] for each dir (default status = Pass).
+    /// 3. Match existing nextest tests in `self.tests` to dirs by bare function
+    ///    name and update status/duration on the matching entry.
+    /// 4. Nextest tests with no matching dir are appended (no `dir` field).
+    /// 5. Replace `self.tests` with the combined list.
+    pub fn build_test_list(&mut self, run_dir: &std::path::Path) {
+        // Step 1: collect dirs with events.jsonl.
         let mut test_dirs: Vec<String> = Vec::new();
         collect_event_dirs(run_dir, run_dir, 0, 2, &mut test_dirs);
 
-        // Build a map: bare function name → relative dir path.
-        // e.g. "holepunch_simple" → "patchbay/holepunch_simple"
-        let dir_by_fn: std::collections::HashMap<&str, &str> = test_dirs
+        // Step 2: create a TestResult for each dir, keyed by bare fn name.
+        let mut combined: Vec<TestResult> = test_dirs
             .iter()
-            .filter_map(|d| {
-                let fn_name = d.rsplit('/').next()?;
-                Some((fn_name, d.as_str()))
+            .map(|d| TestResult {
+                name: d.clone(),
+                status: TestStatus::Pass,
+                duration: None,
+                dir: Some(d.clone()),
             })
             .collect();
 
-        // Match each test result to a directory by bare function name.
-        // Nextest name: "iroh::patchbay holepunch_simple" → last token "holepunch_simple"
-        for test in &mut self.tests {
-            let fn_name = test
-                .name
-                .rsplit_once(' ')
-                .map(|(_, name)| name)
-                .unwrap_or(&test.name);
-            if let Some(&dir) = dir_by_fn.get(fn_name) {
-                test.dir = Some(dir.to_string());
+        // Build a lookup: bare fn name → index in combined.
+        let mut fn_to_idx: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (i, d) in test_dirs.iter().enumerate() {
+            if let Some(fn_name) = d.rsplit('/').next() {
+                fn_to_idx.insert(fn_name.to_string(), i);
             }
         }
+
+        // Step 3 & 4: walk existing nextest tests and either update or append.
+        for test in &self.tests {
+            let fn_name = test
+                .name
+                .rsplit_once('$')
+                .map(|(_, name)| name)
+                .or_else(|| test.name.rsplit_once("::").map(|(_, name)| name))
+                .unwrap_or(&test.name);
+            if let Some(&idx) = fn_to_idx.get(fn_name) {
+                // Update the dir-based entry with nextest metadata.
+                combined[idx].status = test.status;
+                combined[idx].duration = test.duration;
+            } else {
+                // No matching dir — append without dir.
+                combined.push(TestResult {
+                    name: test.name.clone(),
+                    status: test.status,
+                    duration: test.duration,
+                    dir: None,
+                });
+            }
+        }
+
+        self.tests = combined;
     }
 }
 
@@ -228,32 +256,55 @@ pub struct GitContext {
 
 /// Capture the current git HEAD commit, branch, and dirty state.
 pub fn git_context() -> GitContext {
-    let commit = Command::new("git")
-        .args(["rev-parse", "HEAD"])
+    git_context_in_impl(None)
+}
+
+/// Capture git context from a specific directory (e.g. a worktree).
+pub fn git_context_in(dir: &Path) -> GitContext {
+    git_context_in_impl(Some(dir))
+}
+
+fn git_context_in_impl(dir: Option<&Path>) -> GitContext {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "HEAD"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let commit = cmd
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string());
-    let branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let branch = cmd
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| s != "HEAD");
+
     // Check both unstaged and staged changes.
-    let unstaged = !Command::new("git")
-        .args(["diff", "--quiet"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true);
-    let staged = !Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true);
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--quiet"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let unstaged = !cmd.status().map(|s| s.success()).unwrap_or(true);
+
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--cached", "--quiet"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let staged = !cmd.status().map(|s| s.success()).unwrap_or(true);
+
     let dirty = unstaged || staged;
     GitContext {
         commit,
@@ -383,6 +434,47 @@ fn parse_nextest_duration(s: &str) -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
+/// Parse nextest libtest-json output into test results.
+///
+/// Expects JSONL lines like: `{"type":"test","event":"ok","name":"...","exec_time":1.23}`
+pub fn parse_nextest_json(output: &str) -> Vec<TestResult> {
+    let mut results = Vec::new();
+    for line in output.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("test") {
+            continue;
+        }
+        let event = v.get("event").and_then(|e| e.as_str()).unwrap_or("");
+        if event == "started" {
+            continue;
+        }
+        let name = v
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let status = match event {
+            "ok" => TestStatus::Pass,
+            "failed" => TestStatus::Fail,
+            "ignored" => TestStatus::Ignored,
+            _ => continue,
+        };
+        let duration = v
+            .get("exec_time")
+            .and_then(|t| t.as_f64())
+            .map(Duration::from_secs_f64);
+        results.push(TestResult {
+            name,
+            status,
+            duration,
+            dir: None,
+        });
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +558,96 @@ test result: FAILED. 1 passed; 1 failed; 1 ignored;
         assert_eq!(json, r#"{"d":null}"#);
         let t3: T = serde_json::from_str(&json).unwrap();
         assert_eq!(none, t3);
+    }
+
+    #[test]
+    fn test_parse_nextest_json() {
+        let output = r#"{"type":"suite","event":"started","test_count":3,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"test","event":"started","name":"iroh::patchbay$holepunch_simple"}
+{"type":"test","event":"ignored","name":"iroh::patchbay$holepunch_cgnat"}
+{"type":"test","event":"ok","name":"iroh::patchbay$holepunch_simple","exec_time":4.5}
+{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":1,"measured":0,"filtered_out":5,"exec_time":4.5,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"suite","event":"started","test_count":1,"nextest":{"crate":"iroh","test_binary":"patchbay","kind":"test"}}
+{"type":"test","event":"started","name":"iroh::patchbay$switch_uplink"}
+{"type":"test","event":"failed","name":"iroh::patchbay$switch_uplink","exec_time":10.0}
+{"type":"suite","event":"failed","passed":0,"failed":1,"ignored":0}"#;
+        let results = parse_nextest_json(output);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0].name, "iroh::patchbay$holepunch_cgnat");
+        assert_eq!(results[0].status, TestStatus::Ignored);
+        assert_eq!(results[0].duration, None);
+        assert_eq!(results[1].name, "iroh::patchbay$holepunch_simple");
+        assert_eq!(results[1].status, TestStatus::Pass);
+        assert_eq!(results[1].duration, Some(Duration::from_millis(4500)));
+        assert_eq!(results[2].name, "iroh::patchbay$switch_uplink");
+        assert_eq!(results[2].status, TestStatus::Fail);
+        assert_eq!(results[2].duration, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn test_merge_nextest_results_into_manifest() {
+        // Create a manifest with 2 passing tests.
+        let mut manifest = RunManifest {
+            kind: RunKind::Test,
+            project: Some("test-proj".to_string()),
+            commit: None,
+            branch: None,
+            dirty: false,
+            pr: None,
+            pr_url: None,
+            title: None,
+            started_at: None,
+            ended_at: None,
+            runtime: None,
+            outcome: Some("pass".to_string()),
+            pass: Some(2),
+            fail: Some(0),
+            total: Some(2),
+            tests: vec![
+                TestResult {
+                    name: "crate::test_alpha".to_string(),
+                    status: TestStatus::Pass,
+                    duration: Some(Duration::from_millis(100)),
+                    dir: None,
+                },
+                TestResult {
+                    name: "crate::test_beta".to_string(),
+                    status: TestStatus::Pass,
+                    duration: Some(Duration::from_millis(200)),
+                    dir: None,
+                },
+            ],
+            os: None,
+            arch: None,
+            patchbay_version: None,
+        };
+
+        // Create nextest JSONL with 3 tests (2 pass, 1 fail).
+        // test_alpha and test_beta overlap; test_gamma is new and failed.
+        let nextest_jsonl = r#"{"type":"test","event":"ok","name":"crate::test_alpha","exec_time":0.1}
+{"type":"test","event":"ok","name":"crate::test_beta","exec_time":0.2}
+{"type":"test","event":"failed","name":"crate::test_gamma","exec_time":0.5}"#;
+
+        let nextest_results = parse_nextest_json(nextest_jsonl);
+        assert_eq!(nextest_results.len(), 3);
+
+        // Merge: add tests from nextest that are NOT already in manifest.
+        let existing: std::collections::HashSet<&str> =
+            manifest.tests.iter().map(|t| t.name.as_str()).collect();
+        let new_tests: Vec<_> = nextest_results
+            .into_iter()
+            .filter(|r| !existing.contains(r.name.as_str()))
+            .collect();
+        manifest.tests.extend(new_tests);
+
+        // Manifest should now have 3 tests: the 2 original + the failed one added.
+        assert_eq!(manifest.tests.len(), 3);
+        assert_eq!(manifest.tests[0].name, "crate::test_alpha");
+        assert_eq!(manifest.tests[0].status, TestStatus::Pass);
+        assert_eq!(manifest.tests[1].name, "crate::test_beta");
+        assert_eq!(manifest.tests[1].status, TestStatus::Pass);
+        assert_eq!(manifest.tests[2].name, "crate::test_gamma");
+        assert_eq!(manifest.tests[2].status, TestStatus::Fail);
     }
 
     #[test]

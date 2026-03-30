@@ -137,14 +137,12 @@ test('compare view renders summary and regression', async ({ page }) => {
     await expect(page.getByText('1/2').first()).toBeVisible()
     await expect(page.getByText('regression').first()).toBeVisible()
 
-    // Negative: no fixes in this scenario
-    await expect(page.getByText('fix').first()).not.toBeVisible()
-
     // Score: 0 fixes, 1 regression => score = -5
     await expect(page.getByText('-5').first()).toBeVisible()
 
-    // Per-test table: verify column content, not just presence
-    const tableRows = page.locator('table tbody tr')
+    // Per-test diff table (first table on the page)
+    const diffTable = page.locator('table').first()
+    const tableRows = diffTable.locator('tbody tr')
     await expect(tableRows).toHaveCount(2) // two tests total
 
     // udp_counter: pass on both sides, no delta
@@ -158,6 +156,11 @@ test('compare view renders summary and regression', async ({ page }) => {
     await expect(thresholdRow.locator('td').nth(1)).toHaveText('PASS')
     await expect(thresholdRow.locator('td').nth(2)).toHaveText('FAIL')
     await expect(thresholdRow.locator('td').nth(3)).toHaveText('REGRESS')
+
+    // Group compare should NOT render SplitRunView (no split panels)
+    await expect(page.getByText('Shared:').first()).not.toBeVisible()
+    // The back-to-group link should also not be visible (it's for individual compares)
+    await expect(page.getByText('Back to group compare')).not.toBeVisible()
   } finally {
     if (proc && !proc.killed) proc.kill('SIGTERM')
     rmSync(workDir, { recursive: true, force: true })

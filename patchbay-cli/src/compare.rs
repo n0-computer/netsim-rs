@@ -58,77 +58,53 @@ fn sanitize_ref(r: &str) -> String {
 // Types re-exported from patchbay_utils::manifest:
 // TestResult, TestStatus, RunManifest, RunKind
 
-pub use manifest::parse_test_output;
-
 /// Run tests in a directory and capture results.
+///
+/// Uses nextest with JSON output if available, falls back to cargo test with text parsing.
 pub fn run_tests_in_dir(
     dir: &Path,
     args: &crate::test::TestArgs,
     verbose: bool,
 ) -> Result<(Vec<TestResult>, String)> {
-    use std::io::BufRead;
+    let use_nextest = crate::test::has_nextest();
+    let mut cmd = if use_nextest {
+        let mut c = args.nextest_cmd(Some(dir));
+        c.env("CARGO_TARGET_DIR", dir.join("target"));
+        c
+    } else {
+        let mut c = args.cargo_test_cmd_in(Some(dir));
+        c.env("CARGO_TARGET_DIR", dir.join("target"));
+        c
+    };
 
-    let mut cmd = args.cargo_test_cmd_in(Some(dir));
-    // Use a per-worktree target dir to avoid sharing cached binaries
-    // between different git refs.
-    cmd.env("CARGO_TARGET_DIR", dir.join("target"));
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().context("spawn cargo test")?;
-
-    let stdout_pipe = child.stdout.take().unwrap();
-    let stderr_pipe = child.stderr.take().unwrap();
-    let v = verbose;
-    let out_t = std::thread::spawn(move || {
-        let mut buf = String::new();
-        for line in std::io::BufReader::new(stdout_pipe)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if v {
-                println!("{line}");
-            }
-            buf.push_str(&line);
-            buf.push('\n');
-        }
-        buf
-    });
-    let err_t = std::thread::spawn(move || {
-        let mut buf = String::new();
-        for line in std::io::BufReader::new(stderr_pipe)
-            .lines()
-            .map_while(Result::ok)
-        {
-            if verbose {
-                eprintln!("{line}");
-            }
-            buf.push_str(&line);
-            buf.push('\n');
-        }
-        buf
-    });
-
-    let _ = child.wait().context("wait for cargo test")?;
-    let stdout = out_t.join().unwrap_or_default();
-    let stderr = err_t.join().unwrap_or_default();
-    let combined = format!("{stdout}\n{stderr}");
-    let results = parse_test_output(&combined);
-    Ok((results, combined))
+    let (_success, stdout, stderr) = crate::test::run_piped(&mut cmd, verbose)?;
+    let results = if use_nextest {
+        crate::test::parse_nextest_json(&stdout)
+    } else {
+        let combined = format!("{stdout}\n{stderr}");
+        manifest::parse_test_output(&combined)
+    };
+    Ok((results, stdout))
 }
 
 /// Persist test results from a worktree run so future compares can reuse them.
 ///
 /// Writes `run.json` into `.patchbay/work/run-{timestamp}/`.
 pub fn persist_worktree_run(
-    _tree_dir: &Path,
+    tree_dir: &Path,
     results: &[TestResult],
-    commit_sha: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
+    ended_at: chrono::DateTime<chrono::Utc>,
+    runtime: Duration,
 ) -> Result<()> {
     use manifest::{RunKind, RunManifest};
 
     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
     std::fs::create_dir_all(&dest)?;
+
+    // Capture git context from the worktree directory.
+    let git = manifest::git_context_in(tree_dir);
 
     let pass = results
         .iter()
@@ -144,15 +120,15 @@ pub fn persist_worktree_run(
     let manifest = RunManifest {
         kind: RunKind::Test,
         project: None,
-        commit: Some(commit_sha.to_string()),
-        branch: None,
-        dirty: false,
+        commit: git.commit,
+        branch: git.branch,
+        dirty: git.dirty,
         pr: None,
         pr_url: None,
         title: None,
-        started_at: None,
-        ended_at: None,
-        runtime: None,
+        started_at: Some(started_at),
+        ended_at: Some(ended_at),
+        runtime: Some(runtime),
         outcome: Some(outcome.to_string()),
         pass: Some(pass),
         fail: Some(fail),
