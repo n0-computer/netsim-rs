@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import type { LabEvent, LabState } from '../devtools-types'
 import type { SimResults } from '../types'
-import { fetchRunJson, fetchState, fetchEvents, fetchLogs, fetchResults } from '../api'
+import { fetchRunJson, fetchRuns, fetchState, fetchEvents, fetchLogs, fetchResults } from '../api'
 import type { RunManifest, RunInfo, LogEntry } from '../api'
 import RunView from './RunView'
 import type { RunTab } from './RunView'
@@ -17,8 +17,10 @@ interface TestDelta {
   left?: string
   right?: string
   delta: 'fixed' | 'REGRESS' | 'new' | 'removed' | ''
-  /** Relative directory for this test's output, if it exists on disk. */
-  dir?: string
+  /** Left-side run path for this test (if available). */
+  leftDir?: string
+  /** Right-side run path for this test (if available). */
+  rightDir?: string
 }
 
 function computeDiff(left: RunManifest, right: RunManifest) {
@@ -26,7 +28,8 @@ function computeDiff(left: RunManifest, right: RunManifest) {
   const rightTests = right.tests ?? []
   const leftMap = new Map(leftTests.map(t => [t.name, t.status]))
   const rightMap = new Map(rightTests.map(t => [t.name, t.status]))
-  const dirMap = new Map([...leftTests, ...rightTests].filter((t): t is typeof t & { dir: string } => !!t.dir).map(t => [t.name, t.dir]))
+  const leftDirMap = new Map(leftTests.filter((t): t is typeof t & { dir: string } => !!t.dir).map(t => [t.name, t.dir]))
+  const rightDirMap = new Map(rightTests.filter((t): t is typeof t & { dir: string } => !!t.dir).map(t => [t.name, t.dir]))
 
   const allNames = new Set([...leftMap.keys(), ...rightMap.keys()])
   const tests: TestDelta[] = []
@@ -43,7 +46,9 @@ function computeDiff(left: RunManifest, right: RunManifest) {
     else if (!l && r) { delta = 'new' }
     else if (l && !r) { delta = 'removed' }
 
-    tests.push({ name, left: l, right: r, delta, dir: dirMap.get(name) })
+    const leftDir = leftDirMap.get(name)
+    const rightDir = rightDirMap.get(name)
+    tests.push({ name, left: l, right: r, delta, leftDir, rightDir })
   }
 
   const score = fixes * SCORE_FIX + regressions * SCORE_REGRESS
@@ -82,6 +87,30 @@ function groupCompareUrl(leftRun: string, rightRun: string): string {
   return `/compare/${encodeURIComponent(leftGroup)}/${encodeURIComponent(rightGroup)}`
 }
 
+/** Build a synthetic manifest from a group's child runs. */
+function manifestFromGroup(groupName: string, runs: RunInfo[]): RunManifest {
+  const children = runs.filter(r => r.group === groupName)
+  const tests = children.map(r => {
+    // Strip group prefix to get the test name (e.g. "testdir-2/patchbay/holepunch" → "patchbay/holepunch")
+    const testName = r.name.startsWith(groupName + '/') ? r.name.slice(groupName.length + 1) : r.name
+    const status = r.status === 'success' ? 'pass' : r.status === 'error' ? 'fail' : (r.status ?? 'pass')
+    return { name: testName, status, dir: r.name }
+  })
+  const pass = tests.filter(t => t.status === 'pass').length
+  const fail = tests.filter(t => t.status === 'fail').length
+  // Use the group-level manifest for context if available
+  const groupManifest = children[0]?.manifest
+  return {
+    kind: groupManifest?.kind ?? 'test',
+    project: groupManifest?.project ?? null,
+    branch: groupManifest?.branch ?? null,
+    commit: groupManifest?.commit ?? null,
+    pass, fail, total: tests.length,
+    tests,
+    outcome: fail > 0 ? 'fail' : 'pass',
+  } as RunManifest
+}
+
 // ── Compare View (route: /compare/:left/:right) ──
 
 export default function CompareView({ leftRun, rightRun }: { leftRun: string; rightRun: string }) {
@@ -92,12 +121,23 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
   const [sharedTab, setSharedTab] = useState<RunTab>('logs')
 
   useEffect(() => {
+    let dead = false
     setLoading(true)
-    Promise.all([fetchRunJson(leftRun), fetchRunJson(rightRun)]).then(([l, r]) => {
+    // Try fetching as individual runs first.
+    Promise.all([fetchRunJson(leftRun), fetchRunJson(rightRun)]).then(async ([l, r]) => {
+      if (dead) return
+      // If both are null, these might be group names — build manifests from children.
+      if (!l || !r) {
+        const allRuns = await fetchRuns()
+        if (dead) return
+        if (!l) l = manifestFromGroup(leftRun, allRuns)
+        if (!r) r = manifestFromGroup(rightRun, allRuns)
+      }
       setLeftManifest(l)
       setRightManifest(r)
       setLoading(false)
     })
+    return () => { dead = true }
   }, [leftRun, rightRun])
 
   if (loading) {
@@ -120,10 +160,8 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
   const leftOutcome = leftManifest?.test_outcome ?? leftManifest?.outcome ?? null
   const rightOutcome = rightManifest?.test_outcome ?? rightManifest?.outcome ?? null
 
-  const handleTestClick = (dir: string) => {
-    const leftPath = `${leftRun}/${dir}`
-    const rightPath = `${rightRun}/${dir}`
-    navigate(`/compare/${encodeURIComponent(leftPath)}/${encodeURIComponent(rightPath)}`)
+  const handleTestClick = (leftDir: string, rightDir: string) => {
+    navigate(`/compare/${encodeURIComponent(leftDir)}/${encodeURIComponent(rightDir)}`)
   }
 
   return (
@@ -168,18 +206,19 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
                   </tr>
                 </thead>
                 <tbody>
-                  {diff.tests.map(({ name, left, right, delta, dir }) => {
+                  {diff.tests.map(({ name, left, right, delta, leftDir, rightDir }) => {
                     let color = ''
                     if (delta === 'fixed') color = 'var(--green)'
                     else if (delta === 'REGRESS') color = 'var(--red)'
 
+                    const canClick = !!(leftDir && rightDir)
                     return (
                       <tr key={name}>
                         <td>
-                          {dir ? (
+                          {canClick ? (
                             <code
                               style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
-                              onClick={() => handleTestClick(dir)}
+                              onClick={() => handleTestClick(leftDir, rightDir)}
                               title={`Compare ${name} side-by-side`}
                             >
                               {name}

@@ -91,15 +91,20 @@ pub fn run_tests_in_dir(
 ///
 /// Writes `run.json` into `.patchbay/work/run-{timestamp}/`.
 pub fn persist_worktree_run(
-    _tree_dir: &Path,
+    tree_dir: &Path,
     results: &[TestResult],
-    commit_sha: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
+    ended_at: chrono::DateTime<chrono::Utc>,
+    runtime: Duration,
 ) -> Result<()> {
     use manifest::{RunKind, RunManifest};
 
     let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let dest = PathBuf::from(format!(".patchbay/work/run-{ts}"));
     std::fs::create_dir_all(&dest)?;
+
+    // Capture git context from the worktree directory.
+    let git = manifest::git_context_in(tree_dir);
 
     let pass = results
         .iter()
@@ -115,15 +120,15 @@ pub fn persist_worktree_run(
     let manifest = RunManifest {
         kind: RunKind::Test,
         project: None,
-        commit: Some(commit_sha.to_string()),
-        branch: None,
-        dirty: false,
+        commit: git.commit,
+        branch: git.branch,
+        dirty: git.dirty,
         pr: None,
         pr_url: None,
         title: None,
-        started_at: None,
-        ended_at: None,
-        runtime: None,
+        started_at: Some(started_at),
+        ended_at: Some(ended_at),
+        runtime: Some(runtime),
         outcome: Some(outcome.to_string()),
         pass: Some(pass),
         fail: Some(fail),

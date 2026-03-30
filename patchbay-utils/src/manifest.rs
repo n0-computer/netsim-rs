@@ -228,32 +228,55 @@ pub struct GitContext {
 
 /// Capture the current git HEAD commit, branch, and dirty state.
 pub fn git_context() -> GitContext {
-    let commit = Command::new("git")
-        .args(["rev-parse", "HEAD"])
+    git_context_in_impl(None)
+}
+
+/// Capture git context from a specific directory (e.g. a worktree).
+pub fn git_context_in(dir: &Path) -> GitContext {
+    git_context_in_impl(Some(dir))
+}
+
+fn git_context_in_impl(dir: Option<&Path>) -> GitContext {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "HEAD"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let commit = cmd
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string());
-    let branch = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--abbrev-ref", "HEAD"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let branch = cmd
         .output()
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .filter(|s| s != "HEAD");
+
     // Check both unstaged and staged changes.
-    let unstaged = !Command::new("git")
-        .args(["diff", "--quiet"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true);
-    let staged = !Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(true);
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--quiet"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let unstaged = !cmd.status().map(|s| s.success()).unwrap_or(true);
+
+    let mut cmd = Command::new("git");
+    cmd.args(["diff", "--cached", "--quiet"]);
+    if let Some(d) = dir {
+        cmd.current_dir(d);
+    }
+    let staged = !cmd.status().map(|s| s.success()).unwrap_or(true);
+
     let dirty = unstaged || staged;
     GitContext {
         commit,
@@ -531,6 +554,72 @@ test result: FAILED. 1 passed; 1 failed; 1 ignored;
         assert_eq!(results[2].name, "iroh::patchbay$switch_uplink");
         assert_eq!(results[2].status, TestStatus::Fail);
         assert_eq!(results[2].duration, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn test_merge_nextest_results_into_manifest() {
+        // Create a manifest with 2 passing tests.
+        let mut manifest = RunManifest {
+            kind: RunKind::Test,
+            project: Some("test-proj".to_string()),
+            commit: None,
+            branch: None,
+            dirty: false,
+            pr: None,
+            pr_url: None,
+            title: None,
+            started_at: None,
+            ended_at: None,
+            runtime: None,
+            outcome: Some("pass".to_string()),
+            pass: Some(2),
+            fail: Some(0),
+            total: Some(2),
+            tests: vec![
+                TestResult {
+                    name: "crate::test_alpha".to_string(),
+                    status: TestStatus::Pass,
+                    duration: Some(Duration::from_millis(100)),
+                    dir: None,
+                },
+                TestResult {
+                    name: "crate::test_beta".to_string(),
+                    status: TestStatus::Pass,
+                    duration: Some(Duration::from_millis(200)),
+                    dir: None,
+                },
+            ],
+            os: None,
+            arch: None,
+            patchbay_version: None,
+        };
+
+        // Create nextest JSONL with 3 tests (2 pass, 1 fail).
+        // test_alpha and test_beta overlap; test_gamma is new and failed.
+        let nextest_jsonl = r#"{"type":"test","event":"ok","name":"crate::test_alpha","exec_time":0.1}
+{"type":"test","event":"ok","name":"crate::test_beta","exec_time":0.2}
+{"type":"test","event":"failed","name":"crate::test_gamma","exec_time":0.5}"#;
+
+        let nextest_results = parse_nextest_json(nextest_jsonl);
+        assert_eq!(nextest_results.len(), 3);
+
+        // Merge: add tests from nextest that are NOT already in manifest.
+        let existing: std::collections::HashSet<&str> =
+            manifest.tests.iter().map(|t| t.name.as_str()).collect();
+        let new_tests: Vec<_> = nextest_results
+            .into_iter()
+            .filter(|r| !existing.contains(r.name.as_str()))
+            .collect();
+        manifest.tests.extend(new_tests);
+
+        // Manifest should now have 3 tests: the 2 original + the failed one added.
+        assert_eq!(manifest.tests.len(), 3);
+        assert_eq!(manifest.tests[0].name, "crate::test_alpha");
+        assert_eq!(manifest.tests[0].status, TestStatus::Pass);
+        assert_eq!(manifest.tests[1].name, "crate::test_beta");
+        assert_eq!(manifest.tests[1].status, TestStatus::Pass);
+        assert_eq!(manifest.tests[2].name, "crate::test_gamma");
+        assert_eq!(manifest.tests[2].status, TestStatus::Fail);
     }
 
     #[test]

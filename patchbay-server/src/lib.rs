@@ -109,16 +109,31 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
-    // Attach run.json manifests from group directories.
-    let mut manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
+    // Attach run.json manifests: own dir first, then inherit from group dir.
+    let mut group_manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
-        let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
-        let manifest = manifest_cache
-            .entry(group_key.clone())
-            .or_insert_with(|| read_run_json(&base.join(&group_key)))
-            .clone();
-        run.manifest = manifest;
+        // 1. Check if the run's own dir has run.json.
+        let own_manifest = read_run_json(&run.path);
+        if own_manifest.is_some() {
+            run.manifest = own_manifest;
+        } else {
+            // 2. Inherit from group dir (first path segment).
+            let group_key = run.group.clone().unwrap_or_else(|| run.name.clone());
+            let group_manifest = group_manifest_cache
+                .entry(group_key.clone())
+                .or_insert_with(|| {
+                    let group_dir = base.join(&group_key);
+                    let mut m = read_run_json(&group_dir);
+                    // If group dir has both run.json AND test-results.jsonl, merge.
+                    if let Some(ref mut manifest) = m {
+                        merge_nextest_results(&group_dir, manifest);
+                    }
+                    m
+                })
+                .clone();
+            run.manifest = group_manifest;
+        }
     }
 
     runs.sort_by(|a, b| b.name.cmp(&a.name));
@@ -148,45 +163,30 @@ fn scan_runs_recursive(
         if !path.is_dir() {
             continue;
         }
-        let has_events = path.join(EVENTS_JSONL).exists();
-        let has_run_json = path.join(RUN_JSON).exists();
 
-        if has_events || has_run_json {
-            // Check if this is a leaf run or a group with children.
-            let has_child_dirs = fs::read_dir(&path)
-                .map(|rd| {
-                    rd.flatten()
-                        .any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-                })
-                .unwrap_or(false);
-
-            if has_run_json && !has_events && has_child_dirs {
-                // Group directory: has run.json, no events.jsonl, has subdirs.
-                // Recurse to find child runs that inherit this manifest.
-                scan_runs_recursive(root, &path, depth + 1, runs)?;
-            } else {
-                // Leaf run: has events.jsonl or run.json without children.
-                let name = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                let (label, status) = read_run_metadata(&path);
-                let group = name
-                    .split('/')
-                    .next()
-                    .filter(|first| *first != name)
-                    .map(str::to_string);
-                runs.push(RunInfo {
-                    name,
-                    path,
-                    label,
-                    status,
-                    group,
-                    manifest: None, // populated after scan
-                });
-            }
+        if path.join(EVENTS_JSONL).exists() {
+            // Leaf run: directory contains events.jsonl (the only leaf indicator).
+            let name = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let (label, status) = read_run_metadata(&path);
+            let group = name
+                .split('/')
+                .next()
+                .filter(|first| *first != name)
+                .map(str::to_string);
+            runs.push(RunInfo {
+                name,
+                path,
+                label,
+                status,
+                group,
+                manifest: None, // populated after scan
+            });
         } else {
+            // No events.jsonl → recurse (regardless of run.json presence).
             scan_runs_recursive(root, &path, depth + 1, runs)?;
         }
     }
@@ -929,12 +929,30 @@ async fn scan_log_files(run_dir: &Path) -> Vec<LogEntry> {
 pub use patchbay_utils::manifest::RunManifest;
 
 const RUN_JSON: &str = "run.json";
+const TEST_RESULTS_JSONL: &str = "test-results.jsonl";
 
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
     let mut manifest: RunManifest = serde_json::from_str(&text).ok()?;
     manifest.resolve_test_dirs(dir);
     Some(manifest)
+}
+
+/// If `test-results.jsonl` exists in `dir`, parse it and add any tests NOT
+/// already present in the manifest's tests array (matched by name).
+fn merge_nextest_results(dir: &Path, manifest: &mut RunManifest) {
+    let results_path = dir.join(TEST_RESULTS_JSONL);
+    let Ok(content) = fs::read_to_string(&results_path) else {
+        return;
+    };
+    let nextest_results = patchbay_utils::manifest::parse_nextest_json(&content);
+    let existing: std::collections::HashSet<&str> =
+        manifest.tests.iter().map(|t| t.name.as_str()).collect();
+    let new_tests: Vec<_> = nextest_results
+        .into_iter()
+        .filter(|r| !existing.contains(r.name.as_str()))
+        .collect();
+    manifest.tests.extend(new_tests);
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
@@ -1040,25 +1058,26 @@ async fn push_run(
         }
     }
 
-    // Auto-generate run.json from nextest JSONL if not already present.
+    // Merge test-results.jsonl into run.json if both exist, or create minimal manifest.
     let run_json_path = run_dir.join("run.json");
-    if !run_json_path.exists() {
-        let nextest_jsonl = run_dir.join("test-results.jsonl");
-        let results = if nextest_jsonl.exists() {
-            let content = std::fs::read_to_string(&nextest_jsonl).unwrap_or_default();
-            patchbay_utils::manifest::parse_nextest_json(&content)
-        } else {
-            Vec::new()
-        };
-        let pass = results
-            .iter()
-            .filter(|r| r.status == patchbay_utils::manifest::TestStatus::Pass)
-            .count() as u32;
-        let fail = results
-            .iter()
-            .filter(|r| r.status == patchbay_utils::manifest::TestStatus::Fail)
-            .count() as u32;
-        let total = results.len() as u32;
+    if run_json_path.exists() {
+        // run.json exists (CI created it). Merge nextest results if available.
+        if let Ok(text) = std::fs::read_to_string(&run_json_path) {
+            if let Ok(mut manifest) =
+                serde_json::from_str::<patchbay_utils::manifest::RunManifest>(&text)
+            {
+                merge_nextest_results(&run_dir, &mut manifest);
+                if let Ok(json) = serde_json::to_string_pretty(&manifest) {
+                    let _ = std::fs::write(&run_json_path, json);
+                }
+            }
+        }
+    } else {
+        // No run.json — backward compat: create a minimal manifest.
+        tracing::warn!(
+            "push for project '{}' has no run.json; creating minimal manifest",
+            project
+        );
         let manifest = patchbay_utils::manifest::RunManifest {
             kind: patchbay_utils::manifest::RunKind::Test,
             project: Some(project.clone()),
@@ -1071,17 +1090,11 @@ async fn push_run(
             started_at: Some(chrono::Utc::now()),
             ended_at: None,
             runtime: None,
-            outcome: if fail > 0 {
-                Some("fail".into())
-            } else if pass > 0 {
-                Some("pass".into())
-            } else {
-                None
-            },
-            pass: if total > 0 { Some(pass) } else { None },
-            fail: if total > 0 { Some(fail) } else { None },
-            total: if total > 0 { Some(total) } else { None },
-            tests: results,
+            outcome: None,
+            pass: None,
+            fail: None,
+            total: None,
+            tests: Vec::new(),
             os: None,
             arch: None,
             patchbay_version: None,
