@@ -1163,15 +1163,17 @@ async fn push_run(
     // Notify subscribers about new run
     let _ = state.runs_tx.send(());
 
-    let view_url = format!(
-        "{}/group/{}",
-        headers
-            .get("origin")
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| headers.get("host").and_then(|v| v.to_str().ok()))
-            .unwrap_or(""),
-        run_name
-    );
+    let base = headers
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| headers.get("host").and_then(|v| v.to_str().ok()))
+        .unwrap_or("");
+    let base = if !base.is_empty() && !base.starts_with("http") {
+        format!("https://{base}")
+    } else {
+        base.to_string()
+    };
+    let view_url = format!("{base}/group/{run_name}");
 
     // run_name is the group name (first path component for all sims inside)
     let result = serde_json::json!({
