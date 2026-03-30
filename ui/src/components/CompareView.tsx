@@ -164,85 +164,86 @@ export default function CompareView({ leftRun, rightRun }: { leftRun: string; ri
     navigate(`/compare/${encodeURIComponent(leftDir)}/${encodeURIComponent(rightDir)}`)
   }
 
+  if (isGroup) {
+    // Group compare: render ONLY the diff table, no SplitRunView.
+    return (
+      <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <h2 style={{ margin: '0 0 0.5rem 0' }}>
+          Compare: {leftLabel} vs {rightLabel} — {leftPass}/{leftTotal} → {rightPass}/{rightTotal}
+          {diff.regressions > 0 && <span style={{ color: 'var(--red)' }}> ({diff.regressions} regression{diff.regressions > 1 ? 's' : ''})</span>}
+          {diff.fixes > 0 && <span style={{ color: 'var(--green)' }}> ({diff.fixes} fix{diff.fixes > 1 ? 'es' : ''})</span>}
+        </h2>
+
+        {/* Summary bar */}
+        <div className="compare-summary" style={{ display: 'flex', gap: '2rem', padding: '0.5rem 1rem', background: 'var(--surface)', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border)', alignItems: 'center' }}>
+          <div>
+            Score: <span style={{ color: diff.score >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 'bold' }}>
+              {diff.score >= 0 ? '+' : ''}{diff.score}
+            </span>
+          </div>
+        </div>
+
+        {/* Per-test table */}
+        {diff.tests.length > 0 && (
+          <div className="tbl-wrap" style={{ marginBottom: '1rem', flex: 1, overflow: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Test</th>
+                  <th>{leftLabel}</th>
+                  <th>{rightLabel}</th>
+                  <th>Delta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {diff.tests.map(({ name, left, right, delta, leftDir, rightDir }) => {
+                  let color = ''
+                  if (delta === 'fixed') color = 'var(--green)'
+                  else if (delta === 'REGRESS') color = 'var(--red)'
+
+                  const canClick = !!(leftDir && rightDir)
+                  return (
+                    <tr key={name}>
+                      <td>
+                        {canClick ? (
+                          <code
+                            style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
+                            onClick={() => handleTestClick(leftDir, rightDir)}
+                            title={`Compare ${name} side-by-side`}
+                          >
+                            {name}
+                          </code>
+                        ) : (
+                          <code style={{ color: 'var(--text-muted)' }} title="No test output available">
+                            {name}
+                          </code>
+                        )}
+                      </td>
+                      <td>{statusBadge(left)}</td>
+                      <td>{statusBadge(right)}</td>
+                      <td style={{ color, fontWeight: delta ? 'bold' : 'normal' }}>{delta}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Individual run compare: render ONLY the SplitRunView with back-to-group link.
   return (
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* Header: simple name for individual runs, summary for groups */}
-      {!isGroup ? (
-        <div style={{ margin: '0 0 1rem 0' }}>
-          <h2 style={{ margin: '0 0 0.5rem 0' }}>
-            Compare: {shortName(leftRun)} (left) vs {shortName(rightRun)} (right)
-          </h2>
-          <Link to={groupCompareUrl(leftRun, rightRun)} style={{ fontSize: 13, color: 'var(--accent, #4a9eff)' }}>
-            &#x21A9; Back to group compare
-          </Link>
-        </div>
-      ) : (
-        <>
-          <h2 style={{ margin: '0 0 0.5rem 0' }}>
-            Compare: {leftLabel} vs {rightLabel} — {leftPass}/{leftTotal} → {rightPass}/{rightTotal}
-            {diff.regressions > 0 && <span style={{ color: 'var(--red)' }}> ({diff.regressions} regression{diff.regressions > 1 ? 's' : ''})</span>}
-            {diff.fixes > 0 && <span style={{ color: 'var(--green)' }}> ({diff.fixes} fix{diff.fixes > 1 ? 'es' : ''})</span>}
-          </h2>
-
-          {/* Summary bar */}
-          <div className="compare-summary" style={{ display: 'flex', gap: '2rem', padding: '0.5rem 1rem', background: 'var(--surface)', borderRadius: '8px', marginBottom: '1rem', border: '1px solid var(--border)', alignItems: 'center' }}>
-            <div>
-              Score: <span style={{ color: diff.score >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 'bold' }}>
-                {diff.score >= 0 ? '+' : ''}{diff.score}
-              </span>
-            </div>
-          </div>
-
-          {/* Per-test table */}
-          {diff.tests.length > 0 && (
-            <div className="tbl-wrap" style={{ marginBottom: '1rem' }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Test</th>
-                    <th>{leftLabel}</th>
-                    <th>{rightLabel}</th>
-                    <th>Delta</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {diff.tests.map(({ name, left, right, delta, leftDir, rightDir }) => {
-                    let color = ''
-                    if (delta === 'fixed') color = 'var(--green)'
-                    else if (delta === 'REGRESS') color = 'var(--red)'
-
-                    const canClick = !!(leftDir && rightDir)
-                    return (
-                      <tr key={name}>
-                        <td>
-                          {canClick ? (
-                            <code
-                              style={{ cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'var(--text-muted)' }}
-                              onClick={() => handleTestClick(leftDir, rightDir)}
-                              title={`Compare ${name} side-by-side`}
-                            >
-                              {name}
-                            </code>
-                          ) : (
-                            <code style={{ color: 'var(--text-muted)' }} title="No test output available">
-                              {name}
-                            </code>
-                          )}
-                        </td>
-                        <td>{statusBadge(left)}</td>
-                        <td>{statusBadge(right)}</td>
-                        <td style={{ color, fontWeight: delta ? 'bold' : 'normal' }}>{delta}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Split-screen co-navigation */}
+      <div style={{ margin: '0 0 1rem 0' }}>
+        <h2 style={{ margin: '0 0 0.5rem 0' }}>
+          Compare: {shortName(leftRun)} (left) vs {shortName(rightRun)} (right)
+        </h2>
+        <Link to={groupCompareUrl(leftRun, rightRun)} style={{ fontSize: 13, color: 'var(--accent, #4a9eff)' }}>
+          &#x21A9; Back to group compare
+        </Link>
+      </div>
       <SplitRunView left={leftRun} right={rightRun} sharedTab={sharedTab} onTabChange={setSharedTab} />
     </div>
   )

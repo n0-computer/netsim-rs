@@ -74,10 +74,19 @@ test('push run results and view via deep link', async ({ page }) => {
       body: tarGz,
     })
     expect(pushRes.status).toBe(200)
-    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string }
+    const pushBody = await pushRes.json() as { ok: boolean; group: string; project: string; view_url?: string; [key: string]: unknown }
     expect(pushBody.ok).toBe(true)
     expect(pushBody.project).toBe('test-project')
     expect(pushBody.group).toBeTruthy()
+
+    // view_url must use /group/ prefix
+    expect(pushBody.view_url).toBeTruthy()
+    expect(pushBody.view_url).toContain('/group/')
+
+    // No legacy batch/invocation terminology in response
+    const responseKeys = Object.keys(pushBody)
+    expect(responseKeys).not.toContain('batch')
+    expect(responseKeys).not.toContain('invocation')
 
     // Step 4: Verify the run appears in the API (allow time for discovery).
     await new Promise(r => setTimeout(r, 3000))

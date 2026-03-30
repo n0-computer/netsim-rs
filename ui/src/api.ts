@@ -66,12 +66,7 @@ export async function fetchRuns(params?: {
     const qs = query.toString()
     const res = await fetch(`${API}/runs${qs ? '?' + qs : ''}`)
     if (!res.ok) return []
-    const raw = (await res.json()) as any[]
-    // Normalize: accept both "group" and legacy "batch" from server
-    return raw.map((r) => ({
-      ...r,
-      group: r.group ?? r.batch ?? null,
-    })) as RunInfo[]
+    return (await res.json()) as RunInfo[]
   } catch {
     return []
   }

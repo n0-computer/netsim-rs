@@ -78,7 +78,7 @@ jobs:
             --arg pr_url "${{ github.event.pull_request.html_url || '' }}" \
             --arg title "${{ github.event.pull_request.title || github.event.head_commit.message || '' }}" \
             --arg outcome "${{ steps.tests.outcome }}" \
-            '{$project, $branch, $commit, $pr, $pr_url, $title, test_outcome: $outcome, created_at: (now | todate)}' \
+            '{kind: "test", $project, $branch, $commit, $pr, $pr_url, $title, test_outcome: $outcome, created_at: (now | todate)}' \
             > "$TESTDIR/run.json"
 
           RESPONSE=$(tar -czf - -C "$TESTDIR" . | \

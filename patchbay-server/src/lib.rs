@@ -73,7 +73,6 @@ pub struct RunInfo {
     /// [`RunManifest::test_outcome`] for the overall pass/fail from CI.
     pub status: Option<String>,
     /// Group (first path component for nested runs, `None` for flat/direct).
-    #[serde(alias = "batch")]
     pub group: Option<String>,
     /// CI manifest from `run.json` in the group directory, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,13 +108,45 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
     let mut runs = Vec::new();
     scan_runs_recursive(base, base, 1, &mut runs)?;
 
+    // Add standalone groups: dirs with run.json but no leaf children found.
+    // These are e.g. nextest-only pushes without per-test event dirs.
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // Skip if we already have runs in this group.
+            let already_found = runs.iter().any(|r| r.group.as_deref() == Some(&name) || r.name == name);
+            if already_found {
+                continue;
+            }
+            // If it has run.json, add as a standalone entry.
+            if path.join(RUN_JSON).exists() {
+                runs.push(RunInfo {
+                    name: name.clone(),
+                    path,
+                    label: None,
+                    status: None,
+                    group: None,
+                    manifest: None,
+                });
+            }
+        }
+    }
+
     // Attach run.json manifests: own dir first, then inherit from group dir.
     let mut group_manifest_cache: std::collections::HashMap<String, Option<RunManifest>> =
         std::collections::HashMap::new();
     for run in &mut runs {
         // 1. Check if the run's own dir has run.json.
-        let own_manifest = read_run_json(&run.path);
-        if own_manifest.is_some() {
+        let mut own_manifest = read_run_json(&run.path);
+        if let Some(ref mut m) = own_manifest {
+            merge_nextest_results(&run.path, m);
             run.manifest = own_manifest;
         } else {
             // 2. Inherit from group dir (first path segment).
@@ -252,7 +283,6 @@ fn build_router(state: AppState) -> Router {
         .route("/run/{*rest}", get(index_html))
         .route("/group/{*rest}", get(index_html))
         .route("/compare/{*rest}", get(index_html))
-        .route("/inv/{*rest}", get(index_html))
         .route("/api/runs", get(get_runs))
         .route("/api/runs/subscribe", get(runs_sse))
         .route("/api/runs/{run}/manifest", get(get_run_manifest))
@@ -264,11 +294,6 @@ fn build_router(state: AppState) -> Router {
         .route("/api/runs/{run}/files/{*path}", get(get_run_file))
         .route(
             "/api/groups/{name}/combined-results",
-            get(get_group_combined),
-        )
-        // Legacy alias — keep for backward-compat (links shared on Discord).
-        .route(
-            "/api/invocations/{name}/combined-results",
             get(get_group_combined),
         );
     if state.push.is_some() {
@@ -455,11 +480,23 @@ async fn get_run_manifest(
         );
     };
     match read_run_json(&run_dir) {
-        Some(manifest) => (
-            StatusCode::OK,
-            [("content-type", "application/json")],
-            serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
-        ),
+        Some(mut manifest) => {
+            // If this is a group directory (no events.jsonl), prefix test dirs
+            // with the run name so they are navigable as full paths.
+            let is_group = !run_dir.join(EVENTS_JSONL).exists();
+            if is_group {
+                for test in &mut manifest.tests {
+                    if let Some(ref dir) = test.dir {
+                        test.dir = Some(format!("{run}/{dir}"));
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                serde_json::to_string(&manifest).unwrap_or_else(|_| "null".to_string()),
+            )
+        }
         None => (
             StatusCode::NOT_FOUND,
             [("content-type", "application/json")],
@@ -934,7 +971,7 @@ const TEST_RESULTS_JSONL: &str = "test-results.jsonl";
 fn read_run_json(dir: &Path) -> Option<RunManifest> {
     let text = fs::read_to_string(dir.join(RUN_JSON)).ok()?;
     let mut manifest: RunManifest = serde_json::from_str(&text).ok()?;
-    manifest.resolve_test_dirs(dir);
+    manifest.build_test_list(dir);
     Some(manifest)
 }
 
@@ -953,6 +990,15 @@ fn merge_nextest_results(dir: &Path, manifest: &mut RunManifest) {
         .filter(|r| !existing.contains(r.name.as_str()))
         .collect();
     manifest.tests.extend(new_tests);
+    // Recompute counts from the merged tests list.
+    let pass = manifest.tests.iter().filter(|t| t.status == patchbay_utils::manifest::TestStatus::Pass).count() as u32;
+    let fail = manifest.tests.iter().filter(|t| t.status == patchbay_utils::manifest::TestStatus::Fail).count() as u32;
+    let total = manifest.tests.len() as u32;
+    if total > 0 {
+        manifest.pass = Some(pass);
+        manifest.fail = Some(fail);
+        manifest.total = Some(total);
+    }
 }
 
 // ── Push endpoint ───────────────────────────────────────────────────
@@ -1108,7 +1154,7 @@ async fn push_run(
     let _ = state.runs_tx.send(());
 
     let view_url = format!(
-        "{}/run/{}",
+        "{}/group/{}",
         headers
             .get("origin")
             .and_then(|v| v.to_str().ok())
@@ -1123,8 +1169,6 @@ async fn push_run(
         "project": project,
         "run": run_name,
         "group": run_name,
-        "batch": run_name,       // backward compat
-        "invocation": run_name,  // backward compat (old CI templates read .invocation)
         "view_url": view_url,
     });
 

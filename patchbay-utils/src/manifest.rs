@@ -154,36 +154,64 @@ pub struct RunManifest {
 }
 
 impl RunManifest {
-    /// Populate `dir` fields by scanning the run directory for subdirs that
-    /// contain `events.jsonl`, then matching them to test results by the bare
-    /// function name (last path segment of the dir, last token of the nextest name).
-    pub fn resolve_test_dirs(&mut self, run_dir: &std::path::Path) {
-        // Collect all dirs with events.jsonl, recursively (up to 2 levels).
+    /// Build the combined test list from on-disk directories and nextest results.
+    ///
+    /// 1. Scan child dirs for `events.jsonl` via [`collect_event_dirs`] to get
+    ///    the authoritative list of test output directories.
+    /// 2. Create a [`TestResult`] for each dir (default status = Pass).
+    /// 3. Match existing nextest tests in `self.tests` to dirs by bare function
+    ///    name and update status/duration on the matching entry.
+    /// 4. Nextest tests with no matching dir are appended (no `dir` field).
+    /// 5. Replace `self.tests` with the combined list.
+    pub fn build_test_list(&mut self, run_dir: &std::path::Path) {
+        // Step 1: collect dirs with events.jsonl.
         let mut test_dirs: Vec<String> = Vec::new();
         collect_event_dirs(run_dir, run_dir, 0, 2, &mut test_dirs);
 
-        // Build a map: bare function name → relative dir path.
-        // e.g. "holepunch_simple" → "patchbay/holepunch_simple"
-        let dir_by_fn: std::collections::HashMap<&str, &str> = test_dirs
+        // Step 2: create a TestResult for each dir, keyed by bare fn name.
+        let mut combined: Vec<TestResult> = test_dirs
             .iter()
-            .filter_map(|d| {
-                let fn_name = d.rsplit('/').next()?;
-                Some((fn_name, d.as_str()))
+            .map(|d| TestResult {
+                name: d.clone(),
+                status: TestStatus::Pass,
+                duration: None,
+                dir: Some(d.clone()),
             })
             .collect();
 
-        // Match each test result to a directory by bare function name.
-        // Nextest name: "iroh::patchbay holepunch_simple" → last token "holepunch_simple"
-        for test in &mut self.tests {
-            let fn_name = test
-                .name
-                .rsplit_once(' ')
-                .map(|(_, name)| name)
-                .unwrap_or(&test.name);
-            if let Some(&dir) = dir_by_fn.get(fn_name) {
-                test.dir = Some(dir.to_string());
+        // Build a lookup: bare fn name → index in combined.
+        let mut fn_to_idx: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (i, d) in test_dirs.iter().enumerate() {
+            if let Some(fn_name) = d.rsplit('/').next() {
+                fn_to_idx.insert(fn_name.to_string(), i);
             }
         }
+
+        // Step 3 & 4: walk existing nextest tests and either update or append.
+        for test in &self.tests {
+            let fn_name = test
+                .name
+                .rsplit_once('$')
+                .map(|(_, name)| name)
+                .or_else(|| test.name.rsplit_once("::").map(|(_, name)| name))
+                .unwrap_or(&test.name);
+            if let Some(&idx) = fn_to_idx.get(fn_name) {
+                // Update the dir-based entry with nextest metadata.
+                combined[idx].status = test.status;
+                combined[idx].duration = test.duration;
+            } else {
+                // No matching dir — append without dir.
+                combined.push(TestResult {
+                    name: test.name.clone(),
+                    status: test.status,
+                    duration: test.duration,
+                    dir: None,
+                });
+            }
+        }
+
+        self.tests = combined;
     }
 }
 

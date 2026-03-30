@@ -256,7 +256,14 @@ export default function RunsIndex() {
                 {g.manifest ? (
                   <GroupHeaderContent group={g} />
                 ) : (
-                  <span className="run-group-name">{g.group}</span>
+                  <Link
+                    to={`/group/${g.group}`}
+                    className="run-group-name"
+                    style={{ color: 'inherit', textDecoration: 'none' }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {g.group}
+                  </Link>
                 )}
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto' }}>
                   {g.runs.length} {g.runs.length === 1 ? 'run' : 'runs'}
@@ -283,13 +290,35 @@ function GroupHeaderContent({ group }: { group: RunGroupWithManifest }) {
   const outcome = m.test_outcome ?? m.outcome
   const statusIcon = outcome === 'pass' || outcome === 'success' ? '\u2705' : outcome === 'fail' || outcome === 'failure' ? '\u274c' : null
   const date = m.started_at ?? extractDate(group.group)
+  const titleTruncated = m.title && m.title.length > 60 ? m.title.slice(0, 57) + '...' : m.title
 
   return (
     <>
-      <span style={{ fontWeight: 600 }}>{m.project || group.group}</span>
+      <Link
+        to={`/group/${group.group}`}
+        style={{ fontWeight: 600, color: 'inherit', textDecoration: 'none' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {m.project || group.group}
+      </Link>
       {m.branch && <span className="pushed-run-badge">{m.branch}</span>}
       {m.commit && <code style={{ fontSize: 11 }}>{m.commit.slice(0, 7)}</code>}
       {m.kind && <span className="kind-badge" style={kindBadgeStyle(m.kind)}>{m.kind}</span>}
+      {m.pr != null && m.pr_url && (
+        <a
+          href={m.pr_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ fontSize: 11, color: 'var(--accent, #4a9eff)' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          #{m.pr}
+        </a>
+      )}
+      {m.pr != null && !m.pr_url && (
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>#{m.pr}</span>
+      )}
+      {titleTruncated && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{titleTruncated}</span>}
       {statusIcon && <span>{statusIcon}</span>}
       {date && (
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>

@@ -156,6 +156,11 @@ test('compare view renders summary and regression', async ({ page }) => {
     await expect(thresholdRow.locator('td').nth(1)).toHaveText('PASS')
     await expect(thresholdRow.locator('td').nth(2)).toHaveText('FAIL')
     await expect(thresholdRow.locator('td').nth(3)).toHaveText('REGRESS')
+
+    // Group compare should NOT render SplitRunView (no split panels)
+    await expect(page.getByText('Shared:').first()).not.toBeVisible()
+    // The back-to-group link should also not be visible (it's for individual compares)
+    await expect(page.getByText('Back to group compare')).not.toBeVisible()
   } finally {
     if (proc && !proc.killed) proc.kill('SIGTERM')
     rmSync(workDir, { recursive: true, force: true })
