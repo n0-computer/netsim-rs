@@ -121,7 +121,9 @@ pub fn discover_runs(base: &Path) -> anyhow::Result<Vec<RunInfo>> {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             // Skip if we already have runs in this group.
-            let already_found = runs.iter().any(|r| r.group.as_deref() == Some(&name) || r.name == name);
+            let already_found = runs
+                .iter()
+                .any(|r| r.group.as_deref() == Some(&name) || r.name == name);
             if already_found {
                 continue;
             }
@@ -991,8 +993,16 @@ fn merge_nextest_results(dir: &Path, manifest: &mut RunManifest) {
         .collect();
     manifest.tests.extend(new_tests);
     // Recompute counts from the merged tests list.
-    let pass = manifest.tests.iter().filter(|t| t.status == patchbay_utils::manifest::TestStatus::Pass).count() as u32;
-    let fail = manifest.tests.iter().filter(|t| t.status == patchbay_utils::manifest::TestStatus::Fail).count() as u32;
+    let pass = manifest
+        .tests
+        .iter()
+        .filter(|t| t.status == patchbay_utils::manifest::TestStatus::Pass)
+        .count() as u32;
+    let fail = manifest
+        .tests
+        .iter()
+        .filter(|t| t.status == patchbay_utils::manifest::TestStatus::Fail)
+        .count() as u32;
     let total = manifest.tests.len() as u32;
     if total > 0 {
         manifest.pass = Some(pass);

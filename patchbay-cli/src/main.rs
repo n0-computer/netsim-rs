@@ -10,17 +10,18 @@ mod util;
 #[cfg(feature = "vm")]
 mod vm;
 
-use std::path::{Path, PathBuf};
 #[cfg(feature = "serve")]
 use std::process::Command as ProcessCommand;
-use std::time::Duration;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
-
 #[cfg(feature = "serve")]
 use patchbay_server::DEFAULT_UI_BIND;
+use serde::Deserialize;
 #[cfg(not(feature = "serve"))]
 const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
 
@@ -303,7 +304,8 @@ async fn dispatch_run(r: RunArgs) -> Result<()> {
     // On Linux: run natively.
     #[cfg(target_os = "linux")]
     {
-        let sim_timeout = r.timeout
+        let sim_timeout = r
+            .timeout
             .map(|s| native::parse_duration(&s))
             .transpose()
             .context("invalid --timeout value")?;
@@ -327,12 +329,20 @@ async fn dispatch_run(r: RunArgs) -> Result<()> {
         let project_root = resolve_project_root(r.project_root)?;
         let sims = resolve_sim_args(r.sims, &project_root)?;
         let res = native::run_sims(
-            sims, r.work_dir, r.binary_overrides, r.verbose,
-            Some(project_root), r.no_build, sim_timeout,
-        ).await;
+            sims,
+            r.work_dir,
+            r.binary_overrides,
+            r.verbose,
+            Some(project_root),
+            r.no_build,
+            sim_timeout,
+        )
+        .await;
         if r.open && res.is_ok() {
             println!("run finished; server still running (Ctrl-C to exit)");
-            loop { tokio::time::sleep(Duration::from_secs(60)).await; }
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
         }
         return res;
     }
@@ -341,14 +351,21 @@ async fn dispatch_run(r: RunArgs) -> Result<()> {
     #[cfg(all(not(target_os = "linux"), feature = "vm"))]
     {
         let vm_args = vm::VmRunArgs {
-            sims: r.sims, work_dir: r.work_dir, binary_overrides: r.binary_overrides,
-            verbose: r.verbose, open: r.open, bind: r.bind,
+            sims: r.sims,
+            work_dir: r.work_dir,
+            binary_overrides: r.binary_overrides,
+            verbose: r.verbose,
+            open: r.open,
+            bind: r.bind,
         };
         return vm::run_sims_vm(vm_args, patchbay_vm::Backend::Auto);
     }
 
     #[cfg(all(not(target_os = "linux"), not(feature = "vm")))]
-    { let _ = r; bail!("run requires Linux or the `vm` feature"); }
+    {
+        let _ = r;
+        bail!("run requires Linux or the `vm` feature");
+    }
 }
 
 // ── Prepare dispatch ────────────────────────────────────────────────────
@@ -365,13 +382,25 @@ async fn dispatch_prepare(
     {
         let project_root = resolve_project_root(project_root)?;
         let sims = resolve_sim_args(sims, &project_root)?;
-        return native::prepare_sims(sims, work_dir, binary_overrides, Some(project_root), no_build)
-            .await;
+        return native::prepare_sims(
+            sims,
+            work_dir,
+            binary_overrides,
+            Some(project_root),
+            no_build,
+        )
+        .await;
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (&sims, &work_dir, &binary_overrides, &no_build, &project_root);
+        let _ = (
+            &sims,
+            &work_dir,
+            &binary_overrides,
+            &no_build,
+            &project_root,
+        );
         bail!("prepare requires Linux (use `patchbay vm run` for non-Linux)");
     }
 }
@@ -445,44 +474,38 @@ fn dispatch_compare(command: CompareCommand, verbose: bool) -> Result<()> {
                 left_ref, right_label
             );
 
-            let resolve_ref_results =
-                |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
-                    let sha = mf::resolve_ref(git_ref)
-                        .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
+            let resolve_ref_results = |git_ref: &str, label: &str| -> Result<Vec<mf::TestResult>> {
+                let sha = mf::resolve_ref(git_ref)
+                    .with_context(|| format!("could not resolve ref '{git_ref}'"))?;
 
-                    if !force_build {
-                        if let Some((_dir, manifest)) =
-                            mf::find_run_for_commit(&work_dir, &sha, RunKind::Test)
-                        {
-                            println!("Using cached run for {label} ({sha:.8})");
-                            return Ok(manifest.tests);
-                        }
+                if !force_build {
+                    if let Some((_dir, manifest)) =
+                        mf::find_run_for_commit(&work_dir, &sha, RunKind::Test)
+                    {
+                        println!("Using cached run for {label} ({sha:.8})");
+                        return Ok(manifest.tests);
                     }
+                }
 
-                    if no_ref_build {
-                        bail!(
-                            "no cached run for {label} ({sha:.8}); \
+                if no_ref_build {
+                    bail!(
+                        "no cached run for {label} ({sha:.8}); \
                              run `patchbay test --persist` on that ref first, \
                              or remove --no-ref-build"
-                        );
-                    }
+                    );
+                }
 
-                    println!("Running tests in {label} ...");
-                    let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
-                    let started_at = chrono::Utc::now();
-                    let (results, _output) =
-                        compare::run_tests_in_dir(&tree_dir, &args, verbose)?;
-                    let ended_at = chrono::Utc::now();
-                    let runtime = (ended_at - started_at)
-                        .to_std()
-                        .unwrap_or_default();
+                println!("Running tests in {label} ...");
+                let tree_dir = compare::setup_worktree(git_ref, &cwd)?;
+                let started_at = chrono::Utc::now();
+                let (results, _output) = compare::run_tests_in_dir(&tree_dir, &args, verbose)?;
+                let ended_at = chrono::Utc::now();
+                let runtime = (ended_at - started_at).to_std().unwrap_or_default();
 
-                    compare::persist_worktree_run(
-                        &tree_dir, &results, started_at, ended_at, runtime,
-                    )?;
-                    compare::cleanup_worktree(&tree_dir)?;
-                    Ok(results)
-                };
+                compare::persist_worktree_run(&tree_dir, &results, started_at, ended_at, runtime)?;
+                compare::cleanup_worktree(&tree_dir)?;
+                Ok(results)
+            };
 
             let left_results = resolve_ref_results(&left_ref, &left_ref)?;
 
@@ -490,8 +513,7 @@ fn dispatch_compare(command: CompareCommand, verbose: bool) -> Result<()> {
                 resolve_ref_results(r, r)?
             } else {
                 println!("Running tests in worktree ...");
-                let (results, _output) =
-                    compare::run_tests_in_dir(&cwd, &args, verbose)?;
+                let (results, _output) = compare::run_tests_in_dir(&cwd, &args, verbose)?;
                 results
             };
 

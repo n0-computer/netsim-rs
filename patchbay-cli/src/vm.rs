@@ -4,12 +4,11 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::Subcommand;
+#[cfg(feature = "serve")]
+use patchbay_server::DEFAULT_UI_BIND;
 use patchbay_vm::VmOps;
 
 use crate::test;
-
-#[cfg(feature = "serve")]
-use patchbay_server::DEFAULT_UI_BIND;
 #[cfg(not(feature = "serve"))]
 const DEFAULT_UI_BIND: &str = "127.0.0.1:7421";
 

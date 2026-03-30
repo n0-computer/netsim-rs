@@ -195,8 +195,13 @@ pub fn run_piped(cmd: &mut Command, verbose: bool) -> Result<(bool, String, Stri
     let v = verbose;
     let out_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stdout_pipe).lines().map_while(Result::ok) {
-            if v { println!("{line}"); }
+        for line in std::io::BufReader::new(stdout_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if v {
+                println!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -204,8 +209,13 @@ pub fn run_piped(cmd: &mut Command, verbose: bool) -> Result<(bool, String, Stri
     });
     let err_t = std::thread::spawn(move || {
         let mut buf = String::new();
-        for line in std::io::BufReader::new(stderr_pipe).lines().map_while(Result::ok) {
-            if verbose { eprintln!("{line}"); }
+        for line in std::io::BufReader::new(stderr_pipe)
+            .lines()
+            .map_while(Result::ok)
+        {
+            if verbose {
+                eprintln!("{line}");
+            }
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -248,8 +258,14 @@ pub fn run_native(args: TestArgs, verbose: bool, persist: bool) -> Result<()> {
         manifest::parse_test_output(&combined)
     };
 
-    let pass = results.iter().filter(|r| r.status == TestStatus::Pass).count() as u32;
-    let fail = results.iter().filter(|r| r.status == TestStatus::Fail).count() as u32;
+    let pass = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Pass)
+        .count() as u32;
+    let fail = results
+        .iter()
+        .filter(|r| r.status == TestStatus::Fail)
+        .count() as u32;
     let total = results.len() as u32;
     let git = manifest::git_context();
 

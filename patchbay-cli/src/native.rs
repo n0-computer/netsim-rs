@@ -2,10 +2,12 @@
 //!
 //! Everything in this module requires Linux user namespaces (patchbay core).
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+    time::Duration,
+};
 
 use anyhow::{anyhow, bail, Context, Result};
 use patchbay::check_caps;
@@ -35,7 +37,16 @@ pub async fn run_sims(
     no_build: bool,
     timeout: Option<Duration>,
 ) -> Result<()> {
-    sim::run_sims(sims, work_dir, binary_overrides, verbose, project_root, no_build, timeout).await
+    sim::run_sims(
+        sims,
+        work_dir,
+        binary_overrides,
+        verbose,
+        project_root,
+        no_build,
+        timeout,
+    )
+    .await
 }
 
 /// Resolve sims and build all required assets without running.
@@ -77,11 +88,9 @@ pub fn env_key_suffix(name: &str) -> String {
     patchbay::util::sanitize_for_env_key(name)
 }
 
-pub fn load_topology_for_inspect(
-    input: &Path,
-) -> Result<(patchbay::config::LabConfig, bool)> {
-    let text = std::fs::read_to_string(input)
-        .with_context(|| format!("read {}", input.display()))?;
+pub fn load_topology_for_inspect(input: &Path) -> Result<(patchbay::config::LabConfig, bool)> {
+    let text =
+        std::fs::read_to_string(input).with_context(|| format!("read {}", input.display()))?;
     let value: toml::Value =
         toml::from_str(&text).with_context(|| format!("parse TOML {}", input.display()))?;
     let is_sim =
