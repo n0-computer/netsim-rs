@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0](https://github.com/n0-computer/n0-future/compare/v0.2.0..v0.3.0) - 2026-03-31
+
+### ⛰️  Features
+
+- [**breaking**] Bidirectional per-device link impairment ([#12](https://github.com/n0-computer/n0-future/issues/12)) - ([a26cf72](https://github.com/n0-computer/n0-future/commit/a26cf729be9a918f420b8bb49642c30874031521))
+
+### 🐛 Bug Fixes
+
+- Prepend https:// to view_url when Host header lacks scheme ([#11](https://github.com/n0-computer/n0-future/issues/11)) - ([dff4873](https://github.com/n0-computer/n0-future/commit/dff4873db89647354d401c70104cebbf971f4c5b))
+
 ## [0.2.0](https://github.com/n0-computer/n0-future/compare/patchbay-v0.1.0..v0.2.0) - 2026-03-30
 
 ### ⛰️  Features
@@ -57,6 +67,7 @@
 - Fmt - ([11685cc](https://github.com/n0-computer/n0-future/commit/11685cc975fa9c68990e2d89c0f5bf05f9fd4f40))
 - Run CI on all pull requests - ([1637f14](https://github.com/n0-computer/n0-future/commit/1637f144851b9f477c649d8784cd0988b6a3bbd2))
 - Fixup CI - ([52890e1](https://github.com/n0-computer/n0-future/commit/52890e15fbf55bd462a7e1317df5a672e1c61059))
+- Prepare patchbay v0.2.0 release - ([03ab97d](https://github.com/n0-computer/n0-future/commit/03ab97d86a8d79089fca28b038b779451efa4139))
 
 ## [patchbay-v0.1.0] - 2026-03-12
 
