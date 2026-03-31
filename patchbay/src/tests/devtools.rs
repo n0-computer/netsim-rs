@@ -36,14 +36,14 @@ async fn simple_lab_for_e2e() -> Result<()> {
     // Client device behind the home router.
     let client = lab
         .add_device("client")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
     // Server device in the DC.
     let server = lab
         .add_device("server")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -186,11 +186,7 @@ async fn run_sync_preserves_async_events() -> Result<()> {
     .await?;
 
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     // Emit an event via the async worker (spawn).
     dev.spawn(|_| async {

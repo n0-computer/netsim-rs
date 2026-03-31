@@ -21,7 +21,7 @@ async fn corporate_blocks_udp() -> Result<()> {
 
     let dev = lab
         .add_device("laptop")
-        .iface("eth0", corp.id(), None)
+        .iface("eth0", corp.id())
         .build()
         .await?;
 
@@ -63,7 +63,7 @@ async fn captive_portal_blocks_udp() -> Result<()> {
 
     let dev = lab
         .add_device("phone")
-        .iface("eth0", portal.id(), None)
+        .iface("eth0", portal.id())
         .build()
         .await?;
 
@@ -100,7 +100,7 @@ async fn none_allows_all() -> Result<()> {
 
     let dev = lab
         .add_device("laptop")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -133,11 +133,7 @@ async fn custom_selective() -> Result<()> {
         .build()
         .await?;
 
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", fw.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", fw.id()).build().await?;
 
     let reflector_blocked = SocketAddr::new(IpAddr::V4(dc_ip), 9203);
     let _r = dc.spawn_reflector(reflector_blocked).await?;
@@ -182,11 +178,7 @@ async fn block_inbound_drops_unsolicited() -> Result<()> {
         .build()
         .await?;
 
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", gw.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", gw.id()).build().await?;
     let dev_ip = dev.ip().context("no dev ip")?;
 
     // Outbound from device → DC should work (established return traffic allowed).
@@ -251,11 +243,7 @@ async fn custom_block_inbound() -> Result<()> {
         .build()
         .await?;
 
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", gw.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", gw.id()).build().await?;
 
     // UDP to port 53 should work (outbound allowed).
     let reflector_53 = SocketAddr::new(IpAddr::V4(dc_ip), 53);
@@ -292,7 +280,7 @@ async fn runtime_change() -> Result<()> {
 
     let dev = lab
         .add_device("laptop")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 

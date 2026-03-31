@@ -112,7 +112,7 @@ front of the router's downstream, assigning devices private addresses and
 masquerading their traffic, like a typical home WiFi router.
 
 ```rust
-use patchbay::{Nat, LinkCondition};
+use patchbay::{Nat, LinkCondition, LinkDirection};
 
 // A datacenter router whose devices get public IPs.
 let dc = lab.add_router("dc").build().await?;
@@ -130,16 +130,17 @@ real-world impairment like packet loss, latency, and jitter.
 // A server in the datacenter, with a clean link.
 let server = lab
     .add_device("server")
-    .iface("eth0", dc.id(), None)
+    .iface("eth0", dc.id())
     .build()
     .await?;
 
 // A laptop behind the home router, over a lossy WiFi link.
 let laptop = lab
     .add_device("laptop")
-    .iface("eth0", home.id(), Some(LinkCondition::Wifi))
+    .iface("eth0", home.id())
     .build()
     .await?;
+laptop.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 ```
 
 At this point you have five network namespaces — the IX root, two

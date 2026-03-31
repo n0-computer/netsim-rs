@@ -12,10 +12,13 @@ async fn route_switch_changes_impairment() -> Result<()> {
     let isp = lab.add_router("isp1").build().await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
-        .iface("eth1", isp.id(), Some(LinkCondition::Mobile4G))
+        .iface("eth0", dc.id())
+        .iface("eth1", isp.id())
         .default_via("eth0")
         .build()
+        .await?;
+
+    dev.set_link_condition("eth1", Some(LinkCondition::Mobile4G), LinkDirection::Egress)
         .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -48,11 +51,7 @@ async fn link_down_up() -> Result<()> {
         let result: Result<()> = async {
             let lab = Lab::new().await?;
             let dc = lab.add_router("dc").build().await?;
-            let dev = lab
-                .add_device("dev")
-                .iface("eth0", dc.id(), None)
-                .build()
-                .await?;
+            let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
             let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
             let r = SocketAddr::new(IpAddr::V4(dc_ip), port_base);
@@ -130,20 +129,19 @@ async fn link_down_up() -> Result<()> {
 async fn rate_tcp_upload() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 2000,
-                loss_pct: 0.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 2000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let addr = SocketAddr::new(IpAddr::V4(dc_ip), 17_300);
@@ -164,11 +162,7 @@ async fn rate_tcp_upload() -> Result<()> {
 async fn rate_tcp_download() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev_id = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev_id = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     dc.set_downlink_condition(Some(LinkCondition::Manual(LinkLimits {
         rate_kbit: 2000,
@@ -198,20 +192,19 @@ async fn rate_udp_upload() -> Result<()> {
     use std::time::Instant;
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 2000,
-                loss_pct: 0.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 2000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 17_500);
@@ -238,11 +231,7 @@ async fn rate_udp_download() -> Result<()> {
     use std::time::Instant;
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev_id = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev_id = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     dc.set_downlink_condition(Some(LinkCondition::Manual(LinkLimits {
         rate_kbit: 2000,
@@ -276,19 +265,20 @@ async fn rate_udp_download() -> Result<()> {
 async fn rate_asymmetric() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev_id = lab
-        .add_device("dev")
-        .iface(
+    let dev_id = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev_id
+        .set_link_condition(
             "eth0",
-            dc.id(),
             Some(LinkCondition::Manual(LinkLimits {
                 rate_kbit: 1000,
                 loss_pct: 0.0,
                 latency_ms: 0,
                 ..Default::default()
             })),
+            // Egress only: cap upload at 1000, download unimpaired by this rule.
+            LinkDirection::Egress,
         )
-        .build()
         .await?;
 
     dc.set_downlink_condition(Some(LinkCondition::Manual(LinkLimits {
@@ -340,7 +330,7 @@ async fn rate_multihop_bottleneck() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
 
@@ -353,6 +343,7 @@ async fn rate_multihop_bottleneck() -> Result<()> {
             latency_ms: 0,
             ..Default::default()
         })),
+        LinkDirection::Egress,
     )
     .await?;
 
@@ -377,20 +368,19 @@ async fn rate_multihop_bottleneck() -> Result<()> {
 async fn rate_two_hops_stacked() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 2000,
-                loss_pct: 0.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 2000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     dc.set_downlink_condition(Some(LinkCondition::Manual(LinkLimits {
         rate_kbit: 2000,
@@ -421,11 +411,7 @@ async fn loss_udp_moderate() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     // Build with a clean link so ARP resolves without interference from netem.
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_000);
@@ -445,6 +431,7 @@ async fn loss_udp_moderate() -> Result<()> {
                 loss_pct: 50.0,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
 
@@ -474,11 +461,7 @@ async fn loss_udp_high() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     // Build with a clean link so ARP resolves without interference from netem.
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_100);
@@ -498,6 +481,7 @@ async fn loss_udp_high() -> Result<()> {
                 loss_pct: 90.0,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
 
@@ -519,20 +503,19 @@ async fn loss_udp_high() -> Result<()> {
 async fn loss_tcp_integrity() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 0,
-                loss_pct: 5.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 0,
+            loss_pct: 5.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     const BYTES: usize = 200 * 1024;
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -572,11 +555,7 @@ async fn loss_udp_bidirectional() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     // Build with a clean link so ARP resolves without interference from netem.
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 18_300);
@@ -596,6 +575,7 @@ async fn loss_udp_bidirectional() -> Result<()> {
                 loss_pct: 30.0,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
 
@@ -626,20 +606,19 @@ async fn loss_udp_bidirectional() -> Result<()> {
 async fn latency_upload_download() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 0,
-                loss_pct: 0.0,
-                latency_ms: 20,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 0,
+            loss_pct: 0.0,
+            latency_ms: 20,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     dc.set_downlink_condition(Some(LinkCondition::Manual(LinkLimits {
         rate_kbit: 0,
@@ -676,18 +655,21 @@ async fn latency_multihop_chain() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev")
-        .iface(
-            "eth0",
-            nat.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 0,
-                loss_pct: 0.0,
-                latency_ms: 20,
-                ..Default::default()
-            })),
-        )
+        .iface("eth0", nat.id())
         .build()
         .await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 0,
+            loss_pct: 0.0,
+            latency_ms: 20,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     lab.set_link_condition(
         nat.id(),
@@ -698,6 +680,7 @@ async fn latency_multihop_chain() -> Result<()> {
             latency_ms: 30,
             ..Default::default()
         })),
+        LinkDirection::Egress,
     )
     .await?;
 
@@ -721,20 +704,19 @@ async fn latency_multihop_chain() -> Result<()> {
 async fn rate_dynamic_decrease() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 5000,
-                loss_pct: 0.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 5000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
@@ -756,6 +738,7 @@ async fn rate_dynamic_decrease() -> Result<()> {
                 latency_ms: 0,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
 
@@ -787,20 +770,19 @@ async fn rate_dynamic_decrease() -> Result<()> {
 async fn rate_dynamic_remove() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface(
-            "eth0",
-            dc.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                rate_kbit: 1000,
-                loss_pct: 0.0,
-                latency_ms: 0,
-                ..Default::default()
-            })),
-        )
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            rate_kbit: 1000,
+            loss_pct: 0.0,
+            latency_ms: 0,
+            ..Default::default()
+        })),
+        LinkDirection::Egress,
+    )
+    .await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
 
@@ -813,7 +795,9 @@ async fn rate_dynamic_remove() -> Result<()> {
 
     let dev_handle = lab.device_by_name("dev").unwrap();
     let default_if = dev_handle.default_iface().unwrap().name().to_string();
-    dev_handle.set_link_condition(&default_if, None).await?;
+    dev_handle
+        .set_link_condition(&default_if, None, LinkDirection::Both)
+        .await?;
 
     let sink = dc.spawn_thread(move || tcp_sink(SocketAddr::new(IpAddr::V4(dc_ip), 18_901)))?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -835,11 +819,7 @@ async fn rate_dynamic_remove() -> Result<()> {
 async fn latency_dynamic_add_remove() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_000);
@@ -858,6 +838,7 @@ async fn latency_dynamic_add_remove() -> Result<()> {
                 latency_ms: 100,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
     let high = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
@@ -866,7 +847,9 @@ async fn latency_dynamic_add_remove() -> Result<()> {
         "expected RTT +90ms after 100ms impair, baseline={baseline:?} high={high:?}"
     );
 
-    dev_handle.set_link_condition(&default_if, None).await?;
+    dev_handle
+        .set_link_condition(&default_if, None, LinkDirection::Both)
+        .await?;
     let recovered = dev.run_sync(move || test_utils::udp_rtt_sync(r))?;
     assert!(
         recovered < baseline + Duration::from_millis(30),
@@ -896,10 +879,9 @@ async fn presets_rtt_and_loss() -> Result<()> {
         let result: Result<()> = async {
             let lab = Lab::new().await?;
             let dc = lab.add_router("dc").build().await?;
-            let dev = lab
-                .add_device("dev")
-                .iface("eth0", dc.id(), Some(preset))
-                .build()
+            let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+            dev.set_link_condition("eth0", Some(preset), LinkDirection::Egress)
                 .await?;
 
             let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
@@ -992,11 +974,7 @@ async fn downlink_builder_latency() -> Result<()> {
         }))
         .build()
         .await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 19_200);
@@ -1049,11 +1027,7 @@ impair = { rate_kbit = 5000, loss_pct = 1.5, latency_ms = 40 }
 async fn loss_dynamic_change() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 20_500);
@@ -1082,6 +1056,7 @@ async fn loss_dynamic_change() -> Result<()> {
                 latency_ms: 0,
                 ..Default::default()
             })),
+            LinkDirection::Egress,
         )
         .await?;
 
@@ -1096,7 +1071,9 @@ async fn loss_dynamic_change() -> Result<()> {
     );
 
     // Remove loss.
-    dev_handle.set_link_condition(&iface_name, None).await?;
+    dev_handle
+        .set_link_condition(&iface_name, None, LinkDirection::Both)
+        .await?;
 
     let (_, recv_recovered) = dev
         .spawn(move |_| async move {
@@ -1107,5 +1084,126 @@ async fn loss_dynamic_change() -> Result<()> {
         recv_recovered >= 45,
         "expected ≥ 45/50 after removing loss, got {recv_recovered}"
     );
+    Ok(())
+}
+
+// ── Direction permutations ──────────────────────────────────────────
+
+/// Measure median UDP round-trip time over `n` probes (blocking).
+fn median_udp_rtt_sync(reflector: SocketAddr, n: usize) -> Result<Duration> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").context("median_rtt bind")?;
+    sock.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut buf = [0u8; 256];
+    let mut samples = Vec::with_capacity(n);
+    for _ in 0..n {
+        let start = Instant::now();
+        sock.send_to(b"PING", reflector)?;
+        let _ = sock.recv_from(&mut buf)?;
+        samples.push(start.elapsed());
+        // Small gap to avoid burst effects.
+        thread::sleep(Duration::from_millis(5));
+    }
+    samples.sort();
+    Ok(samples[samples.len() / 2])
+}
+
+/// Egress, ingress, and both directions produce expected RTT differences.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn direction_permutations() -> Result<()> {
+    check_caps()?;
+
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let sender = lab
+        .add_device("sender")
+        .iface("eth0", dc.id())
+        .build()
+        .await?;
+    let receiver = lab
+        .add_device("receiver")
+        .iface("eth0", dc.id())
+        .build()
+        .await?;
+
+    let recv_ip = receiver.ip().unwrap();
+    let reflector_addr = SocketAddr::new(IpAddr::V4(recv_ip), 21_000);
+    let _r = receiver.spawn_reflector(reflector_addr).await?;
+
+    // Use 500ms latency so single-direction (~500ms) and both-direction (~1000ms)
+    // are far enough apart that no CI jitter can confuse them. Each assertion uses
+    // a ±150ms tolerance around the expected value.
+    let latency_ms = 500;
+    let condition = LinkCondition::Manual(LinkLimits {
+        latency_ms,
+        ..Default::default()
+    });
+
+    // Baseline: no impairment, RTT should be near zero.
+    let rtt_ms = sender
+        .run_sync(move || median_udp_rtt_sync(reflector_addr, 5).map(|d| d.as_millis() as u64))
+        .context("baseline")?;
+    assert!(
+        rtt_ms < 100,
+        "baseline RTT should be < 100ms, got {rtt_ms}ms"
+    );
+
+    // ── Egress only ──
+    // Outbound packets delayed 500ms, inbound clean. RTT ~ 500ms.
+    sender
+        .set_link_condition("eth0", Some(condition), LinkDirection::Egress)
+        .await?;
+    let egress_rtt = sender
+        .run_sync(move || median_udp_rtt_sync(reflector_addr, 7).map(|d| d.as_millis() as u64))
+        .context("egress")?;
+    assert!(
+        (350..750).contains(&egress_rtt),
+        "egress-only RTT should be ~500ms (350-750), got {egress_rtt}ms"
+    );
+    sender
+        .set_link_condition("eth0", None, LinkDirection::Both)
+        .await?;
+
+    // ── Ingress only ──
+    // Inbound packets delayed 500ms, outbound clean. RTT ~ 500ms.
+    sender
+        .set_link_condition("eth0", Some(condition), LinkDirection::Ingress)
+        .await?;
+    let ingress_rtt = sender
+        .run_sync(move || median_udp_rtt_sync(reflector_addr, 7).map(|d| d.as_millis() as u64))
+        .context("ingress")?;
+    assert!(
+        (350..750).contains(&ingress_rtt),
+        "ingress-only RTT should be ~500ms (350-750), got {ingress_rtt}ms"
+    );
+    sender
+        .set_link_condition("eth0", None, LinkDirection::Both)
+        .await?;
+
+    // ── Both directions ──
+    // Both paths delayed 500ms each. RTT ~ 1000ms.
+    // The lower bound (800) is above the single-direction upper bound (750),
+    // so this proves both directions are actually impaired.
+    sender
+        .set_link_condition("eth0", Some(condition), LinkDirection::Both)
+        .await?;
+    let both_rtt = sender
+        .run_sync(move || median_udp_rtt_sync(reflector_addr, 7).map(|d| d.as_millis() as u64))
+        .context("both")?;
+    assert!(
+        (800..1300).contains(&both_rtt),
+        "both-direction RTT should be ~1000ms (800-1300), got {both_rtt}ms"
+    );
+
+    // Verify that both > egress and both > ingress (proves additivity).
+    assert!(
+        both_rtt > egress_rtt && both_rtt > ingress_rtt,
+        "both ({both_rtt}ms) should exceed egress ({egress_rtt}ms) and ingress ({ingress_rtt}ms)"
+    );
+
+    sender
+        .set_link_condition("eth0", None, LinkDirection::Both)
+        .await?;
+
     Ok(())
 }

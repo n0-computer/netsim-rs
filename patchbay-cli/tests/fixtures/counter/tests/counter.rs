@@ -23,12 +23,12 @@ async fn udp_counter() -> anyhow::Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let sender = lab
         .add_device("sender")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
     let receiver = lab
         .add_device("receiver")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 

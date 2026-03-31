@@ -15,16 +15,8 @@ async fn fullcone_allows() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let r = lab.add_router("r").nat(Nat::FullCone).build().await?;
-    let a = lab
-        .add_device("a")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
-    let b = lab
-        .add_device("b")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
+    let a = lab.add_device("a").iface("eth0", r.id()).build().await?;
+    let b = lab.add_device("b").iface("eth0", r.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9100);
@@ -65,16 +57,8 @@ async fn home_nat_blocks() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let r = lab.add_router("r").nat(Nat::Home).build().await?;
-    let a = lab
-        .add_device("a")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
-    let b = lab
-        .add_device("b")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
+    let a = lab.add_device("a").iface("eth0", r.id()).build().await?;
+    let b = lab.add_device("b").iface("eth0", r.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9101);
@@ -122,16 +106,8 @@ async fn custom_allows() -> Result<()> {
         ))
         .build()
         .await?;
-    let a = lab
-        .add_device("a")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
-    let b = lab
-        .add_device("b")
-        .iface("eth0", r.id(), None)
-        .build()
-        .await?;
+    let a = lab.add_device("a").iface("eth0", r.id()).build().await?;
+    let b = lab.add_device("b").iface("eth0", r.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc has no ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 9102);

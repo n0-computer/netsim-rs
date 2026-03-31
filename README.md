@@ -36,14 +36,15 @@ let home = lab
 // A device behind the home router, with a lossy WiFi link.
 let dev = lab
     .add_device("laptop")
-    .iface("eth0", home.id(), Some(LinkCondition::Wifi))
+    .iface("eth0", home.id())
     .build()
     .await?;
+dev.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 
 // A server in the datacenter.
 let server = lab
     .add_device("server")
-    .iface("eth0", dc.id(), None)
+    .iface("eth0", dc.id())
     .build()
     .await?;
 
@@ -224,10 +225,11 @@ let home = lab.add_router("home")
 
 // Devices
 let dev = lab.add_device("phone")
-    .iface("wlan0", home.id(), Some(LinkCondition::Wifi))
-    .iface("eth0", dc.id(), None)
+    .iface("wlan0", home.id())
+    .iface("eth0", dc.id())
     .default_via("wlan0")
     .build().await?;
+dev.set_link_condition("wlan0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 ```
 
 ### Running code in namespaces
@@ -285,7 +287,7 @@ dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
     loss_pct: 5.0,
     latency_ms: 100,
     ..Default::default()
-}))).await?;
+})), LinkDirection::Both).await?;
 
 // Change NAT mode at runtime
 router.set_nat_mode(Nat::Corporate).await?;

@@ -340,7 +340,7 @@ async fn build_nat_case(
     };
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
 
@@ -388,8 +388,8 @@ async fn build_dual_nat_lab(mode_a: Nat, mode_b: Nat, port_base: u16) -> Result<
     let nat_b = lab.add_router("nat-b").nat(mode_b).build().await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat_a.id(), None)
-        .iface("eth1", nat_b.id(), None)
+        .iface("eth0", nat_a.id())
+        .iface("eth1", nat_b.id())
         .default_via("eth0")
         .build()
         .await?;
@@ -442,7 +442,7 @@ async fn build_single_nat_case(
     };
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
 

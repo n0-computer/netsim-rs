@@ -109,7 +109,7 @@ router. IP addresses are assigned automatically from the router's pool.
 ```rust
 let server = lab
     .add_device("server")
-    .iface("eth0", dc.id(), None)
+    .iface("eth0", dc.id())
     .build()
     .await?;
 ```
@@ -136,11 +136,13 @@ the physical link:
 ```rust
 let phone = lab
     .add_device("phone")
-    .iface("wlan0", home.id(), Some(LinkCondition::Wifi))
-    .iface("cell0", carrier.id(), Some(LinkCondition::Mobile4G))
+    .iface("wlan0", home.id())
+    .iface("cell0", carrier.id())
     .default_via("wlan0")
     .build()
     .await?;
+phone.set_link_condition("wlan0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+phone.set_link_condition("cell0", Some(LinkCondition::Mobile4G), LinkDirection::Both).await?;
 ```
 
 The `.default_via("wlan0")` call sets which interface carries the default
@@ -169,12 +171,13 @@ The built-in presets model common access technologies:
 | `Mobile3G` | 3% | 100 ms | 30 ms | 2 Mbit/s |
 | `Satellite` | 0.5% | 600 ms | 50 ms | 10 Mbit/s |
 
-Apply a preset when building the interface:
+Apply a preset after building the device:
 
 ```rust
 let dev = lab.add_device("laptop")
-    .iface("eth0", home.id(), Some(LinkCondition::Wifi))
+    .iface("eth0", home.id())
     .build().await?;
+dev.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 ```
 
 ### Custom parameters
@@ -194,8 +197,9 @@ let degraded = LinkCondition::Manual(LinkLimits {
 });
 
 let dev = lab.add_device("laptop")
-    .iface("eth0", home.id(), Some(degraded))
+    .iface("eth0", home.id())
     .build().await?;
+dev.set_link_condition("eth0", Some(degraded), LinkDirection::Both).await?;
 ```
 
 ### Runtime changes
@@ -206,10 +210,10 @@ for example switching from WiFi to a congested 3G link and verifying that
 your application adapts:
 
 ```rust
-dev.set_link_condition("eth0", Some(LinkCondition::Mobile3G)).await?;
+dev.set_link_condition("eth0", Some(LinkCondition::Mobile3G), LinkDirection::Both).await?;
 
 // Later, restore a clean link.
-dev.set_link_condition("eth0", None).await?;
+dev.set_link_condition("eth0", None, LinkDirection::Both).await?;
 ```
 
 ## Regions

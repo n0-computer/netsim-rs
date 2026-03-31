@@ -1,5 +1,5 @@
 use anyhow::Result;
-use patchbay::{Lab, LinkCondition, RouterPreset};
+use patchbay::{Lab, RouterPreset};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn main() -> Result<()> {
@@ -30,14 +30,14 @@ async fn async_main() -> Result<()> {
     // A device behind the home router, with a lossy WiFi link.
     let dev = lab
         .add_device("laptop")
-        .iface("eth0", home.id(), Some(LinkCondition::Wifi))
+        .iface("eth0", home.id())
         .build()
         .await?;
 
     // A server in the datacenter.
     let server = lab
         .add_device("server")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 

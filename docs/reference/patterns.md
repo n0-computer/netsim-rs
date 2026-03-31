@@ -59,8 +59,8 @@ interfaces on different routers:
 
 ```rust
 let device = lab.add_device("client")
-    .iface("eth0", home.id(), None)      // physical: internet traffic
-    .iface("wg0", vpn_exit.id(), None)   // tunnel: corporate traffic
+    .iface("eth0", home.id())      // physical: internet traffic
+    .iface("wg0", vpn_exit.id())   // tunnel: corporate traffic
     .default_via("eth0")                  // default route on physical
     .build().await?;
 
@@ -187,14 +187,15 @@ let wifi_router = lab.add_router("wifi").nat(Nat::Home).build().await?;
 let cell_router = lab.add_router("cell").nat(Nat::Cgnat).build().await?;
 
 let device = lab.add_device("phone")
-    .iface("eth0", wifi_router.id(), Some(LinkCondition::Wifi))
+    .iface("eth0", wifi_router.id())
     .build().await?;
+device.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 
 // Simulate handoff with connectivity gap
 device.link_down("eth0").await?;
 tokio::time::sleep(Duration::from_millis(500)).await;
 device.replug_iface("eth0", cell_router.id()).await?;
-device.set_link_condition("eth0", Some(LinkCondition::Mobile4G)).await?;
+device.set_link_condition("eth0", Some(LinkCondition::Mobile4G), LinkDirection::Both).await?;
 device.link_up("eth0").await?;
 
 // Assert: application reconnects within X seconds
@@ -245,7 +246,7 @@ let device = lab.add_device("client").uplink(router.id()).build().await?;
 device.set_link_condition("eth0", Some(LinkCondition::Manual(LinkLimits {
     rate_kbit: 2_000,
     ..Default::default()
-})))?;
+})), LinkDirection::Both)?;
 ```
 
 ---
@@ -336,11 +337,11 @@ Network conditions worsen over time (moving away from WiFi AP, entering tunnel
 on cellular, weather affecting satellite).
 
 ```rust
-device.set_link_condition("eth0", Some(LinkCondition::Wifi)).await?;
+device.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", Some(LinkCondition::WifiBad)).await?;
+device.set_link_condition("eth0", Some(LinkCondition::WifiBad), LinkDirection::Both).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", None).await?;  // remove impairment
+device.set_link_condition("eth0", None, LinkDirection::Both).await?;  // remove impairment
 ```
 
 ### Intermittent connectivity

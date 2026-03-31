@@ -33,7 +33,7 @@ use crate::{
     },
     event::{IfaceSnapshot, LabEventKind},
     firewall::Firewall,
-    lab::{Ipv6ProvisioningMode, Lab, LinkCondition},
+    lab::{Ipv6ProvisioningMode, Lab, LinkCondition, LinkDirection},
     nat::{IpSupport, Nat, NatV6Mode},
     netlink::Netlink,
 };
@@ -537,29 +537,55 @@ impl Device {
         &self,
         ifname: &str,
         impair: Option<LinkCondition>,
+        direction: LinkDirection,
     ) -> Result<()> {
         let op = self
             .lab
             .with_device(self.id, |d| Arc::clone(&d.op))
             .ok_or_else(|| anyhow!("device removed"))?;
         let _guard = op.lock().await;
-        let (ns, resolved_ifname) = {
+        let (dev_ns, resolved_ifname, gw_ns, gw_ifname) = {
             let inner = self.lab.core.lock().unwrap();
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("device removed"))?;
             let iname = ifname.to_string();
-            if dev.iface(&iname).is_none() {
-                bail!("interface '{}' not found", iname);
-            }
-            (dev.ns.clone(), iname)
+            let iface = dev
+                .iface(&iname)
+                .ok_or_else(|| anyhow!("interface '{}' not found", iname))?;
+            let gw_router = inner
+                .switch(iface.uplink)
+                .and_then(|sw| sw.owner_router)
+                .and_then(|rid| inner.router(rid))
+                .ok_or_else(|| anyhow!("gateway router not found for interface '{}'", iname))?;
+            let gw_ns = gw_router.ns.clone();
+            let gw_ifname = format!("v{}", iface.idx);
+            (dev.ns.clone(), iname, gw_ns, gw_ifname)
         };
-        apply_or_remove_impair(&self.lab.netns, &ns, &resolved_ifname, impair).await;
+        match direction {
+            LinkDirection::Egress | LinkDirection::Both => {
+                apply_or_remove_impair(&self.lab.netns, &dev_ns, &resolved_ifname, impair).await;
+            }
+            LinkDirection::Ingress => {
+                // Remove any existing egress impairment when switching to ingress-only.
+                apply_or_remove_impair(&self.lab.netns, &dev_ns, &resolved_ifname, None).await;
+            }
+        }
+        match direction {
+            LinkDirection::Ingress | LinkDirection::Both => {
+                apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, impair).await;
+            }
+            LinkDirection::Egress => {
+                // Remove any existing ingress impairment when switching to egress-only.
+                apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, None).await;
+            }
+        }
         {
             let mut inner = self.lab.core.lock().unwrap();
             if let Some(dev) = inner.device_mut(self.id) {
                 if let Some(iface) = dev.iface_mut(&resolved_ifname) {
                     iface.impair = impair;
+                    iface.impair_direction = direction;
                 }
             }
         }
@@ -567,6 +593,7 @@ impl Device {
             device: self.name.to_string(),
             iface: resolved_ifname,
             condition: impair,
+            direction,
         });
         Ok(())
     }
@@ -710,12 +737,7 @@ impl Device {
     /// Returns an error if the device has been removed, the router is unknown,
     /// the router has no downstream switch, or the name collides with an
     /// existing interface.
-    pub async fn add_iface(
-        &self,
-        ifname: &str,
-        router: NodeId,
-        impair: Option<LinkCondition>,
-    ) -> Result<()> {
+    pub async fn add_iface(&self, ifname: &str, router: NodeId) -> Result<()> {
         use crate::core;
 
         let op = self
@@ -730,7 +752,7 @@ impl Device {
             .core
             .lock()
             .unwrap()
-            .prepare_add_iface(self.id, ifname, router, impair)?;
+            .prepare_add_iface(self.id, ifname, router, None)?;
         if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
             setup.iface_build.gw_ip_v6 = None;
         }
@@ -770,7 +792,7 @@ impl Device {
                     ip: iface_ip,
                     ip_v6: iface_ip_v6,
                     ll_v6: iface_ll_v6,
-                    link_condition: impair,
+                    link_condition: None,
                 },
             });
         }
