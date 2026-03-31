@@ -271,6 +271,7 @@ pub enum Step {
         interface: Option<String>,
         #[serde(alias = "impair")]
         condition: Option<toml::Value>,
+        direction: Option<patchbay::LinkDirection>,
     },
     SetDefaultRoute {
         device: String,

@@ -15,7 +15,8 @@ use tracing::{debug, instrument, Instrument as _};
 
 use crate::{
     netlink::Netlink, netns, qdisc, ConntrackTimeouts, Firewall, IpSupport, Ipv6DadMode,
-    Ipv6ProvisioningMode, LinkCondition, Nat, NatConfig, NatFiltering, NatMapping, NatV6Mode,
+    Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat, NatConfig, NatFiltering, NatMapping,
+    NatV6Mode,
 };
 
 pub(crate) const RA_DEFAULT_ENABLED: bool = true;
@@ -162,6 +163,8 @@ pub(crate) struct DeviceIfaceData {
     pub ll_v6: Option<Ipv6Addr>,
     /// Optional link impairment applied via `tc netem`.
     pub impair: Option<LinkCondition>,
+    /// Direction for applying the impairment.
+    pub impair_direction: LinkDirection,
     /// Unique index used to name the root-namespace veth ends.
     pub(crate) idx: u64,
 }
@@ -361,6 +364,7 @@ pub(crate) struct IfaceBuild {
     pub(crate) dev_ll_v6: Option<Ipv6Addr>,
     pub(crate) prefix_len_v6: u8,
     pub(crate) impair: Option<LinkCondition>,
+    pub(crate) impair_direction: LinkDirection,
     pub(crate) ifname: Arc<str>,
     pub(crate) is_default: bool,
     pub(crate) idx: u64,
@@ -984,6 +988,7 @@ impl NetworkCore {
             ip_v6: assigned_v6,
             ll_v6: assigned_v6.map(|_| link_local_from_seed(idx)),
             impair,
+            impair_direction: LinkDirection::default(),
             idx,
         });
         Ok(assigned)
@@ -1041,6 +1046,7 @@ impl NetworkCore {
             dev_ll_v6: iface.ll_v6,
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
             impair,
+            impair_direction: LinkDirection::default(),
             ifname: ifname.into(),
             is_default: false,
             idx: iface.idx,
@@ -1116,6 +1122,7 @@ impl NetworkCore {
             dev_ll_v6: new_ip_v6.map(|_| link_local_from_seed(old_idx)),
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
             impair,
+            impair_direction: LinkDirection::default(),
             ifname: ifname.into(),
             is_default,
             idx: old_idx,
@@ -2812,7 +2819,19 @@ pub(crate) async fn wire_iface_async(
     .await?;
 
     if let Some(imp) = dev.impair {
-        apply_impair_in(netns, &dev.dev_ns, &dev.ifname, imp).await;
+        match dev.impair_direction {
+            LinkDirection::Egress | LinkDirection::Both => {
+                apply_impair_in(netns, &dev.dev_ns, &dev.ifname, imp).await;
+            }
+            LinkDirection::Ingress => {}
+        }
+        match dev.impair_direction {
+            LinkDirection::Ingress | LinkDirection::Both => {
+                let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
+                apply_impair_in(netns, &dev.gw_ns, &gw_ifname, imp).await;
+            }
+            LinkDirection::Egress => {}
+        }
     }
     Ok(())
 }

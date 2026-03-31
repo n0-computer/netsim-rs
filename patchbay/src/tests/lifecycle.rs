@@ -85,7 +85,7 @@ async fn custom_downstream_cidr() -> Result<()> {
     // Device gets .2 from the custom subnet.
     let dev = lab
         .add_device("dev")
-        .iface("eth0", custom.id(), None)
+        .iface("eth0", custom.id())
         .build()
         .await?;
     assert_eq!(
@@ -110,11 +110,7 @@ async fn custom_downstream_cidr() -> Result<()> {
 async fn tcp_reflector_basic() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let r = SocketAddr::new(IpAddr::V4(dc_ip), 13_000);

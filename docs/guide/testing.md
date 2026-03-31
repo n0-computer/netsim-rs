@@ -57,12 +57,12 @@ async fn tcp_through_nat() -> Result<()> {
     // Server in the datacenter, client behind NAT.
     let server = lab
         .add_device("server")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
     let client = lab
         .add_device("client")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 

@@ -147,7 +147,7 @@ async fn replug_iface_udp() -> Result<()> {
     let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat_a.id(), None)
+        .iface("eth0", nat_a.id())
         .build()
         .await?;
 
@@ -180,7 +180,7 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
     let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat_a.id(), None)
+        .iface("eth0", nat_a.id())
         .build()
         .await?;
 
@@ -233,7 +233,7 @@ async fn proc_net_route_shows_namespace_routes() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 

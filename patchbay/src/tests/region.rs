@@ -17,7 +17,7 @@ async fn basic_latency() -> Result<()> {
 
     let dev_us = lab
         .add_device("dev-us")
-        .iface("eth0", dc_us.id(), None)
+        .iface("eth0", dc_us.id())
         .build()
         .await?;
 
@@ -46,7 +46,7 @@ async fn default_regions() -> Result<()> {
 
     let dev_us = lab
         .add_device("dev-us")
-        .iface("eth0", dc_us.id(), None)
+        .iface("eth0", dc_us.id())
         .build()
         .await?;
 
@@ -123,16 +123,19 @@ async fn impair_stacks_with_latency() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface(
-            "eth0",
-            dc_eu.id(),
-            Some(LinkCondition::Manual(LinkLimits {
-                latency_ms: 30,
-                ..Default::default()
-            })),
-        )
+        .iface("eth0", dc_eu.id())
         .build()
         .await?;
+
+    dev.set_link_condition(
+        "eth0",
+        Some(LinkCondition::Manual(LinkLimits {
+            latency_ms: 30,
+            ..Default::default()
+        })),
+        LinkDirection::Both,
+    )
+    .await?;
 
     let us_ip = dc_us.uplink_ip().context("no uplink ip")?;
     let r_us = SocketAddr::new(IpAddr::V4(us_ip), 18_700);
@@ -283,7 +286,7 @@ async fn mixed_nat_region() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface("eth0", home_eu.id(), None)
+        .iface("eth0", home_eu.id())
         .build()
         .await?;
 

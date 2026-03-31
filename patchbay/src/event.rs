@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     firewall::Firewall,
-    lab::LinkCondition,
+    lab::{LinkCondition, LinkDirection},
     nat::{IpSupport, Nat, NatV6Mode},
 };
 
@@ -159,6 +159,8 @@ pub enum LabEventKind {
         iface: String,
         /// New link condition (`None` = removed).
         condition: Option<LinkCondition>,
+        /// Direction the impairment is applied.
+        direction: LinkDirection,
     },
     /// Router downlink condition changed (affects all downstream traffic).
     DownlinkConditionChanged {
@@ -603,6 +605,7 @@ impl LabState {
                 device,
                 iface,
                 condition,
+                direction: _,
             } => {
                 if let Some(d) = self.devices.get_mut(device) {
                     for i in &mut d.interfaces {

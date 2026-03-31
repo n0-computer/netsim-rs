@@ -58,7 +58,7 @@ async fn device_accessors() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -70,7 +70,7 @@ async fn device_accessors() -> Result<()> {
     let dc4 = lab.add_router("dc4").build().await?;
     let dev4 = lab
         .add_device("dev4")
-        .iface("eth0", dc4.id(), None)
+        .iface("eth0", dc4.id())
         .build()
         .await?;
     assert!(dev4.ip6().is_none(), "v4-only device should have no v6");
@@ -90,7 +90,7 @@ async fn v6_only_no_v4_routes() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -121,7 +121,7 @@ async fn dual_stack_public_addrs() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -155,11 +155,7 @@ async fn v6_only_tcp_roundtrip() -> Result<()> {
         .ip_support(IpSupport::V6Only)
         .build()
         .await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_v6 = dc.uplink_ip_v6().expect("dc v6 uplink");
     let bind = SocketAddr::new(IpAddr::V6(dc_v6), 20_200);

@@ -30,12 +30,12 @@ async fn tcp_through_nat() -> Result<()> {
 
     let server = lab
         .add_device("server")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
     let client = lab
         .add_device("client")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 

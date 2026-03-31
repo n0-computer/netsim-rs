@@ -25,7 +25,7 @@ async fn nat64_udp_v6_to_v4() -> Result<()> {
 
     let phone = lab
         .add_device("phone")
-        .iface("eth0", carrier.id(), None)
+        .iface("eth0", carrier.id())
         .build()
         .await?;
 
@@ -74,7 +74,7 @@ async fn nat64_tcp_v6_to_v4() -> Result<()> {
 
     let phone = lab
         .add_device("phone")
-        .iface("eth0", carrier.id(), None)
+        .iface("eth0", carrier.id())
         .build()
         .await?;
 
@@ -119,7 +119,7 @@ async fn nat64_preserves_native_v6() -> Result<()> {
 
     let phone = lab
         .add_device("phone")
-        .iface("eth0", carrier.id(), None)
+        .iface("eth0", carrier.id())
         .build()
         .await?;
 

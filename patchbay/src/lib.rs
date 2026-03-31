@@ -43,14 +43,14 @@
 //! // A laptop on the home network with a lossy WiFi link.
 //! let laptop = lab
 //!     .add_device("laptop")
-//!     .iface("wlan0", home.id(), Some(LinkCondition::Wifi))
+//!     .iface("wlan0", home.id())
 //!     .build()
 //!     .await?;
 //!
 //! // A server in the datacenter with a clean link.
 //! let server = lab
 //!     .add_device("server")
-//!     .iface("eth0", dc.id(), None)
+//!     .iface("eth0", dc.id())
 //!     .build()
 //!     .await?;
 //! # Ok(())
@@ -118,7 +118,7 @@
 //! # use patchbay::*;
 //! # async fn example(dev: Device) -> anyhow::Result<()> {
 //! // Switch from WiFi to a degraded 3G link at runtime.
-//! dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G))
+//! dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G), LinkDirection::Both)
 //!     .await?;
 //!
 //! // Or use fully custom parameters.
@@ -130,6 +130,7 @@
 //!         rate_kbit: 500,
 //!         ..Default::default()
 //!     })),
+//!     LinkDirection::Both,
 //! )
 //! .await?;
 //! # Ok(())
@@ -225,9 +226,9 @@ pub use ipnet::Ipv4Net;
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Device, DeviceBuilder, DeviceIface, Firewall,
     FirewallConfig, FirewallConfigBuilder, IpSupport, Ipv6DadMode, Ipv6Profile,
-    Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition, LinkLimits, Nat, NatConfig,
-    NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir, Region, RegionLink, Router,
-    RouterBuilder, RouterIface, RouterPreset, TestGuard,
+    Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition, LinkDirection, LinkLimits, Nat,
+    NatConfig, NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir, Region, RegionLink,
+    Router, RouterBuilder, RouterIface, RouterPreset, TestGuard,
 };
 pub use metrics::MetricsBuilder;
 

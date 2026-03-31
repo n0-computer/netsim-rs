@@ -17,7 +17,7 @@ async fn cgnat_reflexive_ip() -> Result<()> {
         .build()
         .await?;
     lab.add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -59,11 +59,11 @@ async fn cgnat_shared_reflexive_ip() -> Result<()> {
         .build()
         .await?;
     lab.add_device("provider")
-        .iface("eth0", lan_provider.id(), None)
+        .iface("eth0", lan_provider.id())
         .build()
         .await?;
     lab.add_device("fetcher")
-        .iface("eth0", lan_fetcher.id(), None)
+        .iface("eth0", lan_fetcher.id())
         .build()
         .await?;
 
@@ -170,22 +170,22 @@ async fn private_isolation_public_reachable() -> Result<()> {
 
     let relay = lab
         .add_device("relay")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
     let a1 = lab
         .add_device("a1")
-        .iface("eth0", nat_a.id(), None)
+        .iface("eth0", nat_a.id())
         .build()
         .await?;
     let a2 = lab
         .add_device("a2")
-        .iface("eth0", nat_a.id(), None)
+        .iface("eth0", nat_a.id())
         .build()
         .await?;
     let b1 = lab
         .add_device("b1")
-        .iface("eth0", nat_b.id(), None)
+        .iface("eth0", nat_b.id())
         .build()
         .await?;
 
@@ -396,12 +396,12 @@ async fn same_nat_shared_ip() -> Result<()> {
     let nat = lab.add_router("nat").nat(Nat::Home).build().await?;
     let dev_a = lab
         .add_device("dev-a")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
     let dev_b = lab
         .add_device("dev-b")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
 
@@ -430,12 +430,12 @@ async fn different_nat_isolation() -> Result<()> {
     let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
     let dev_a = lab
         .add_device("dev-a")
-        .iface("eth0", nat_a.id(), None)
+        .iface("eth0", nat_a.id())
         .build()
         .await?;
     let dev_b = lab
         .add_device("dev-b")
-        .iface("eth0", nat_b.id(), None)
+        .iface("eth0", nat_b.id())
         .build()
         .await?;
 
@@ -491,7 +491,7 @@ async fn v6_masquerade() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -535,7 +535,7 @@ async fn v6_no_translation() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -563,11 +563,7 @@ async fn fullcone_external_reachable() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let fc = lab.add_router("fc").nat(Nat::FullCone).build().await?;
-    let dev = lab
-        .add_device("dev")
-        .iface("eth0", fc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("dev").iface("eth0", fc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("no dc uplink ip")?;
     let reflector = SocketAddr::new(IpAddr::V4(dc_ip), 20_000);
@@ -614,7 +610,7 @@ async fn cgnat_external_reachable() -> Result<()> {
     // Device directly behind CGNAT (no Home NAT layer) to test CGNAT EIF in isolation.
     let dev = lab
         .add_device("dev")
-        .iface("eth0", isp.id(), None)
+        .iface("eth0", isp.id())
         .build()
         .await?;
 
@@ -676,7 +672,7 @@ async fn cgnat_port_mapping_eim() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -720,7 +716,7 @@ async fn v6_masquerade_port_mapping() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", nat.id(), None)
+        .iface("eth0", nat.id())
         .build()
         .await?;
 

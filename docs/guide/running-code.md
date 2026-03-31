@@ -169,10 +169,10 @@ Modify link impairment on the fly to simulate degrading or improving
 network quality:
 
 ```rust
-use patchbay::{LinkCondition, LinkLimits};
+use patchbay::{LinkCondition, LinkDirection, LinkLimits};
 
 // Switch to a 3G-like link.
-dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G)).await?;
+dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G), LinkDirection::Both).await?;
 
 // Apply custom impairment.
 dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
@@ -180,10 +180,10 @@ dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
     loss_pct: 15.0,
     latency_ms: 200,
     ..Default::default()
-}))).await?;
+})), LinkDirection::Both).await?;
 
 // Remove all impairment and return to a clean link.
-dev.set_link_condition("wlan0", None).await?;
+dev.set_link_condition("wlan0", None, LinkDirection::Both).await?;
 ```
 
 ### Changing NAT at runtime

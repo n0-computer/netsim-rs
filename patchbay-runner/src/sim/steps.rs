@@ -407,8 +407,10 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
             device,
             interface,
             condition,
+            direction,
         } => {
             let condition = parse_link_condition(condition)?;
+            let direction = direction.unwrap_or_default();
             let dev = state
                 .lab
                 .device_by_name(device)
@@ -421,7 +423,8 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                     .name()
                     .to_string(),
             };
-            dev.set_link_condition(&ifname, condition).await?;
+            dev.set_link_condition(&ifname, condition, direction)
+                .await?;
         }
 
         // ── set-default-route ──────────────────────────────────────────────

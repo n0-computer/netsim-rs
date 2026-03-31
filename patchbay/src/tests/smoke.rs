@@ -17,7 +17,7 @@ async fn ping_gateway() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -43,7 +43,7 @@ async fn udp_roundtrip() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -71,7 +71,7 @@ async fn tcp_roundtrip() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -143,17 +143,17 @@ async fn ping_through_nat_to_relay() -> Result<()> {
 
     let relay = lab
         .add_device("relay")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
     let provider = lab
         .add_device("provider")
-        .iface("eth0", lan_provider.id(), None)
+        .iface("eth0", lan_provider.id())
         .build()
         .await?;
     let fetcher = lab
         .add_device("fetcher")
-        .iface("eth0", lan_fetcher.id(), None)
+        .iface("eth0", lan_fetcher.id())
         .build()
         .await?;
 
@@ -180,12 +180,12 @@ async fn ping_same_lan() -> Result<()> {
         .await?;
     let dev1 = lab
         .add_device("dev1")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
     let dev2 = lab
         .add_device("dev2")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -207,7 +207,7 @@ async fn dual_stack_roundtrip() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -246,7 +246,7 @@ async fn v6_only_roundtrip() -> Result<()> {
         .await?;
     let dev = lab
         .add_device("dev1")
-        .iface("eth0", dc.id(), None)
+        .iface("eth0", dc.id())
         .build()
         .await?;
 
@@ -277,7 +277,7 @@ async fn no_region_overhead() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface("eth0", dc1.id(), None)
+        .iface("eth0", dc1.id())
         .build()
         .await?;
 

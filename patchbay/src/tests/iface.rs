@@ -18,7 +18,7 @@ async fn add_remove_runtime() -> Result<()> {
     let home = lab.add_router("home").nat(Nat::Home).build().await?;
     let dev = lab
         .add_device("dev")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -30,7 +30,7 @@ async fn add_remove_runtime() -> Result<()> {
     assert_eq!(dev.interfaces().len(), 1);
 
     // Add a second interface on the dc router.
-    dev.add_iface("eth1", dc.id(), None).await?;
+    dev.add_iface("eth1", dc.id()).await?;
     assert_eq!(dev.interfaces().len(), 2);
     assert!(dev.iface("eth1").is_some(), "eth1 should exist after add");
 
@@ -69,7 +69,7 @@ async fn add_remove_runtime() -> Result<()> {
     assert!(err.is_err(), "removing last interface should fail");
 
     // Duplicate name rejected.
-    let err = dev.add_iface("eth1", dc.id(), None).await;
+    let err = dev.add_iface("eth1", dc.id()).await;
     assert!(err.is_err(), "duplicate interface name should fail");
 
     Ok(())
@@ -139,7 +139,7 @@ async fn replug_to_different_subnet() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface("eth0", dc_a.id(), None)
+        .iface("eth0", dc_a.id())
         .build()
         .await?;
 

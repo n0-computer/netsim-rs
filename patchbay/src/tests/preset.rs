@@ -24,7 +24,7 @@ async fn preset_home() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -63,11 +63,7 @@ async fn preset_public() -> Result<()> {
         .build()
         .await?;
 
-    let dev = lab
-        .add_device("srv")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("srv").iface("eth0", dc.id()).build().await?;
 
     assert_eq!(dc.ip_support(), Some(IpSupport::DualStack));
     assert!(dev.ip().is_some(), "device should have v4");
@@ -105,7 +101,7 @@ async fn preset_corporate_blocks_udp() -> Result<()> {
 
     let dev = lab
         .add_device("ws")
-        .iface("eth0", corp.id(), None)
+        .iface("eth0", corp.id())
         .build()
         .await?;
 
@@ -154,7 +150,7 @@ async fn preset_override() -> Result<()> {
 
     let dev = lab
         .add_device("dev")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -208,11 +204,7 @@ async fn public_v6_pool_is_gua() -> Result<()> {
         .build()
         .await?;
 
-    let dev = lab
-        .add_device("srv")
-        .iface("eth0", dc.id(), None)
-        .build()
-        .await?;
+    let dev = lab.add_device("srv").iface("eth0", dc.id()).build().await?;
 
     let v6 = dev.ip6().context("no v6 address")?;
     let segs = v6.segments();
@@ -249,7 +241,7 @@ async fn private_v6_pool_is_ula() -> Result<()> {
 
     let dev = lab
         .add_device("laptop")
-        .iface("eth0", home.id(), None)
+        .iface("eth0", home.id())
         .build()
         .await?;
 
@@ -278,7 +270,7 @@ async fn preset_hotel_v4_only() -> Result<()> {
 
     let dev = lab
         .add_device("guest")
-        .iface("eth0", hotel.id(), None)
+        .iface("eth0", hotel.id())
         .build()
         .await?;
 
@@ -304,7 +296,7 @@ async fn preset_public_v4() -> Result<()> {
 
     let dev = lab
         .add_device("srv")
-        .iface("eth0", isp.id(), None)
+        .iface("eth0", isp.id())
         .build()
         .await?;
 
@@ -341,7 +333,7 @@ async fn preset_isp_cgnat() -> Result<()> {
 
     let dev = lab
         .add_device("sub")
-        .iface("eth0", isp.id(), None)
+        .iface("eth0", isp.id())
         .build()
         .await?;
 
@@ -384,7 +376,7 @@ async fn preset_isp_v6() -> Result<()> {
 
     let phone = lab
         .add_device("phone")
-        .iface("eth0", carrier.id(), None)
+        .iface("eth0", carrier.id())
         .build()
         .await?;
 

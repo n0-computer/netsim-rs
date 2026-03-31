@@ -59,6 +59,24 @@ pub use crate::{
     },
 };
 
+/// Direction for applying link impairment.
+///
+/// When set on a device interface, `Egress` applies the `tc netem` qdisc to the
+/// device-side veth (affecting outgoing traffic), `Ingress` applies it to the
+/// bridge-side veth in the router namespace (affecting incoming traffic to the
+/// device), and `Both` applies impairment to both sides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkDirection {
+    /// Apply impairment to both the device-side and bridge-side veths.
+    #[default]
+    Both,
+    /// Apply impairment only to the device-side veth (outgoing traffic).
+    Egress,
+    /// Apply impairment only to the bridge-side veth (incoming traffic).
+    Ingress,
+}
+
 /// Link-layer impairment profile applied via `tc netem`.
 ///
 /// Named presets model common last-mile conditions. Use [`LinkCondition::Manual`]
@@ -734,7 +752,7 @@ impl Lab {
         for dev in dev_data {
             let mut builder = lab.add_device(&dev.name);
             for (ifname, router_id, impair) in dev.ifaces {
-                builder = builder.iface(&ifname, router_id, impair);
+                builder = builder.iface_impaired(&ifname, router_id, impair);
             }
             if let Some(via) = dev.default_via {
                 builder = builder.default_via(&via);
@@ -1391,9 +1409,14 @@ impl Lab {
         a: NodeId,
         b: NodeId,
         impair: Option<LinkCondition>,
+        direction: LinkDirection,
     ) -> Result<()> {
-        debug!(a = ?a, b = ?b, impair = ?impair, "lab: set_link_condition");
+        debug!(a = ?a, b = ?b, impair = ?impair, ?direction, "lab: set_link_condition");
         let (ns, ifname) = self.inner.core.lock().unwrap().resolve_link_target(a, b)?;
+        // Lab-level set_link_condition resolves a single (ns, ifname) target for
+        // Router↔Router or Device↔Router links. Direction is not applicable at
+        // this level — pass through to apply_or_remove_impair directly.
+        let _ = direction;
         apply_or_remove_impair(&self.inner.netns, &ns, &ifname, impair).await;
         Ok(())
     }
@@ -2233,7 +2256,30 @@ impl DeviceBuilder {
     }
 
     /// Attach `ifname` inside the device namespace to `router`'s downstream switch.
-    pub fn iface(mut self, ifname: &str, router: NodeId, impair: Option<LinkCondition>) -> Self {
+    pub fn iface(mut self, ifname: &str, router: NodeId) -> Self {
+        if self.result.is_ok() {
+            self.result = self
+                .inner
+                .core
+                .lock()
+                .unwrap()
+                .add_device_iface(self.id, ifname, router, None)
+                .map(|_| ());
+        }
+        self
+    }
+
+    /// Attach `ifname` to `router`'s downstream switch with an initial link condition.
+    ///
+    /// This is used internally by the config/TOML loading path which needs to
+    /// set impairment at build time. Public callers should prefer [`iface`] and
+    /// then [`DeviceHandle::set_link_condition`] after build.
+    pub(crate) fn iface_impaired(
+        mut self,
+        ifname: &str,
+        router: NodeId,
+        impair: Option<LinkCondition>,
+    ) -> Self {
         if self.result.is_ok() {
             self.result = self
                 .inner
@@ -2344,6 +2390,7 @@ impl DeviceBuilder {
                     dev_ll_v6: iface.ll_v6,
                     prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
                     impair: iface.impair,
+                    impair_direction: iface.impair_direction,
                     ifname: iface.ifname.clone(),
                     is_default: iface.ifname == dev.default_via,
                     idx: iface.idx,
