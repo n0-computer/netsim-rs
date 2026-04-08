@@ -493,6 +493,7 @@ impl Lab {
                 run_dir: run_dir.clone(),
                 ipv6_dad_mode: opts.ipv6_dad_mode,
                 ipv6_provisioning_mode: opts.ipv6_provisioning_mode,
+                dns_server: tokio::sync::OnceCell::new(),
                 writer_handle: std::sync::Mutex::new(None),
                 test_status: test_status.clone(),
                 shared_state: shared_state.clone(),
@@ -1367,29 +1368,39 @@ impl Lab {
 
     // ── DNS entries ───────────────────────────────────────────────────────
 
-    /// Adds a hosts entry visible to all devices.
+    /// Returns the lab's DNS server, starting it on first call.
     ///
-    /// The entry is written to each device's hosts file overlay. Worker threads
-    /// (sync, async, and tokio blocking pool) have `/etc/hosts` bind-mounted, so
-    /// glibc picks up changes on the next `getaddrinfo()` via mtime check.
-    pub fn dns_entry(&self, name: &str, ip: std::net::IpAddr) -> Result<()> {
-        self.inner.core.lock().unwrap().add_dns_entry(name, ip)
+    /// The server binds to the IX bridge IP on port 53 inside the root
+    /// namespace. Once started, all devices' `resolv.conf` overlay is updated
+    /// to point at it (glibc picks up the change on the next `getaddrinfo()`).
+    ///
+    /// Use [`DnsServer::set_host`] and [`DnsServer::set_txt`] to add records.
+    /// Records are immediately visible to DNS queries — no propagation delay.
+    pub async fn dns_server(&self) -> Result<&crate::dns_server::DnsServer> {
+        self.inner
+            .dns_server
+            .get_or_try_init(|| async {
+                let (root_ns, ix_gw) = {
+                    let core = self.inner.core.lock().unwrap();
+                    (core.cfg.root_ns.clone(), core.cfg.ix_gw)
+                };
+                let server =
+                    crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw)
+                        .await?;
+                // Point all devices' resolv.conf at the DNS server.
+                {
+                    let mut core = self.inner.core.lock().unwrap();
+                    core.dns.nameserver = Some(std::net::IpAddr::V4(ix_gw));
+                    core.dns.write_resolv_conf()?;
+                }
+                Ok(server)
+            })
+            .await
     }
 
-    /// Resolves a name from the lab-wide DNS entries (in-memory, no syscall).
+    /// Resolves a name via the DNS server (if started), or returns `None`.
     pub fn resolve(&self, name: &str) -> Option<std::net::IpAddr> {
-        let inner = self.inner.core.lock().unwrap();
-        inner.dns.resolve(None, name)
-    }
-
-    /// Sets the nameserver for all devices (writes `/etc/resolv.conf` overlay).
-    ///
-    /// Worker threads have `/etc/resolv.conf` bind-mounted, so glibc picks up
-    /// changes on the next resolver call.
-    pub fn set_nameserver(&self, server: std::net::IpAddr) -> Result<()> {
-        let mut inner = self.inner.core.lock().unwrap();
-        inner.dns.nameserver = Some(server);
-        inner.dns.write_resolv_conf()
+        self.inner.dns_server.get().and_then(|dns| dns.resolve(name))
     }
 
     // ── Dynamic operations ────────────────────────────────────────────────

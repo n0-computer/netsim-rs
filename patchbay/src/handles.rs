@@ -701,11 +701,11 @@ impl Device {
         self.lab.spawn_reflector_in(&self.ns, bind).await
     }
 
-    /// Adds a hosts entry visible only to this device.
+    /// Adds a hosts entry visible only to this device (via `/etc/hosts` overlay).
     ///
-    /// Written to this device's hosts file overlay. glibc picks up changes
-    /// on the next `getaddrinfo()` via mtime check.
-    pub fn dns_entry(&self, name: &str, ip: IpAddr) -> Result<()> {
+    /// glibc picks up changes on the next `getaddrinfo()` via mtime check.
+    /// For lab-wide DNS records, use [`Lab::dns_server`] instead.
+    pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
         let mut inner = self.lab.core.lock().unwrap();
         inner
             .dns
@@ -716,13 +716,17 @@ impl Device {
         inner.dns.write_hosts_file(self.id)
     }
 
-    /// Resolves a name using this device's entries plus lab-wide entries.
-    ///
-    /// For in-process Rust code that cannot see the bind-mounted `/etc/hosts`.
-    /// Spawned child processes resolve names through glibc automatically.
+    /// Resolves a name: checks device-local hosts first, then the DNS server.
     pub fn resolve(&self, name: &str) -> Option<IpAddr> {
-        let inner = self.lab.core.lock().unwrap();
-        inner.dns.resolve(Some(self.id), name)
+        // Check per-device hosts entries first.
+        {
+            let inner = self.lab.core.lock().unwrap();
+            if let Some(ip) = inner.dns.resolve(self.id, name) {
+                return Some(ip);
+            }
+        }
+        // Fall back to DNS server store.
+        self.lab.dns_server.get().and_then(|dns| dns.resolve(name))
     }
 
     /// Adds a new interface to this device at runtime, connected to the given
