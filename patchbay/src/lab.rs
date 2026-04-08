@@ -1376,7 +1376,7 @@ impl Lab {
     ///
     /// Use [`DnsServer::set_host`] and [`DnsServer::set_txt`] to add records.
     /// Records are immediately visible to DNS queries — no propagation delay.
-    pub fn dns_server(&self) -> Result<std::sync::Arc<crate::dns_server::DnsServer>> {
+    pub fn dns_server(&self) -> Result<crate::dns_server::DnsServer> {
         let mut guard = self.inner.dns_server.lock().unwrap();
         if let Some(ref server) = *guard {
             return Ok(server.clone());
@@ -1385,12 +1385,12 @@ impl Lab {
             let core = self.inner.core.lock().unwrap();
             (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
         };
-        let server = std::sync::Arc::new(crate::dns_server::DnsServer::start(
+        let server = crate::dns_server::DnsServer::start(
             &self.inner.netns,
             &root_ns,
             ix_gw,
             ix_gw_v6,
-        )?);
+        )?;
         // Point all devices' resolv.conf at the DNS server (v4 + v6).
         {
             let mut core = self.inner.core.lock().unwrap();

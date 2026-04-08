@@ -40,6 +40,7 @@ type RecordStore = HashMap<(LowerName, RecordType), Vec<Record>>;
 /// Records are stored in a [`HashMap`] behind a [`std::sync::RwLock`].
 /// All mutation methods are synchronous and guarantee the record is queryable
 /// via DNS before returning.
+#[derive(Clone)]
 pub struct DnsServer {
     records: Arc<RwLock<RecordStore>>,
     shutdown: CancellationToken,
@@ -156,8 +157,9 @@ impl DnsServer {
     }
 }
 
-impl Drop for DnsServer {
-    fn drop(&mut self) {
+impl DnsServer {
+    /// Shuts down the DNS server, stopping all serve loops.
+    pub(crate) fn shutdown(&self) {
         self.shutdown.cancel();
     }
 }

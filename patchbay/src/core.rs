@@ -526,7 +526,7 @@ pub(crate) struct LabInner {
     /// IPv6 provisioning behavior.
     pub ipv6_provisioning_mode: Ipv6ProvisioningMode,
     /// In-process DNS server on the IX bridge (lazy, started on first access).
-    pub dns_server: std::sync::Mutex<Option<Arc<crate::dns_server::DnsServer>>>,
+    pub dns_server: std::sync::Mutex<Option<crate::dns_server::DnsServer>>,
     /// Writer task handle (kept alive until lab is dropped).
     pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Test outcome flag shared with the writer and [`TestGuard`].
@@ -540,6 +540,9 @@ pub(crate) struct LabInner {
 impl Drop for LabInner {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Some(dns) = self.dns_server.get_mut().unwrap().take() {
+            dns.shutdown();
+        }
 
         // Determine final status from the test guard.
         let status = match self.test_status.load(Ordering::Acquire) {
