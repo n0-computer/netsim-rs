@@ -493,7 +493,7 @@ impl Lab {
                 run_dir: run_dir.clone(),
                 ipv6_dad_mode: opts.ipv6_dad_mode,
                 ipv6_provisioning_mode: opts.ipv6_provisioning_mode,
-                dns_server: tokio::sync::OnceCell::new(),
+                dns_server: std::sync::Mutex::new(None),
                 writer_handle: std::sync::Mutex::new(None),
                 test_status: test_status.clone(),
                 shared_state: shared_state.clone(),
@@ -1376,37 +1376,38 @@ impl Lab {
     ///
     /// Use [`DnsServer::set_host`] and [`DnsServer::set_txt`] to add records.
     /// Records are immediately visible to DNS queries — no propagation delay.
-    pub async fn dns_server(&self) -> Result<&crate::dns_server::DnsServer> {
-        self.inner
-            .dns_server
-            .get_or_try_init(|| async {
-                let (root_ns, ix_gw, ix_gw_v6) = {
-                    let core = self.inner.core.lock().unwrap();
-                    (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
-                };
-                let server = crate::dns_server::DnsServer::start(
-                    &self.inner.netns,
-                    &root_ns,
-                    ix_gw,
-                    ix_gw_v6,
-                )
-                .await?;
-                // Point all devices' resolv.conf at the DNS server (v4 + v6).
-                {
-                    let mut core = self.inner.core.lock().unwrap();
-                    core.dns.nameservers = vec![ix_gw.into(), ix_gw_v6.into()];
-                    core.dns.write_resolv_conf()?;
-                }
-                Ok(server)
-            })
-            .await
+    pub fn dns_server(&self) -> Result<std::sync::Arc<crate::dns_server::DnsServer>> {
+        let mut guard = self.inner.dns_server.lock().unwrap();
+        if let Some(ref server) = *guard {
+            return Ok(server.clone());
+        }
+        let (root_ns, ix_gw, ix_gw_v6) = {
+            let core = self.inner.core.lock().unwrap();
+            (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
+        };
+        let server = std::sync::Arc::new(crate::dns_server::DnsServer::start(
+            &self.inner.netns,
+            &root_ns,
+            ix_gw,
+            ix_gw_v6,
+        )?);
+        // Point all devices' resolv.conf at the DNS server (v4 + v6).
+        {
+            let mut core = self.inner.core.lock().unwrap();
+            core.dns.nameservers = vec![ix_gw.into(), ix_gw_v6.into()];
+            core.dns.write_resolv_conf()?;
+        }
+        *guard = Some(server.clone());
+        Ok(server)
     }
 
     /// Resolves a name via the DNS server (if started), or returns `None`.
     pub fn resolve(&self, name: &str) -> Option<std::net::IpAddr> {
         self.inner
             .dns_server
-            .get()
+            .lock()
+            .unwrap()
+            .as_ref()
             .and_then(|dns| dns.resolve(name))
     }
 

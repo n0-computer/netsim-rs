@@ -50,7 +50,8 @@ impl DnsServer {
     ///
     /// Binds to both the IPv4 and IPv6 gateway addresses on port 53 so that
     /// v4-only, v6-only, and dual-stack devices can all reach the server.
-    pub(crate) async fn start(
+    /// Sockets are bound synchronously; the serve loops run as async tasks.
+    pub(crate) fn start(
         netns: &Arc<netns::NetnsManager>,
         root_ns: &str,
         ix_gw: Ipv4Addr,
@@ -58,31 +59,37 @@ impl DnsServer {
     ) -> Result<Self> {
         let records = Arc::new(RwLock::new(RecordStore::new()));
         let shutdown = CancellationToken::new();
-        let rt = netns.rt_handle_for(root_ns)?;
 
         let addrs = [
             SocketAddr::from((ix_gw, 53)),
             SocketAddr::from((ix_gw_v6, 53)),
         ];
-        for addr in addrs {
-            let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Bind std sockets inside the root namespace (sync).
+        let sockets: Vec<std::net::UdpSocket> = netns.run_closure_in(root_ns, move || {
+            addrs
+                .iter()
+                .map(|addr| {
+                    let sock = std::net::UdpSocket::bind(addr)
+                        .with_context(|| format!("bind dns server to {addr}"))?;
+                    sock.set_nonblocking(true)?;
+                    Ok(sock)
+                })
+                .collect()
+        })?;
+
+        // Spawn async serve loops on the root namespace's tokio runtime.
+        let rt = netns.rt_handle_for(root_ns)?;
+        for socket in sockets {
+            let addr = socket.local_addr().ok();
             let records = records.clone();
             let cancel = shutdown.clone();
             rt.spawn(async move {
-                match tokio::net::UdpSocket::bind(addr).await {
-                    Ok(socket) => {
-                        let _ = tx.send(Ok(()));
-                        cancel.run_until_cancelled(serve(records, socket)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Err(e));
-                    }
-                }
+                let socket = tokio::net::UdpSocket::from_std(socket)
+                    .expect("convert std UdpSocket to tokio");
+                cancel.run_until_cancelled(serve(records, socket)).await;
             });
-            rx.await
-                .map_err(|_| anyhow::anyhow!("dns server task exited before bind"))?
-                .context("dns server bind failed")?;
-            debug!(%addr, "dns server listening");
+            debug!(?addr, "dns server listening");
         }
 
         Ok(Self { records, shutdown })

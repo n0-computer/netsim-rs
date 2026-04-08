@@ -8,7 +8,7 @@ use super::*;
 async fn server_entry_visible_in_command() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
@@ -40,7 +40,7 @@ async fn server_entry_visible_in_command() -> Result<()> {
 async fn server_entry_lab_wide() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev1 = lab
         .add_device("dev1")
         .iface("eth0", dc.id())
@@ -117,7 +117,7 @@ async fn entry_device_specific() -> Result<()> {
 async fn resolve_in_process() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1));
@@ -149,7 +149,7 @@ async fn resolve_in_process() -> Result<()> {
 async fn entry_after_build() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let mut cmd = std::process::Command::new("getent");
@@ -221,7 +221,7 @@ async fn hosts_file_content() -> Result<()> {
 async fn std_to_socket_addrs() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
@@ -264,7 +264,7 @@ async fn std_to_socket_addrs() -> Result<()> {
 async fn tokio_lookup() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
@@ -295,7 +295,7 @@ async fn hickory_resolver() -> Result<()> {
 
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
@@ -324,7 +324,7 @@ async fn hickory_ipv4_lookup() -> Result<()> {
 
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
@@ -373,7 +373,7 @@ async fn hickory_resolve_stress() -> Result<()> {
     for lab_idx in 0..NUM_LABS {
         let lab = Lab::new().await?;
         let dc = lab.add_router("dc").build().await?;
-        let dns = lab.dns_server().await?;
+        let dns = lab.dns_server()?;
         let dc_ip = dc.uplink_ip().context("dc uplink ip")?;
         let hostname = format!("stress{lab_idx}.patchbay.");
         dns.set_host(&hostname, IpAddr::V4(dc_ip))?;
@@ -428,7 +428,7 @@ async fn hickory_resolve_relay_setup() -> Result<()> {
     use hickory_resolver::TokioResolver;
 
     let lab = Lab::new().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
 
     let dc = lab
         .add_router("dc")
@@ -493,7 +493,7 @@ async fn hickory_resolve_relay_setup() -> Result<()> {
 async fn dns_server_sets_resolv_conf() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let _dns = lab.dns_server().await?;
+    let _dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let mut cmd = std::process::Command::new("cat");
@@ -521,7 +521,7 @@ async fn dns_server_sets_resolv_conf() -> Result<()> {
 async fn v6_entry() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let v6_addr = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x42));
@@ -557,7 +557,7 @@ async fn v6_entry() -> Result<()> {
 async fn dual_stack_a_and_aaaa() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let v4 = Ipv4Addr::new(10, 0, 0, 42);
@@ -624,7 +624,7 @@ async fn v6_only_device_resolves() -> Result<()> {
         .ip_support(IpSupport::V6Only)
         .build()
         .await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
     let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
 
     dns.set_host("v6only.test.", IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))?;
@@ -654,7 +654,7 @@ async fn v6_only_device_resolves() -> Result<()> {
 async fn txt_record() -> Result<()> {
     let lab = Lab::new().await?;
     let _dc = lab.add_router("dc").build().await?;
-    let dns = lab.dns_server().await?;
+    let dns = lab.dns_server()?;
 
     dns.set_txt("_disco.test.", &["node=abc123", "port=4433"])?;
 
