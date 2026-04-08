@@ -3,6 +3,18 @@
 //! Runs on the IX bridge, serves A/AAAA/TXT records from a [`std::sync::RwLock`]-guarded
 //! [`HashMap`]. Record mutations via [`DnsServer::set_host`] / [`DnsServer::set_txt`] are
 //! synchronous — the record is visible to DNS queries the instant the method returns.
+//!
+//! ## Limitations
+//!
+//! - **No TCP fallback.** Only UDP is supported. Responses exceeding 512 bytes
+//!   will be truncated. This is fine for lab use with short names.
+//! - **FQDN trailing dots.** DNS names passed to [`DnsServer::set_host`] and
+//!   [`DnsServer::set_txt`] are parsed as DNS wire names. Use a trailing dot
+//!   for fully-qualified names (`"relay.test."`). Device-level
+//!   [`set_host`](crate::Device::set_host) writes to `/etc/hosts` where trailing
+//!   dots are not used — these are different namespaces.
+//! - **TXT records are not queryable via [`DnsServer::resolve`]** — it only
+//!   returns A/AAAA addresses. Query TXT records via DNS (e.g. `dig`).
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -17,6 +29,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::netns;
+
+/// Default TTL for DNS records (seconds). Short enough for quick updates,
+/// long enough to avoid per-query overhead in resolvers.
+const DEFAULT_TTL: u32 = 1;
 
 type RecordStore = HashMap<(LowerName, RecordType), Vec<Record>>;
 
@@ -66,26 +82,30 @@ impl DnsServer {
         Ok(Self { records, shutdown })
     }
 
-    /// Adds an A or AAAA record. Immediately visible to DNS queries.
+    /// Sets an A or AAAA record, replacing any previous record of the same type
+    /// for this name. Immediately visible to DNS queries.
     pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
         let (rtype, rdata) = match ip {
             IpAddr::V4(v4) => (RecordType::A, RData::A(A::from(v4))),
             IpAddr::V6(v6) => (RecordType::AAAA, RData::AAAA(AAAA::from(v6))),
         };
-        let record = Record::from_rdata(name.clone(), 0, rdata);
+        let record = Record::from_rdata(name.clone(), DEFAULT_TTL, rdata);
         let key = (LowerName::new(&name), rtype);
-        self.records.write().unwrap().entry(key).or_default().push(record);
+        let mut store = self.records.write().expect("poisoned");
+        store.insert(key, vec![record]);
         Ok(())
     }
 
-    /// Adds a TXT record. Immediately visible to DNS queries.
+    /// Sets a TXT record, replacing any previous TXT record for this name.
+    /// Immediately visible to DNS queries.
     pub fn set_txt(&self, name: &str, values: &[&str]) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
-        let txt = TXT::new(values.iter().map(|s| (*s).to_string()).collect());
-        let record = Record::from_rdata(name.clone(), 0, RData::TXT(txt));
+        let txt = TXT::new(values.iter().map(|s| s.to_string()).collect());
+        let record = Record::from_rdata(name.clone(), DEFAULT_TTL, RData::TXT(txt));
         let key = (LowerName::new(&name), RecordType::TXT);
-        self.records.write().unwrap().entry(key).or_default().push(record);
+        let mut store = self.records.write().expect("poisoned");
+        store.insert(key, vec![record]);
         Ok(())
     }
 
@@ -93,7 +113,7 @@ impl DnsServer {
     pub fn remove(&self, name: &str, rtype: RecordType) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
         let key = (LowerName::new(&name), rtype);
-        self.records.write().unwrap().remove(&key);
+        self.records.write().expect("poisoned").remove(&key);
         Ok(())
     }
 
@@ -101,8 +121,7 @@ impl DnsServer {
     pub fn resolve(&self, name: &str) -> Option<IpAddr> {
         let name = Name::from_ascii(name).ok()?;
         let lower = LowerName::new(&name);
-        let store = self.records.read().unwrap();
-        // Try A first, then AAAA.
+        let store = self.records.read().expect("poisoned");
         for rtype in [RecordType::A, RecordType::AAAA] {
             if let Some(recs) = store.get(&(lower.clone(), rtype)) {
                 for r in recs {
@@ -127,7 +146,7 @@ impl Drop for DnsServer {
 // ── UDP server loop ──────────────────────────────────────────────────
 
 async fn run(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket, cancel: CancellationToken) {
-    let mut buf = vec![0u8; 512];
+    let mut buf = vec![0u8; 4096];
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -166,21 +185,32 @@ fn handle_query(records: &RwLock<RecordStore>, buf: &[u8]) -> Option<Vec<u8>> {
     response.set_authoritative(true);
     response.add_queries(query.queries().iter().cloned());
 
-    let store = records.read().unwrap();
-    let mut found = false;
+    let store = records.read().expect("poisoned");
+    let mut found_answers = false;
+    let mut name_exists = false;
     for q in query.queries() {
-        let key = (q.name().into(), q.query_type());
+        let qname: LowerName = q.name().into();
+        // Check if any record type exists for this name.
+        if !name_exists {
+            name_exists = store.keys().any(|(n, _)| *n == qname);
+        }
+        let key = (qname, q.query_type());
         if let Some(recs) = store.get(&key) {
             for r in recs {
                 let mut answer = r.clone();
                 answer.set_dns_class(DNSClass::IN);
                 response.add_answer(answer);
-                found = true;
+                found_answers = true;
             }
         }
     }
-    if !found {
-        response.set_response_code(ResponseCode::NXDomain);
+    if !found_answers {
+        if name_exists {
+            // Name exists but not for the queried type → NOERROR with empty answer.
+            response.set_response_code(ResponseCode::NoError);
+        } else {
+            response.set_response_code(ResponseCode::NXDomain);
+        }
     }
 
     response.to_bytes().ok()
