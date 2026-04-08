@@ -17,7 +17,7 @@
 //!   returns A/AAAA addresses. Query TXT records via DNS (e.g. `dig`).
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, RwLock};
 
 use anyhow::{Context, Result};
@@ -48,37 +48,45 @@ pub struct DnsServer {
 
 impl DnsServer {
     /// Starts the DNS server on the IX bridge inside the root namespace.
+    ///
+    /// Binds to both the IPv4 and IPv6 gateway addresses on port 53 so that
+    /// v4-only, v6-only, and dual-stack devices can all reach the server.
     pub(crate) async fn start(
         netns: &Arc<netns::NetnsManager>,
         root_ns: &str,
         ix_gw: Ipv4Addr,
+        ix_gw_v6: Ipv6Addr,
     ) -> Result<Self> {
         let records: Arc<RwLock<RecordStore>> = Arc::new(RwLock::new(HashMap::new()));
         let shutdown = CancellationToken::new();
 
-        let bind_addr = SocketAddr::new(IpAddr::V4(ix_gw), 53);
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let addrs = [
+            SocketAddr::new(IpAddr::V4(ix_gw), 53),
+            SocketAddr::new(IpAddr::V6(ix_gw_v6), 53),
+        ];
 
         let rt = netns.rt_handle_for(root_ns)?;
-        let records2 = records.clone();
-        let cancel = shutdown.clone();
-        rt.spawn(async move {
-            match tokio::net::UdpSocket::bind(bind_addr).await {
-                Ok(socket) => {
-                    let _ = tx.send(Ok(()));
-                    run(records2, socket, cancel).await;
+        for bind_addr in addrs {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let records2 = records.clone();
+            let cancel = shutdown.clone();
+            rt.spawn(async move {
+                match tokio::net::UdpSocket::bind(bind_addr).await {
+                    Ok(socket) => {
+                        let _ = tx.send(Ok(()));
+                        run(records2, socket, cancel).await;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
                 }
-                Err(e) => {
-                    let _ = tx.send(Err(e));
-                }
-            }
-        });
+            });
+            rx.await
+                .map_err(|_| anyhow::anyhow!("dns server task exited before bind"))?
+                .context("dns server bind failed")?;
+            debug!(addr = %bind_addr, "dns server listening");
+        }
 
-        rx.await
-            .map_err(|_| anyhow::anyhow!("dns server task exited before bind"))?
-            .context("dns server bind failed")?;
-
-        debug!(addr = %bind_addr, "dns server started");
         Ok(Self { records, shutdown })
     }
 

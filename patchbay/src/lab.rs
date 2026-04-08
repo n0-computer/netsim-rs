@@ -1380,17 +1380,18 @@ impl Lab {
         self.inner
             .dns_server
             .get_or_try_init(|| async {
-                let (root_ns, ix_gw) = {
+                let (root_ns, ix_gw, ix_gw_v6) = {
                     let core = self.inner.core.lock().unwrap();
-                    (core.cfg.root_ns.clone(), core.cfg.ix_gw)
+                    (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
                 };
                 let server =
-                    crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw)
+                    crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw, ix_gw_v6)
                         .await?;
-                // Point all devices' resolv.conf at the DNS server.
+                // Point all devices' resolv.conf at the DNS server (both v4 and v6).
                 {
                     let mut core = self.inner.core.lock().unwrap();
                     core.dns.nameserver = Some(std::net::IpAddr::V4(ix_gw));
+                    core.dns.nameserver_v6 = Some(std::net::IpAddr::V6(ix_gw_v6));
                     core.dns.write_resolv_conf()?;
                 }
                 Ok(server)

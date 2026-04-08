@@ -506,7 +506,11 @@ async fn dns_server_sets_resolv_conf() -> Result<()> {
     info!(%stdout, "resolv.conf content");
     assert!(
         stdout.contains("nameserver 198.18.0.1"),
-        "resolv.conf should point to IX bridge: {stdout}"
+        "resolv.conf should have v4 nameserver: {stdout}"
+    );
+    assert!(
+        stdout.contains("nameserver 2001:db8::1"),
+        "resolv.conf should have v6 nameserver: {stdout}"
     );
     Ok(())
 }
@@ -607,6 +611,40 @@ async fn dual_stack_a_and_aaaa() -> Result<()> {
         "AAAA should survive v4 replace: {stdout6b}"
     );
 
+    Ok(())
+}
+
+/// IPv6-only device can resolve names via the DNS server.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn v6_only_device_resolves() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab
+        .add_router("dc")
+        .ip_support(IpSupport::V6Only)
+        .build()
+        .await?;
+    let dns = lab.dns_server().await?;
+    let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
+
+    dns.set_host("v6only.test.", IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)))?;
+
+    let mut cmd = std::process::Command::new("getent");
+    cmd.args(["hosts", "v6only.test"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = dev.spawn_command_sync(cmd)?;
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "v6-only device should resolve via DNS server: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("10.0.0.1"),
+        "expected 10.0.0.1 in output: {stdout}"
+    );
     Ok(())
 }
 
