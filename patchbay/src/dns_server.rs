@@ -16,15 +16,21 @@
 //! - **TXT records are not queryable via [`DnsServer::resolve`]** — it only
 //!   returns A/AAAA addresses. Query TXT records via DNS (e.g. `dig`).
 
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    sync::{Arc, RwLock},
+};
 
 use anyhow::{Context, Result};
-use hickory_proto::op::{Message, MessageType, ResponseCode};
-use hickory_proto::rr::rdata::{A, AAAA, TXT};
-use hickory_proto::rr::{DNSClass, LowerName, Name, RData, Record, RecordType};
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+use hickory_proto::{
+    op::{Message, MessageType, ResponseCode},
+    rr::{
+        rdata::{A, AAAA, TXT},
+        DNSClass, LowerName, Name, RData, Record, RecordType,
+    },
+    serialize::binary::{BinDecodable, BinEncodable},
+};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 

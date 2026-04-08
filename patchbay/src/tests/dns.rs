@@ -243,7 +243,10 @@ async fn std_to_socket_addrs() -> Result<()> {
         "std ToSocketAddrs should resolve via DNS server"
     );
 
-    assert_eq!(dev.resolve("stdtest.patchbay.").await, Some(IpAddr::V4(dc_ip)));
+    assert_eq!(
+        dev.resolve("stdtest.patchbay.").await,
+        Some(IpAddr::V4(dc_ip))
+    );
 
     let mut cmd = std::process::Command::new("getent");
     cmd.args(["hosts", "stdtest.patchbay"]);
