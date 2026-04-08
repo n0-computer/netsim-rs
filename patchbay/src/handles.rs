@@ -706,27 +706,25 @@ impl Device {
     /// glibc picks up changes on the next `getaddrinfo()` via mtime check.
     /// For lab-wide DNS records, use [`Lab::dns_server`] instead.
     pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
-        let mut inner = self.lab.core.lock().unwrap();
-        inner
-            .dns
-            .per_device
-            .entry(self.id)
-            .or_default()
-            .push((name.to_string(), ip));
-        inner.dns.write_hosts_file(self.id)
+        let inner = self.lab.core.lock().unwrap();
+        inner.dns.append_host(self.id, name, ip)
     }
 
-    /// Resolves a name: checks device-local hosts first, then the DNS server.
+    /// Resolves a name via this device's `/etc/hosts` + `resolv.conf` overlay,
+    /// using glibc `getaddrinfo` on the device's sync worker thread.
     pub fn resolve(&self, name: &str) -> Option<IpAddr> {
-        // Check per-device hosts entries first.
-        {
-            let inner = self.lab.core.lock().unwrap();
-            if let Some(ip) = inner.dns.resolve(self.id, name) {
-                return Some(ip);
-            }
-        }
-        // Fall back to DNS server store.
-        self.lab.dns_server.get().and_then(|dns| dns.resolve(name))
+        let name = name.to_string();
+        self.run_sync(move || {
+            use std::net::ToSocketAddrs;
+            let ip = (name.as_str(), 0u16)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut addrs| addrs.next())
+                .map(|a| a.ip());
+            Ok(ip)
+        })
+        .ok()
+        .flatten()
     }
 
     /// Adds a new interface to this device at runtime, connected to the given
