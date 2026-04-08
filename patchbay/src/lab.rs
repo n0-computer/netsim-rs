@@ -1387,11 +1387,10 @@ impl Lab {
                 let server =
                     crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw, ix_gw_v6)
                         .await?;
-                // Point all devices' resolv.conf at the DNS server (both v4 and v6).
+                // Point all devices' resolv.conf at the DNS server (v4 + v6).
                 {
                     let mut core = self.inner.core.lock().unwrap();
-                    core.dns.nameserver = Some(std::net::IpAddr::V4(ix_gw));
-                    core.dns.nameserver_v6 = Some(std::net::IpAddr::V6(ix_gw_v6));
+                    core.dns.nameservers = vec![ix_gw.into(), ix_gw_v6.into()];
                     core.dns.write_resolv_conf()?;
                 }
                 Ok(server)

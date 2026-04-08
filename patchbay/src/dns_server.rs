@@ -30,8 +30,7 @@ use tracing::{debug, warn};
 
 use crate::netns;
 
-/// Default TTL for DNS records (seconds). Short enough for quick updates,
-/// long enough to avoid per-query overhead in resolvers.
+/// Default TTL for DNS records (seconds).
 const DEFAULT_TTL: u32 = 1;
 
 type RecordStore = HashMap<(LowerName, RecordType), Vec<Record>>;
@@ -57,24 +56,23 @@ impl DnsServer {
         ix_gw: Ipv4Addr,
         ix_gw_v6: Ipv6Addr,
     ) -> Result<Self> {
-        let records: Arc<RwLock<RecordStore>> = Arc::new(RwLock::new(HashMap::new()));
+        let records = Arc::new(RwLock::new(RecordStore::new()));
         let shutdown = CancellationToken::new();
+        let rt = netns.rt_handle_for(root_ns)?;
 
         let addrs = [
-            SocketAddr::new(IpAddr::V4(ix_gw), 53),
-            SocketAddr::new(IpAddr::V6(ix_gw_v6), 53),
+            SocketAddr::from((ix_gw, 53)),
+            SocketAddr::from((ix_gw_v6, 53)),
         ];
-
-        let rt = netns.rt_handle_for(root_ns)?;
-        for bind_addr in addrs {
+        for addr in addrs {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let records2 = records.clone();
+            let records = records.clone();
             let cancel = shutdown.clone();
             rt.spawn(async move {
-                match tokio::net::UdpSocket::bind(bind_addr).await {
+                match tokio::net::UdpSocket::bind(addr).await {
                     Ok(socket) => {
                         let _ = tx.send(Ok(()));
-                        run(records2, socket, cancel).await;
+                        cancel.run_until_cancelled(serve(records, socket)).await;
                     }
                     Err(e) => {
                         let _ = tx.send(Err(e));
@@ -84,7 +82,7 @@ impl DnsServer {
             rx.await
                 .map_err(|_| anyhow::anyhow!("dns server task exited before bind"))?
                 .context("dns server bind failed")?;
-            debug!(addr = %bind_addr, "dns server listening");
+            debug!(%addr, "dns server listening");
         }
 
         Ok(Self { records, shutdown })
@@ -98,10 +96,9 @@ impl DnsServer {
             IpAddr::V4(v4) => (RecordType::A, RData::A(A::from(v4))),
             IpAddr::V6(v6) => (RecordType::AAAA, RData::AAAA(AAAA::from(v6))),
         };
-        let record = Record::from_rdata(name.clone(), DEFAULT_TTL, rdata);
         let key = (LowerName::new(&name), rtype);
-        let mut store = self.records.write().expect("poisoned");
-        store.insert(key, vec![record]);
+        let record = Record::from_rdata(name, DEFAULT_TTL, rdata);
+        self.records.write().expect("poisoned").insert(key, vec![record]);
         Ok(())
     }
 
@@ -110,18 +107,16 @@ impl DnsServer {
     pub fn set_txt(&self, name: &str, values: &[&str]) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
         let txt = TXT::new(values.iter().map(|s| s.to_string()).collect());
-        let record = Record::from_rdata(name.clone(), DEFAULT_TTL, RData::TXT(txt));
         let key = (LowerName::new(&name), RecordType::TXT);
-        let mut store = self.records.write().expect("poisoned");
-        store.insert(key, vec![record]);
+        let record = Record::from_rdata(name, DEFAULT_TTL, RData::TXT(txt));
+        self.records.write().expect("poisoned").insert(key, vec![record]);
         Ok(())
     }
 
     /// Removes all records matching the given name and type.
     pub fn remove(&self, name: &str, rtype: RecordType) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
-        let key = (LowerName::new(&name), rtype);
-        self.records.write().expect("poisoned").remove(&key);
+        self.records.write().expect("poisoned").remove(&(LowerName::new(&name), rtype));
         Ok(())
     }
 
@@ -153,11 +148,7 @@ impl Drop for DnsServer {
 
 // ── UDP server loop ──────────────────────────────────────────────────
 
-async fn run(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket, cancel: CancellationToken) {
-    cancel.run_until_cancelled(serve_loop(records, socket)).await;
-}
-
-async fn serve_loop(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket) {
+async fn serve(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket) {
     let mut buf = vec![0u8; 4096];
     loop {
         let (len, src) = match socket.recv_from(&mut buf).await {
@@ -167,8 +158,8 @@ async fn serve_loop(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSo
                 continue;
             }
         };
-        if let Some(response_bytes) = handle_query(&records, &buf[..len]) {
-            if let Err(e) = socket.send_to(&response_bytes, src).await {
+        if let Some(bytes) = handle_query(&records, &buf[..len]) {
+            if let Err(e) = socket.send_to(&bytes, src).await {
                 warn!(error = %e, "dns send error");
             }
         }
@@ -191,31 +182,27 @@ fn handle_query(records: &RwLock<RecordStore>, buf: &[u8]) -> Option<Vec<u8>> {
     response.add_queries(query.queries().iter().cloned());
 
     let store = records.read().expect("poisoned");
-    let mut found_answers = false;
+    let mut found = false;
     let mut name_exists = false;
     for q in query.queries() {
         let qname: LowerName = q.name().into();
-        // Check if any record type exists for this name.
         if !name_exists {
             name_exists = store.keys().any(|(n, _)| *n == qname);
         }
-        let key = (qname, q.query_type());
-        if let Some(recs) = store.get(&key) {
+        if let Some(recs) = store.get(&(qname, q.query_type())) {
             for r in recs {
                 let mut answer = r.clone();
                 answer.set_dns_class(DNSClass::IN);
                 response.add_answer(answer);
-                found_answers = true;
+                found = true;
             }
         }
     }
-    if !found_answers {
-        if name_exists {
-            // Name exists but not for the queried type → NOERROR with empty answer.
-            response.set_response_code(ResponseCode::NoError);
-        } else {
-            response.set_response_code(ResponseCode::NXDomain);
-        }
+    if !found {
+        // Name exists but queried type doesn't → NOERROR (empty answer).
+        // Name doesn't exist at all → NXDomain.
+        let code = if name_exists { ResponseCode::NoError } else { ResponseCode::NXDomain };
+        response.set_response_code(code);
     }
 
     response.to_bytes().ok()
