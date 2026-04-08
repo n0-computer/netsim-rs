@@ -146,25 +146,22 @@ impl Drop for DnsServer {
 // ── UDP server loop ──────────────────────────────────────────────────
 
 async fn run(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket, cancel: CancellationToken) {
+    cancel.run_until_cancelled(serve_loop(records, socket)).await;
+}
+
+async fn serve_loop(records: Arc<RwLock<RecordStore>>, socket: tokio::net::UdpSocket) {
     let mut buf = vec![0u8; 4096];
     loop {
-        tokio::select! {
-            _ = cancel.cancelled() => break,
-            result = socket.recv_from(&mut buf) => {
-                let (len, src) = match result {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(error = %e, "dns recv error");
-                        continue;
-                    }
-                };
-                let response_bytes = match handle_query(&records, &buf[..len]) {
-                    Some(bytes) => bytes,
-                    None => continue,
-                };
-                if let Err(e) = socket.send_to(&response_bytes, src).await {
-                    warn!(error = %e, "dns send error");
-                }
+        let (len, src) = match socket.recv_from(&mut buf).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "dns recv error");
+                continue;
+            }
+        };
+        if let Some(response_bytes) = handle_query(&records, &buf[..len]) {
+            if let Err(e) = socket.send_to(&response_bytes, src).await {
+                warn!(error = %e, "dns send error");
             }
         }
     }
