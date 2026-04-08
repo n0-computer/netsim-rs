@@ -547,6 +547,69 @@ async fn v6_entry() -> Result<()> {
     Ok(())
 }
 
+/// Dual-stack: both A and AAAA records for the same name are queryable.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn dual_stack_a_and_aaaa() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dns = lab.dns_server().await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    let v4 = Ipv4Addr::new(10, 0, 0, 42);
+    let v6 = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x42);
+    dns.set_host("dual.test.", IpAddr::V4(v4))?;
+    dns.set_host("dual.test.", IpAddr::V6(v6))?;
+
+    // In-process resolve returns v4 first (A before AAAA).
+    assert_eq!(lab.resolve("dual.test."), Some(IpAddr::V4(v4)));
+
+    // getent should see both addresses.
+    let mut cmd = std::process::Command::new("getent");
+    cmd.args(["ahostsv4", "dual.test"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = dev.spawn_command_sync(cmd)?;
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&v4.to_string()),
+        "should have v4 address: {stdout}"
+    );
+
+    let mut cmd6 = std::process::Command::new("getent");
+    cmd6.args(["ahostsv6", "dual.test"]);
+    cmd6.stdout(std::process::Stdio::piped());
+    cmd6.stderr(std::process::Stdio::piped());
+    let child6 = dev.spawn_command_sync(cmd6)?;
+    let output6 = child6.wait_with_output()?;
+    let stdout6 = String::from_utf8_lossy(&output6.stdout);
+    assert!(
+        stdout6.contains("2001:db8::42"),
+        "should have v6 address: {stdout6}"
+    );
+
+    // Setting a new v4 should NOT clobber the AAAA record.
+    let v4b = Ipv4Addr::new(10, 0, 0, 99);
+    dns.set_host("dual.test.", IpAddr::V4(v4b))?;
+    assert_eq!(lab.resolve("dual.test."), Some(IpAddr::V4(v4b)));
+
+    // AAAA should still be there.
+    let mut cmd6b = std::process::Command::new("getent");
+    cmd6b.args(["ahostsv6", "dual.test"]);
+    cmd6b.stdout(std::process::Stdio::piped());
+    cmd6b.stderr(std::process::Stdio::piped());
+    let child6b = dev.spawn_command_sync(cmd6b)?;
+    let output6b = child6b.wait_with_output()?;
+    let stdout6b = String::from_utf8_lossy(&output6b.stdout);
+    assert!(
+        stdout6b.contains("2001:db8::42"),
+        "AAAA should survive v4 replace: {stdout6b}"
+    );
+
+    Ok(())
+}
+
 /// TXT records can be set and resolved in-process.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
