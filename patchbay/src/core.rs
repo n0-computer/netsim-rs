@@ -428,8 +428,7 @@ impl DnsOverlayDir {
             .append(true)
             .open(&path)
             .with_context(|| format!("open {}", path.display()))?;
-        writeln!(f, "{ip}\t{name}")
-            .with_context(|| format!("append to {}", path.display()))?;
+        writeln!(f, "{ip}\t{name}").with_context(|| format!("append to {}", path.display()))?;
         Ok(())
     }
 

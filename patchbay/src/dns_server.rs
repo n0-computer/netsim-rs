@@ -98,7 +98,10 @@ impl DnsServer {
         };
         let key = (LowerName::new(&name), rtype);
         let record = Record::from_rdata(name, DEFAULT_TTL, rdata);
-        self.records.write().expect("poisoned").insert(key, vec![record]);
+        self.records
+            .write()
+            .expect("poisoned")
+            .insert(key, vec![record]);
         Ok(())
     }
 
@@ -109,14 +112,20 @@ impl DnsServer {
         let txt = TXT::new(values.iter().map(|s| s.to_string()).collect());
         let key = (LowerName::new(&name), RecordType::TXT);
         let record = Record::from_rdata(name, DEFAULT_TTL, RData::TXT(txt));
-        self.records.write().expect("poisoned").insert(key, vec![record]);
+        self.records
+            .write()
+            .expect("poisoned")
+            .insert(key, vec![record]);
         Ok(())
     }
 
     /// Removes all records matching the given name and type.
     pub fn remove(&self, name: &str, rtype: RecordType) -> Result<()> {
         let name = Name::from_ascii(name).context("invalid DNS name")?;
-        self.records.write().expect("poisoned").remove(&(LowerName::new(&name), rtype));
+        self.records
+            .write()
+            .expect("poisoned")
+            .remove(&(LowerName::new(&name), rtype));
         Ok(())
     }
 
@@ -201,7 +210,11 @@ fn handle_query(records: &RwLock<RecordStore>, buf: &[u8]) -> Option<Vec<u8>> {
     if !found {
         // Name exists but queried type doesn't → NOERROR (empty answer).
         // Name doesn't exist at all → NXDomain.
-        let code = if name_exists { ResponseCode::NoError } else { ResponseCode::NXDomain };
+        let code = if name_exists {
+            ResponseCode::NoError
+        } else {
+            ResponseCode::NXDomain
+        };
         response.set_response_code(code);
     }
 
