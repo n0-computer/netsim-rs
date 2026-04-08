@@ -711,18 +711,18 @@ impl Device {
     }
 
     /// Resolves a name via this device's `/etc/hosts` + `resolv.conf` overlay,
-    /// using glibc `getaddrinfo` on the device's sync worker thread.
-    pub fn resolve(&self, name: &str) -> Option<IpAddr> {
-        let name = name.to_string();
-        self.run_sync(move || {
-            use std::net::ToSocketAddrs;
-            let ip = (name.as_str(), 0u16)
-                .to_socket_addrs()
+    /// using `tokio::net::lookup_host` on the device's async worker.
+    pub async fn resolve(&self, name: &str) -> Option<IpAddr> {
+        let name = format!("{name}:0");
+        self.spawn(move |_dev| async move {
+            tokio::net::lookup_host(&name)
+                .await
                 .ok()
                 .and_then(|mut addrs| addrs.next())
-                .map(|a| a.ip());
-            Ok(ip)
+                .map(|a| a.ip())
         })
+        .ok()?
+        .await
         .ok()
         .flatten()
     }

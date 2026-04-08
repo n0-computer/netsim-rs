@@ -131,13 +131,13 @@ async fn resolve_in_process() -> Result<()> {
     assert_eq!(lab.resolve("local.test"), None);
 
     // Device resolve sees both (device-local first, then DNS server).
-    assert_eq!(dev.resolve("global.test."), Some(ip1));
-    assert_eq!(dev.resolve("local.test"), Some(ip2));
+    assert_eq!(dev.resolve("global.test.").await, Some(ip1));
+    assert_eq!(dev.resolve("local.test").await, Some(ip2));
 
     // Device-specific shadows DNS server entry with same name.
     let ip3 = IpAddr::V4(Ipv4Addr::new(10, 0, 3, 3));
     dev.set_host("global.test.", ip3)?;
-    assert_eq!(dev.resolve("global.test."), Some(ip3));
+    assert_eq!(dev.resolve("global.test.").await, Some(ip3));
     assert_eq!(lab.resolve("global.test."), Some(ip1));
 
     Ok(())
@@ -243,7 +243,7 @@ async fn std_to_socket_addrs() -> Result<()> {
         "std ToSocketAddrs should resolve via DNS server"
     );
 
-    assert_eq!(dev.resolve("stdtest.patchbay."), Some(IpAddr::V4(dc_ip)));
+    assert_eq!(dev.resolve("stdtest.patchbay.").await, Some(IpAddr::V4(dc_ip)));
 
     let mut cmd = std::process::Command::new("getent");
     cmd.args(["hosts", "stdtest.patchbay"]);
@@ -529,7 +529,7 @@ async fn v6_entry() -> Result<()> {
 
     // In-process resolve returns the v6 address.
     assert_eq!(lab.resolve("v6host.test."), Some(v6_addr));
-    assert_eq!(dev.resolve("v6host.test."), Some(v6_addr));
+    assert_eq!(dev.resolve("v6host.test.").await, Some(v6_addr));
 
     // getent sees the v6 address.
     let mut cmd = std::process::Command::new("getent");
