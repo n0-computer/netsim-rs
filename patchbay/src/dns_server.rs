@@ -39,6 +39,19 @@ use crate::netns;
 /// Default TTL for DNS records (seconds).
 const DEFAULT_TTL: u32 = 1;
 
+/// Parses a DNS name and ensures it is fully qualified (has a trailing dot).
+///
+/// DNS wire queries always use absolute names, so records must be stored
+/// as FQDN to match. Accepts both `"relay.test"` and `"relay.test."`.
+fn parse_name(name: &str) -> Result<Name> {
+    let fqdn = if name.ends_with('.') {
+        name.to_string()
+    } else {
+        format!("{name}.")
+    };
+    Name::from_ascii(&fqdn).context("invalid DNS name")
+}
+
 type RecordStore = HashMap<(LowerName, RecordType), Vec<Record>>;
 
 /// In-process DNS server running on the IX bridge.
@@ -105,7 +118,7 @@ impl DnsServer {
     /// Sets an A or AAAA record, replacing any previous record of the same type
     /// for this name. Immediately visible to DNS queries.
     pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
-        let name = Name::from_ascii(name).context("invalid DNS name")?;
+        let name = parse_name(name)?;
         let (rtype, rdata) = match ip {
             IpAddr::V4(v4) => (RecordType::A, RData::A(A::from(v4))),
             IpAddr::V6(v6) => (RecordType::AAAA, RData::AAAA(AAAA::from(v6))),
@@ -122,7 +135,7 @@ impl DnsServer {
     /// Sets a TXT record, replacing any previous TXT record for this name.
     /// Immediately visible to DNS queries.
     pub fn set_txt(&self, name: &str, values: &[&str]) -> Result<()> {
-        let name = Name::from_ascii(name).context("invalid DNS name")?;
+        let name = parse_name(name)?;
         let txt = TXT::new(values.iter().map(|s| s.to_string()).collect());
         let key = (LowerName::new(&name), RecordType::TXT);
         let record = Record::from_rdata(name, DEFAULT_TTL, RData::TXT(txt));
@@ -135,7 +148,7 @@ impl DnsServer {
 
     /// Removes all records matching the given name and type.
     pub fn remove(&self, name: &str, rtype: RecordType) -> Result<()> {
-        let name = Name::from_ascii(name).context("invalid DNS name")?;
+        let name = parse_name(name)?;
         self.records
             .write()
             .expect("poisoned")
@@ -145,7 +158,7 @@ impl DnsServer {
 
     /// In-process lookup. Returns the first matching A or AAAA address.
     pub fn resolve(&self, name: &str) -> Option<IpAddr> {
-        let name = Name::from_ascii(name).ok()?;
+        let name = parse_name(name).ok()?;
         let lower = LowerName::new(&name);
         let store = self.records.read().expect("poisoned");
         for rtype in [RecordType::A, RecordType::AAAA] {

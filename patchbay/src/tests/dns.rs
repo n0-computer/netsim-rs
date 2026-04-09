@@ -34,6 +34,41 @@ async fn server_entry_visible_in_command() -> Result<()> {
     Ok(())
 }
 
+/// Names without trailing dots are normalized to FQDN and resolve correctly.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn server_entry_without_trailing_dot() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dns = lab.dns_server()?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    // Set without trailing dot (like iroh does).
+    dns.set_host("nodot.test", IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)))?;
+
+    // In-process resolve (also without trailing dot).
+    assert_eq!(
+        lab.resolve("nodot.test"),
+        Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 42)))
+    );
+
+    // getent (which goes through glibc -> DNS query with FQDN).
+    let mut cmd = std::process::Command::new("getent");
+    cmd.args(["hosts", "nodot.test"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = dev.spawn_command_sync(cmd)?;
+    let output = child.wait_with_output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "should resolve name without trailing dot: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("10.0.0.42"), "expected IP in output: {stdout}");
+    Ok(())
+}
+
 /// DNS server entry is visible from two different devices.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
