@@ -343,7 +343,6 @@ async fn rate_multihop_bottleneck() -> Result<()> {
             latency_ms: 0,
             ..Default::default()
         })),
-        LinkDirection::Egress,
     )
     .await?;
 
@@ -680,7 +679,6 @@ async fn latency_multihop_chain() -> Result<()> {
             latency_ms: 30,
             ..Default::default()
         })),
-        LinkDirection::Egress,
     )
     .await?;
 
@@ -1204,6 +1202,82 @@ async fn direction_permutations() -> Result<()> {
     sender
         .set_link_condition("eth0", None, LinkDirection::Both)
         .await?;
+
+    Ok(())
+}
+
+/// Bidirectional impairment between two devices is achieved by calling
+/// `Lab::set_link_condition` once per device-router link. Each call applies
+/// netem on the device interface's egress qdisc, so impairing both the
+/// sender's and receiver's link doubles the observed round-trip latency.
+///
+/// This is the Lab-level pattern for bidirectional impairment — call once per
+/// side rather than using `LinkDirection::Both` (which is only available on
+/// [`Device::set_link_condition`]).
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn lab_bidirectional_via_two_calls() -> Result<()> {
+    check_caps()?;
+
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let sender = lab
+        .add_device("sender")
+        .iface("eth0", dc.id())
+        .build()
+        .await?;
+    let receiver = lab
+        .add_device("receiver")
+        .iface("eth0", dc.id())
+        .build()
+        .await?;
+
+    let recv_ip = receiver.ip().unwrap();
+    let reflector_addr = SocketAddr::new(IpAddr::V4(recv_ip), 19_100);
+    let _r = receiver.spawn_reflector(reflector_addr).await?;
+
+    let condition = LinkCondition::Manual(LinkLimits {
+        latency_ms: 500,
+        ..Default::default()
+    });
+
+    // Baseline: no impairment. RTT should be well under 100ms.
+    let baseline = sender.run_sync(move || test_utils::udp_rtt_sync(reflector_addr))?;
+    assert!(
+        baseline < Duration::from_millis(100),
+        "baseline RTT should be < 100ms, got {baseline:?}"
+    );
+
+    // Impair sender's link only. Netem applies to egress, so the outgoing
+    // packet from sender is delayed 500ms, but the reply arrives unimpaired.
+    // RTT ~ 500ms.
+    lab.set_link_condition(sender.id(), dc.id(), Some(condition))
+        .await?;
+    let one_side = sender
+        .run_sync(move || test_utils::udp_rtt_sync(reflector_addr))?
+        .as_millis() as u64;
+    assert!(
+        (300..800).contains(&one_side),
+        "one-side RTT should be ~500ms (300-800), got {one_side}ms"
+    );
+
+    // Also impair receiver's link. Now the reply from receiver is also
+    // delayed 500ms on its egress. RTT ~ 1000ms (500ms each way).
+    lab.set_link_condition(receiver.id(), dc.id(), Some(condition))
+        .await?;
+    let both_sides = sender
+        .run_sync(move || test_utils::udp_rtt_sync(reflector_addr))?
+        .as_millis() as u64;
+    assert!(
+        (800..1300).contains(&both_sides),
+        "both-sides RTT should be ~1000ms (800-1300), got {both_sides}ms"
+    );
+
+    // Impairing the second link added measurably more latency.
+    assert!(
+        both_sides > one_side,
+        "both-sides ({both_sides}ms) should exceed one-side ({one_side}ms)"
+    );
 
     Ok(())
 }

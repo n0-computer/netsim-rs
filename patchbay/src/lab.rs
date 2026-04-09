@@ -1475,21 +1475,26 @@ impl Lab {
     /// For **Router ↔ Router**: applies impairment on the downstream router's WAN
     /// interface (either "ix" for IX-connected or "wan" for sub-routers).
     ///
-    /// The order of `from` and `to` does not matter — the method resolves the
-    /// connected pair in either direction.
+    /// This applies impairment to the resolved interface between the two nodes
+    /// (netem on the egress qdisc). For **bidirectional** impairment between
+    /// two communicating devices, impair each device's link to its router
+    /// separately:
+    ///
+    /// ```ignore
+    /// lab.set_link_condition(dev_a.id(), router.id(), Some(cond)).await?;
+    /// lab.set_link_condition(dev_b.id(), router.id(), Some(cond)).await?;
+    /// ```
+    ///
+    /// For per-interface directional control (egress vs ingress on a single
+    /// device interface), use [`Device::set_link_condition`] instead.
     pub async fn set_link_condition(
         &self,
         a: NodeId,
         b: NodeId,
         impair: Option<LinkCondition>,
-        direction: LinkDirection,
     ) -> Result<()> {
-        debug!(a = ?a, b = ?b, impair = ?impair, ?direction, "lab: set_link_condition");
+        debug!(a = ?a, b = ?b, impair = ?impair, "lab: set_link_condition");
         let (ns, ifname) = self.inner.core.lock().unwrap().resolve_link_target(a, b)?;
-        // Lab-level set_link_condition resolves a single (ns, ifname) target for
-        // Router↔Router or Device↔Router links. Direction is not applicable at
-        // this level — pass through to apply_or_remove_impair directly.
-        let _ = direction;
         apply_or_remove_impair(&self.inner.netns, &ns, &ifname, impair).await;
         Ok(())
     }
