@@ -794,6 +794,12 @@ impl Device {
     pub async fn replug_iface(&self, ifname: &str, to_router: NodeId) -> Result<()> {
         use crate::wiring;
 
+        let op = self
+            .lab
+            .with_device(self.id, |d| Arc::clone(&d.op))
+            .ok_or_else(|| anyhow!("device removed"))?;
+        let _guard = op.lock().await;
+
         // Phase 1: Lock → extract data + allocate from new router's pool → unlock
         let mut setup = self
             .lab
