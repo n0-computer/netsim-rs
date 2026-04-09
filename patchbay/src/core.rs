@@ -171,6 +171,10 @@ pub(crate) struct DeviceIfaceData {
     pub ingress: Option<LinkCondition>,
     /// `true` for isolated interfaces (Linux dummy device, no veth pair).
     pub isolated: bool,
+    /// IPv4 prefix length (for isolated interfaces with explicit addr).
+    pub(crate) prefix_len: Option<u8>,
+    /// IPv6 prefix length (for isolated interfaces with explicit addr).
+    pub(crate) prefix_len_v6: Option<u8>,
     /// Unique index used to name the root-namespace veth ends.
     pub(crate) idx: u64,
 }
@@ -863,9 +867,60 @@ impl NetworkCore {
             egress: impair,
             ingress: None,
             isolated: false,
+            prefix_len: None,
+            prefix_len_v6: None,
             idx,
         });
         Ok(assigned)
+    }
+
+    /// Adds an interface to a device from an [`IfaceConfig`](crate::IfaceConfig).
+    ///
+    /// Handles both routed (gateway present) and isolated (gateway absent)
+    /// interfaces. For routed interfaces, allocates IPs from the router's pool
+    /// unless overridden by the config.
+    pub(crate) fn add_device_iface_from_config(
+        &mut self,
+        device: NodeId,
+        ifname: &str,
+        config: crate::IfaceConfig,
+    ) -> Result<()> {
+        if let Some(router) = config.gateway {
+            // Routed interface — delegate to add_device_iface for pool allocation.
+            self.add_device_iface(device, ifname, router, config.egress)?;
+            // Apply ingress condition if specified.
+            if config.ingress.is_some() {
+                let dev = self.device_mut(device).expect("just inserted");
+                let iface = dev.iface_mut(ifname).expect("just inserted");
+                iface.ingress = config.ingress;
+            }
+        } else {
+            // Isolated interface — no router, no pool allocation.
+            let idx = self.alloc_id();
+            let dev = self
+                .devices
+                .get_mut(&device)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            if dev.default_via.is_empty() {
+                dev.default_via = ifname.into();
+            }
+            let ip = config.addr.map(|n| n.addr());
+            let ip_v6 = config.addr_v6.map(|n| n.addr());
+            dev.interfaces.push(DeviceIfaceData {
+                ifname: ifname.into(),
+                uplink: None,
+                ip,
+                ip_v6,
+                ll_v6: None,
+                egress: config.egress,
+                ingress: None,
+                isolated: true,
+                prefix_len: config.addr.map(|n| n.prefix_len()),
+                prefix_len_v6: config.addr_v6.map(|n| n.prefix_len()),
+                idx,
+            });
+        }
+        Ok(())
     }
 
     /// Registers a new interface on a device and returns everything needed to wire it.

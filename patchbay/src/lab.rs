@@ -26,6 +26,7 @@ use crate::{
     },
     device::{Device, DeviceBuilder},
     event::{LabEvent, LabEventKind},
+    iface::IfaceConfig,
     netlink::Netlink,
     nft::apply_or_remove_impair,
     router::{Router, RouterBuilder},
@@ -859,7 +860,13 @@ impl Lab {
         for dev in dev_data {
             let mut builder = lab.add_device(&dev.name);
             for (ifname, router_id, impair) in dev.ifaces {
-                builder = builder.iface_impaired(&ifname, router_id, impair);
+                let config = IfaceConfig::routed(router_id);
+                let config = if let Some(cond) = impair {
+                    config.condition(cond, LinkDirection::Both)
+                } else {
+                    config
+                };
+                builder = builder.iface(&ifname, config);
             }
             if let Some(via) = dev.default_via {
                 builder = builder.default_via(&via);

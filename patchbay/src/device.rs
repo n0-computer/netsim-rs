@@ -1001,48 +1001,36 @@ impl DeviceBuilder {
         self
     }
 
-    /// Attach `ifname` inside the device namespace to `router`'s downstream switch.
-    pub fn iface(mut self, ifname: &str, router: NodeId) -> Self {
-        if self.result.is_ok() {
-            self.result = self
-                .inner
-                .core
-                .lock()
-                .unwrap()
-                .add_device_iface(self.id, ifname, router, None)
-                .map(|_| ());
-        }
-        self
-    }
-
-    /// Attach `ifname` to `router`'s downstream switch with an initial link condition.
+    /// Adds a named interface with the given configuration.
     ///
-    /// This is used internally by the config/TOML loading path which needs to
-    /// set impairment at build time. Public callers should prefer [`iface`] and
-    /// then [`DeviceHandle::set_link_condition`] after build.
-    pub(crate) fn iface_impaired(
-        mut self,
-        ifname: &str,
-        router: NodeId,
-        impair: Option<LinkCondition>,
-    ) -> Self {
+    /// Accepts anything that converts to [`IfaceConfig`], including a bare
+    /// [`NodeId`] for simple routed interfaces:
+    ///
+    /// ```ignore
+    /// builder.iface("eth0", router.id())
+    /// builder.iface("eth0", IfaceConfig::routed(router.id()).condition(cond, dir))
+    /// builder.iface("tun0", IfaceConfig::isolated().addr("10.8.0.1/24".parse()?))
+    /// ```
+    pub fn iface(mut self, ifname: &str, config: impl Into<crate::IfaceConfig>) -> Self {
         if self.result.is_ok() {
             self.result = self
                 .inner
                 .core
                 .lock()
-                .unwrap()
-                .add_device_iface(self.id, ifname, router, impair)
-                .map(|_| ());
+                .expect("poisoned")
+                .add_device_iface_from_config(self.id, ifname, config.into());
         }
         self
     }
 
-    /// Attach to `router`'s downstream switch with auto-named interfaces (eth0, eth1, ...).
-    pub fn uplink(mut self, router: NodeId) -> Self {
+    /// Adds an auto-named interface (eth0, eth1, ...) with the given config.
+    ///
+    /// Accepts anything that converts to [`IfaceConfig`], including a bare
+    /// [`NodeId`].
+    pub fn uplink(mut self, config: impl Into<crate::IfaceConfig>) -> Self {
         if self.result.is_ok() {
             let idx = {
-                let inner = self.inner.core.lock().unwrap();
+                let inner = self.inner.core.lock().expect("poisoned");
                 inner
                     .device(self.id)
                     .map(|d| d.interfaces.len())
@@ -1053,9 +1041,8 @@ impl DeviceBuilder {
                 .inner
                 .core
                 .lock()
-                .unwrap()
-                .add_device_iface(self.id, &ifname, router, None)
-                .map(|_| ());
+                .expect("poisoned")
+                .add_device_iface_from_config(self.id, &ifname, config.into());
         }
         self
     }
@@ -1095,61 +1082,88 @@ impl DeviceBuilder {
 
             let mut iface_data = Vec::new();
             for iface in &dev.interfaces {
-                let uplink = iface.uplink.ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' iface '{}' switch missing",
-                        dev.name,
-                        iface.ifname
-                    )
-                })?;
-                let sw = inner.switch(uplink).ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' iface '{}' switch missing",
-                        dev.name,
-                        iface.ifname
-                    )
-                })?;
-                let gw_router = sw.owner_router.ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' iface '{}' switch missing owner",
-                        dev.name,
-                        iface.ifname
-                    )
-                })?;
-                let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
-                let gw_ns = inner.router(gw_router).unwrap().ns.clone();
-                let gw_ip_v6 = if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
-                    None
+                if iface.isolated {
+                    // Isolated interface: dummy device, no gateway.
+                    let prefix_len = iface.prefix_len.unwrap_or(24);
+                    let prefix_len_v6 = iface.prefix_len_v6.unwrap_or(64);
+                    iface_data.push(IfaceBuild {
+                        dev_ns: dev.ns.clone(),
+                        gw_ns: "".into(),
+                        gw_ip: None,
+                        gw_br: "".into(),
+                        dev_ip: iface.ip,
+                        prefix_len,
+                        gw_ip_v6: None,
+                        dev_ip_v6: iface.ip_v6,
+                        gw_ll_v6: None,
+                        dev_ll_v6: None,
+                        prefix_len_v6,
+                        egress: iface.egress,
+                        ingress: None,
+                        isolated: true,
+                        start_down: false,
+                        ifname: iface.ifname.clone(),
+                        is_default: iface.ifname == dev.default_via,
+                        idx: iface.idx,
+                    });
                 } else {
-                    sw.gw_v6
-                };
-                let gw_ll_v6 = inner.router(gw_router).and_then(|r| {
-                    if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
-                        r.active_downstream_ll_v6()
+                    // Routed interface: veth pair, gateway, pool allocation.
+                    let uplink = iface.uplink.ok_or_else(|| {
+                        anyhow!(
+                            "device '{}' iface '{}' switch missing",
+                            dev.name,
+                            iface.ifname
+                        )
+                    })?;
+                    let sw = inner.switch(uplink).ok_or_else(|| {
+                        anyhow!(
+                            "device '{}' iface '{}' switch missing",
+                            dev.name,
+                            iface.ifname
+                        )
+                    })?;
+                    let gw_router = sw.owner_router.ok_or_else(|| {
+                        anyhow!(
+                            "device '{}' iface '{}' switch missing owner",
+                            dev.name,
+                            iface.ifname
+                        )
+                    })?;
+                    let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
+                    let gw_ns = inner.router(gw_router).unwrap().ns.clone();
+                    let gw_ip_v6 = if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+                        None
                     } else {
-                        r.downstream_ll_v6
-                    }
-                });
-                iface_data.push(IfaceBuild {
-                    dev_ns: dev.ns.clone(),
-                    gw_ns,
-                    gw_ip: sw.gw,
-                    gw_br,
-                    dev_ip: iface.ip,
-                    prefix_len: sw.cidr.map(|c| c.prefix_len()).unwrap_or(24),
-                    gw_ip_v6,
-                    dev_ip_v6: iface.ip_v6,
-                    gw_ll_v6,
-                    dev_ll_v6: iface.ll_v6,
-                    prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
-                    egress: iface.egress,
-                    ingress: iface.ingress,
-                    isolated: iface.isolated,
-                    start_down: false,
-                    ifname: iface.ifname.clone(),
-                    is_default: iface.ifname == dev.default_via,
-                    idx: iface.idx,
-                });
+                        sw.gw_v6
+                    };
+                    let gw_ll_v6 = inner.router(gw_router).and_then(|r| {
+                        if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
+                            r.active_downstream_ll_v6()
+                        } else {
+                            r.downstream_ll_v6
+                        }
+                    });
+                    iface_data.push(IfaceBuild {
+                        dev_ns: dev.ns.clone(),
+                        gw_ns,
+                        gw_ip: sw.gw,
+                        gw_br,
+                        dev_ip: iface.ip,
+                        prefix_len: sw.cidr.map(|c| c.prefix_len()).unwrap_or(24),
+                        gw_ip_v6,
+                        dev_ip_v6: iface.ip_v6,
+                        gw_ll_v6,
+                        dev_ll_v6: iface.ll_v6,
+                        prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
+                        egress: iface.egress,
+                        ingress: iface.ingress,
+                        isolated: false,
+                        start_down: false,
+                        ifname: iface.ifname.clone(),
+                        is_default: iface.ifname == dev.default_via,
+                        idx: iface.idx,
+                    });
+                }
             }
 
             // Prepare DNS overlay: ensure the hosts file exists and build paths.
