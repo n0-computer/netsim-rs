@@ -19,12 +19,13 @@ use tracing::{debug, debug_span, Instrument as _};
 pub use crate::qdisc::LinkLimits;
 use crate::{
     core::{
-        self, apply_or_remove_impair, setup_device_async, setup_root_ns_async, setup_router_async,
-        CoreConfig, DeviceSetupData, DownstreamPool, IfaceBuild, LabInner, NetworkCore, NodeId,
+        self, setup_device_async, setup_root_ns_async, setup_router_async, CoreConfig,
+        DeviceSetupData, DownstreamPool, IfaceBuild, LabInner, NetworkCore, NodeId,
         RouterSetupData, RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS, RA_DEFAULT_LIFETIME_SECS,
     },
     event::{DeviceState, LabEvent, LabEventKind, RouterState},
     netlink::Netlink,
+    nft::apply_or_remove_impair,
 };
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);

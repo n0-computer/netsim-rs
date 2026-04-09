@@ -27,9 +27,10 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use tracing::debug;
 
 use crate::{
-    core::{
-        self, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, run_nft_in, LabInner,
-        NodeId,
+    core::{self, LabInner, NodeId},
+    nft::{
+        apply_firewall, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, remove_firewall,
+        run_nft_in,
     },
     event::{IfaceSnapshot, LabEventKind},
     firewall::Firewall,
@@ -1583,8 +1584,8 @@ impl Router {
         };
         let ns = self.ns.to_string();
         // Always remove existing rules first, then apply new ones.
-        core::remove_firewall(&self.lab.netns, &ns).await?;
-        core::apply_firewall(&self.lab.netns, &ns, &fw, &wan_if).await?;
+        remove_firewall(&self.lab.netns, &ns).await?;
+        apply_firewall(&self.lab.netns, &ns, &fw, &wan_if).await?;
         self.lab.emit(LabEventKind::FirewallChanged {
             router: self.name.to_string(),
             firewall: fw,

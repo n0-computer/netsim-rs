@@ -204,6 +204,8 @@ pub mod dns_server;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
 pub(crate) mod firewall;
+/// nftables rule generation, NAT application, and tc impairment.
+pub(crate) mod nft;
 pub(crate) mod handles;
 mod lab;
 mod metrics;
