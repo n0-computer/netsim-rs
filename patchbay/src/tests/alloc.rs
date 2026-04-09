@@ -86,6 +86,10 @@ async fn switch_pool_exhaustion() -> Result<()> {
         assert!(err.is_err(), "254th allocation should fail");
     }
 
-    assert_eq!(ips.len(), 253, "should have allocated exactly 253 unique IPs");
+    assert_eq!(
+        ips.len(),
+        253,
+        "should have allocated exactly 253 unique IPs"
+    );
     Ok(())
 }
