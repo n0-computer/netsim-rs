@@ -10,13 +10,11 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
-use tokio_util::sync::CancellationToken;
 
 use crate::{
-    netns,
     nft::nptv6_wan_prefix,
     wiring::{add_host, link_local_from_seed, seed2, seed3},
-    Firewall, IpSupport, Ipv6DadMode, Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat,
+    Firewall, IpSupport, Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat,
     NatConfig, NatV6Mode,
 };
 
@@ -505,110 +503,12 @@ pub(crate) struct RestoreRegionSetup {
     pub a_direct_ip: Ipv4Addr,
 }
 
-/// Shared lab interior — holds both the topology mutex and the namespace
-/// manager. `netns` and `cancel` live here (not behind the mutex) because
-/// they are `Arc`-shared and internally synchronized.
-pub(crate) struct LabInner {
-    pub core: std::sync::Mutex<NetworkCore>,
-    pub netns: Arc<netns::NetnsManager>,
-    pub cancel: CancellationToken,
-    /// Monotonically increasing event counter.
-    pub opid: AtomicU64,
-    /// Broadcast channel for lab events.
-    pub events_tx: tokio::sync::broadcast::Sender<crate::event::LabEvent>,
-    /// Human-readable lab label (immutable after construction).
-    pub label: Option<Arc<str>>,
-    /// Namespace name → node name mapping (for log file naming).
-    pub ns_to_name: std::sync::Mutex<HashMap<String, String>>,
-    /// Resolved run output directory (e.g. `{base}/{ts}-{label}/`), if outdir was configured.
-    pub run_dir: Option<PathBuf>,
-    /// IPv6 duplicate address detection behavior.
-    pub ipv6_dad_mode: Ipv6DadMode,
-    /// IPv6 provisioning behavior.
-    pub ipv6_provisioning_mode: Ipv6ProvisioningMode,
-    /// In-process DNS server on the IX bridge (lazy, started on first access).
-    pub dns_server: std::sync::Mutex<Option<crate::dns_server::DnsServer>>,
-    /// Writer task handle (kept alive until lab is dropped).
-    pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Test outcome flag shared with the writer and [`TestGuard`].
-    pub test_status: Arc<std::sync::atomic::AtomicU8>,
-    /// Accumulated lab state, shared with the background writer. Updated on
-    /// every event so that `Drop` can always write a complete `state.json`
-    /// synchronously — even if the async writer task never ran its shutdown path.
-    pub shared_state: Arc<std::sync::Mutex<crate::event::LabState>>,
-}
-
-impl Drop for LabInner {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(dns) = self.dns_server.get_mut().unwrap().take() {
-            dns.shutdown();
-        }
-
-        // Determine final status from the test guard.
-        let status = match self.test_status.load(Ordering::Acquire) {
-            crate::writer::STATUS_SUCCESS => "success",
-            crate::writer::STATUS_FAILED => "failed",
-            _ => "stopped",
-        };
-
-        // Write the final state.json synchronously. The shared_state mutex
-        // holds the fully accumulated LabState (updated by the writer on every
-        // event), so this works even if the async task never flushed.
-        if let Some(ref run_dir) = self.run_dir {
-            crate::writer::write_final_state(run_dir, &self.shared_state, status);
-        }
-    }
-}
-
 /// RAII guard that aborts the reflector task when dropped.
-pub struct ReflectorGuard(tokio::task::AbortHandle);
+pub struct ReflectorGuard(pub(crate) tokio::task::AbortHandle);
 
 impl Drop for ReflectorGuard {
     fn drop(&mut self) {
         self.0.abort();
-    }
-}
-
-impl LabInner {
-    /// Returns a cloned tokio runtime handle for the given namespace.
-    pub(crate) fn rt_handle_for(&self, ns: &str) -> Result<tokio::runtime::Handle> {
-        self.netns.rt_handle_for(ns)
-    }
-
-    /// Spawns an async UDP reflector in the given namespace.
-    ///
-    /// Returns after the socket is confirmed bound. The returned
-    /// [`ReflectorGuard`] aborts the reflector task when dropped.
-    pub(crate) async fn spawn_reflector_in(
-        &self,
-        ns: &str,
-        bind: std::net::SocketAddr,
-    ) -> Result<ReflectorGuard> {
-        let cancel = self.cancel.clone();
-        let rt = self.rt_handle_for(ns)?;
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let handle = rt.spawn(async move {
-            if let Err(e) = crate::test_utils::run_reflector(bind, cancel, tx).await {
-                tracing::error!(bind = %bind, error = %e, "reflector failed");
-            }
-        });
-        rx.await
-            .map_err(|_| anyhow!("reflector task exited before signalling bind"))?
-            .context("reflector bind failed")?;
-        Ok(ReflectorGuard(handle.abort_handle()))
-    }
-
-    // ── with() helpers ──────────────────────────────────────────────────
-
-    pub(crate) fn with_device<R>(&self, id: NodeId, f: impl FnOnce(&DeviceData) -> R) -> Option<R> {
-        let core = self.core.lock().unwrap();
-        core.device(id).map(f)
-    }
-
-    pub(crate) fn with_router<R>(&self, id: NodeId, f: impl FnOnce(&RouterData) -> R) -> Option<R> {
-        let core = self.core.lock().unwrap();
-        core.router(id).map(f)
     }
 }
 

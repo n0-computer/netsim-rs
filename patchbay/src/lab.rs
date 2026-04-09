@@ -1,34 +1,35 @@
-//! High-level lab API: [`Lab`], [`DeviceBuilder`], [`Nat`], [`LinkCondition`].
+//! High-level lab API: [`Lab`], [`LabOpts`], [`Ix`], topology types.
 
 use std::{
     collections::HashMap,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicU64, AtomicU8, Ordering},
         Arc,
     },
+    thread,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
 use serde::Deserialize;
-use tracing::{debug, debug_span, Instrument as _};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, debug_span};
 
 pub use crate::qdisc::LinkLimits;
 use crate::{
     core::{
-        self, CoreConfig, DownstreamPool, IfaceBuild, LabInner, NetworkCore, NodeId,
+        self, CoreConfig, DeviceData, DownstreamPool, NetworkCore, NodeId, RouterData,
         RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS, RA_DEFAULT_LIFETIME_SECS,
     },
-    event::{DeviceState, LabEvent, LabEventKind, RouterState},
+    device::{Device, DeviceBuilder},
+    event::{LabEvent, LabEventKind},
     netlink::Netlink,
     nft::apply_or_remove_impair,
-    wiring::{
-        self, setup_device_async, setup_root_ns_async, setup_router_async, DeviceSetupData,
-        RouterSetupData,
-    },
+    router::{Router, RouterBuilder},
+    wiring::{self, setup_root_ns_async, setup_router_async, RouterSetupData},
 };
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -56,7 +57,6 @@ fn region_base(idx: u8) -> Ipv4Addr {
 
 pub use crate::{
     firewall::{Firewall, FirewallConfig, FirewallConfigBuilder},
-    handles::{Device, DeviceIface, Ix, Router, RouterIface},
     nat::{
         ConntrackTimeouts, IpSupport, Nat, NatConfig, NatConfigBuilder, NatFiltering, NatMapping,
         NatV6Mode,
@@ -209,9 +209,9 @@ impl LinkCondition {
 /// and inter-region traffic flows over veths with configurable netem impairment.
 #[derive(Clone)]
 pub struct Region {
-    name: Arc<str>,
-    idx: u8,
-    router_id: NodeId,
+    pub(crate) name: Arc<str>,
+    pub(crate) idx: u8,
+    pub(crate) router_id: NodeId,
 }
 
 impl Region {
@@ -269,6 +269,108 @@ pub struct DefaultRegions {
     pub eu: Region,
     /// Asia region (198.18.32.0/20).
     pub asia: Region,
+}
+
+// ─────────────────────────────────────────────
+// LabInner
+// ─────────────────────────────────────────────
+
+/// Shared lab interior — holds both the topology mutex and the namespace
+/// manager. `netns` and `cancel` live here (not behind the mutex) because
+/// they are `Arc`-shared and internally synchronized.
+pub(crate) struct LabInner {
+    pub core: std::sync::Mutex<NetworkCore>,
+    pub netns: Arc<crate::netns::NetnsManager>,
+    pub cancel: CancellationToken,
+    /// Monotonically increasing event counter.
+    pub opid: AtomicU64,
+    /// Broadcast channel for lab events.
+    pub events_tx: tokio::sync::broadcast::Sender<LabEvent>,
+    /// Human-readable lab label (immutable after construction).
+    pub label: Option<Arc<str>>,
+    /// Namespace name → node name mapping (for log file naming).
+    pub ns_to_name: std::sync::Mutex<HashMap<String, String>>,
+    /// Resolved run output directory (e.g. `{base}/{ts}-{label}/`), if outdir was configured.
+    pub run_dir: Option<PathBuf>,
+    /// IPv6 duplicate address detection behavior.
+    pub ipv6_dad_mode: Ipv6DadMode,
+    /// IPv6 provisioning behavior.
+    pub ipv6_provisioning_mode: Ipv6ProvisioningMode,
+    /// In-process DNS server on the IX bridge (lazy, started on first access).
+    pub dns_server: std::sync::Mutex<Option<crate::dns_server::DnsServer>>,
+    /// Writer task handle (kept alive until lab is dropped).
+    pub writer_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Test outcome flag shared with the writer and [`TestGuard`].
+    pub test_status: Arc<AtomicU8>,
+    /// Accumulated lab state, shared with the background writer. Updated on
+    /// every event so that `Drop` can always write a complete `state.json`
+    /// synchronously — even if the async writer task never ran its shutdown path.
+    pub shared_state: Arc<std::sync::Mutex<crate::event::LabState>>,
+}
+
+impl Drop for LabInner {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        if let Some(dns) = self.dns_server.get_mut().unwrap().take() {
+            dns.shutdown();
+        }
+
+        // Determine final status from the test guard.
+        let status = match self.test_status.load(Ordering::Acquire) {
+            crate::writer::STATUS_SUCCESS => "success",
+            crate::writer::STATUS_FAILED => "failed",
+            _ => "stopped",
+        };
+
+        // Write the final state.json synchronously. The shared_state mutex
+        // holds the fully accumulated LabState (updated by the writer on every
+        // event), so this works even if the async task never flushed.
+        if let Some(ref run_dir) = self.run_dir {
+            crate::writer::write_final_state(run_dir, &self.shared_state, status);
+        }
+    }
+}
+
+impl LabInner {
+    /// Returns a cloned tokio runtime handle for the given namespace.
+    pub(crate) fn rt_handle_for(&self, ns: &str) -> Result<tokio::runtime::Handle> {
+        self.netns.rt_handle_for(ns)
+    }
+
+    /// Spawns an async UDP reflector in the given namespace.
+    ///
+    /// Returns after the socket is confirmed bound. The returned
+    /// [`ReflectorGuard`](core::ReflectorGuard) aborts the reflector task when dropped.
+    pub(crate) async fn spawn_reflector_in(
+        &self,
+        ns: &str,
+        bind: SocketAddr,
+    ) -> Result<core::ReflectorGuard> {
+        let cancel = self.cancel.clone();
+        let rt = self.rt_handle_for(ns)?;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = rt.spawn(async move {
+            if let Err(e) = crate::test_utils::run_reflector(bind, cancel, tx).await {
+                tracing::error!(bind = %bind, error = %e, "reflector failed");
+            }
+        });
+        rx.await
+            .map_err(|_| anyhow!("reflector task exited before signalling bind"))?
+            .context("reflector bind failed")?;
+        Ok(core::ReflectorGuard(handle.abort_handle()))
+    }
+
+    // ── with() helpers ──────────────────────────────────────────────────
+
+    pub(crate) fn with_device<R>(&self, id: NodeId, f: impl FnOnce(&DeviceData) -> R) -> Option<R> {
+        let core = self.core.lock().unwrap();
+        core.device(id).map(f)
+    }
+
+    pub(crate) fn with_router<R>(&self, id: NodeId, f: impl FnOnce(&RouterData) -> R) -> Option<R> {
+        let core = self.core.lock().unwrap();
+        core.router(id).map(f)
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -479,7 +581,7 @@ impl Lab {
             netns_mgr.set_run_dir(rd.clone());
         }
         let netns = Arc::new(netns_mgr);
-        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel = CancellationToken::new();
         let (events_tx, _rx) = tokio::sync::broadcast::channel::<LabEvent>(256);
         drop(_rx);
         let test_status = Arc::new(AtomicU8::new(crate::writer::STATUS_UNKNOWN));
@@ -1344,13 +1446,13 @@ impl Lab {
         let inner = self.inner.core.lock().unwrap();
         let mut map = HashMap::new();
         for dev in inner.all_devices() {
-            let norm = crate::handles::normalize_env_name(&dev.name);
+            let norm = normalize_env_name(&dev.name);
             if let Some(ip) = dev.default_iface().ip {
                 map.insert(format!("NETSIM_IP_{}", norm), ip.to_string());
             }
             for iface in &dev.interfaces {
                 if let Some(ip) = iface.ip {
-                    let ifnorm = crate::handles::normalize_env_name(&iface.ifname);
+                    let ifnorm = normalize_env_name(&iface.ifname);
                     map.insert(format!("NETSIM_IP_{}_{}", norm, ifnorm), ip.to_string());
                 }
             }
@@ -1402,7 +1504,7 @@ impl Lab {
     }
 
     /// Resolves a name via the DNS server (if started), or returns `None`.
-    pub fn resolve(&self, name: &str) -> Option<std::net::IpAddr> {
+    pub fn resolve(&self, name: &str) -> Option<IpAddr> {
         self.inner
             .dns_server
             .lock()
@@ -1530,953 +1632,130 @@ impl Lab {
 }
 
 // ─────────────────────────────────────────────
-// RouterPreset
+// Ix handle
 // ─────────────────────────────────────────────
 
-/// Pre-built router configurations that match common real-world deployments.
+/// Handle to the Internet Exchange — the lab's root namespace that hosts
+/// the shared bridge connecting all IX-level routers.
 ///
-/// Each preset configures NAT mode, firewall policy, IP address family, and
-/// downstream address pool as a single unit. Methods called after `.preset()`
-/// on the [`RouterBuilder`] override the preset's defaults, so you can start
-/// from a known configuration and adjust only what your test needs.
-///
-/// The ISP presets (`IspCgnat`, `IspV6`) cover both fixed-line and mobile
-/// carriers. Most mobile networks (T-Mobile, Vodafone, AT&T) use the same
-/// CGNAT or NAT64 infrastructure as their fixed-line counterparts, and
-/// real-world measurements confirm that hole-punching succeeds on the
-/// majority of them.
-///
-/// # Example
-///
-/// ```ignore
-/// let home = lab.add_router("home")
-///     .preset(RouterPreset::Home)
-///     .build().await?;
-///
-/// // Override NAT while keeping the rest of the Home preset:
-/// let home = lab.add_router("home")
-///     .preset(RouterPreset::Home)
-///     .nat(Nat::FullCone)
-///     .build().await?;
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub enum RouterPreset {
-    /// Residential home router.
-    ///
-    /// Models the standard consumer setup: a FritzBox, UniFi, TP-Link, or
-    /// similar device where every LAN host gets an RFC 1918 IPv4 address
-    /// behind NAT and a ULA IPv6 address behind a stateful firewall. The
-    /// NAT is endpoint-independent mapping with address-and-port-dependent
-    /// filtering (EIM+APDF), which preserves the external port and allows
-    /// UDP hole-punching. The firewall blocks unsolicited inbound
-    /// connections on both address families (RFC 6092 CE router behavior).
-    ///
-    /// Dual-stack, private downstream pool.
-    Home,
-
-    /// Public-IP router with no NAT or firewall.
-    ///
-    /// Downstream devices receive globally routable addresses on both
-    /// address families. Use this for datacenter switches, ISP handoff
-    /// points, VPS hosts, and any topology where devices need direct
-    /// reachability without translation or filtering.
-    ///
-    /// Dual-stack, public downstream pool.
-    Public,
-
-    /// IPv4-only variant of [`Public`](Self::Public).
-    ///
-    /// Same behavior — no NAT, no firewall, public downstream — but
-    /// without IPv6. Models legacy ISPs and v4-only VPS providers.
-    ///
-    /// V4-only, public downstream pool.
-    PublicV4,
-
-    /// ISP or mobile carrier with carrier-grade NAT.
-    ///
-    /// Models any provider that shares a pool of public IPv4 addresses
-    /// across subscribers via CGNAT: budget fiber, fixed-wireless,
-    /// satellite (Starlink), and dual-stack mobile carriers (Vodafone, O2,
-    /// AT&T). The CGNAT uses endpoint-independent mapping and filtering
-    /// per RFC 6888, so hole-punching works — inbound packets reach
-    /// mapped ports. No additional firewall beyond the NAT. IPv6 addresses
-    /// are globally routable.
-    ///
-    /// Dual-stack, private downstream pool.
-    IspCgnat,
-
-    /// IPv6-only ISP or mobile carrier with NAT64.
-    ///
-    /// Models T-Mobile US, Jio, NTT Docomo, and other providers that run
-    /// pure IPv6 networks. The device has no IPv4 address. A userspace
-    /// SIIT translator on the router converts between IPv6 and IPv4 via
-    /// the well-known prefix `64:ff9b::/96`, and nftables masquerade
-    /// handles port mapping on the IPv4 side. A `BlockInbound` firewall
-    /// prevents unsolicited connections.
-    ///
-    /// V6-only, public downstream pool.
-    IspV6,
-
-    /// Enterprise gateway with restrictive outbound filtering.
-    ///
-    /// Models a Cisco ASA, Palo Alto, or Fortinet appliance. Symmetric NAT
-    /// (endpoint-dependent mapping) makes STUN useless — the external port
-    /// changes with every new destination, so the reflexive address learned
-    /// from a STUN server does not work for other peers. The `Corporate`
-    /// firewall restricts outbound traffic to TCP 80/443 and UDP 53,
-    /// blocking all other UDP. Applications behind this preset must fall
-    /// back to TURN-over-TLS on port 443.
-    ///
-    /// Dual-stack, private downstream pool.
-    Corporate,
-
-    /// Hotel, airport, or conference guest WiFi.
-    ///
-    /// Symmetric NAT with a `CaptivePortal` firewall that allows TCP on
-    /// any port but blocks all non-DNS UDP. This kills QUIC and prevents
-    /// direct P2P, but TURN-over-TCP on non-standard ports can still work
-    /// — unlike the stricter `Corporate` preset. IPv4-only, because most
-    /// guest networks still do not offer IPv6.
-    ///
-    /// V4-only, private downstream pool.
-    Hotel,
-
-    /// Cloud NAT gateway.
-    ///
-    /// Models AWS NAT Gateway, Azure NAT Gateway, and GCP Cloud NAT. VPC
-    /// instances get private addresses, and the NAT gateway handles
-    /// public-facing translation with symmetric mapping. Timeouts are
-    /// longer than residential NAT (350 seconds for UDP) to accommodate
-    /// long-lived cloud workloads. No firewall — security groups and
-    /// NACLs are a separate concern in cloud environments.
-    ///
-    /// Dual-stack, private downstream pool.
-    Cloud,
+/// Same pattern as [`Device`] and [`Router`]: holds an `Arc` to the lab
+/// interior. All accessor methods briefly lock the mutex.
+pub struct Ix {
+    lab: Arc<LabInner>,
 }
 
-impl RouterPreset {
-    fn nat(self) -> Nat {
-        match self {
-            Self::Home => Nat::Home,
-            Self::Public | Self::PublicV4 | Self::IspV6 => Nat::None,
-            Self::IspCgnat => Nat::Cgnat,
-            Self::Corporate | Self::Hotel => Nat::Corporate,
-            Self::Cloud => Nat::CloudNat,
-        }
-    }
-
-    fn nat_v6(self) -> NatV6Mode {
-        match self {
-            Self::IspV6 => NatV6Mode::Nat64,
-            _ => NatV6Mode::None,
-        }
-    }
-
-    fn firewall(self) -> Firewall {
-        match self {
-            Self::Home | Self::IspV6 => Firewall::BlockInbound,
-            Self::Public | Self::PublicV4 | Self::IspCgnat | Self::Cloud => Firewall::None,
-            Self::Corporate => Firewall::Corporate,
-            Self::Hotel => Firewall::CaptivePortal,
-        }
-    }
-
-    fn ip_support(self) -> IpSupport {
-        match self {
-            Self::PublicV4 | Self::Hotel => IpSupport::V4Only,
-            Self::IspV6 => IpSupport::V6Only,
-            _ => IpSupport::DualStack,
-        }
-    }
-
-    fn downstream_pool(self) -> DownstreamPool {
-        match self {
-            Self::Public | Self::PublicV4 | Self::IspV6 => DownstreamPool::Public,
-            _ => DownstreamPool::Private,
-        }
-    }
-
-    /// Returns the recommended IPv6 profile for this preset.
-    ///
-    /// All presets return [`Ipv6Profile::Realistic`]. Use
-    /// [`LabOpts::ipv6_profile`] with [`Ipv6Profile::Deterministic`] to
-    /// override for fast, reproducible tests.
-    pub fn recommended_ipv6_profile(self) -> Ipv6Profile {
-        Ipv6Profile::Realistic
-    }
-}
-
-// ─────────────────────────────────────────────
-// RouterBuilder
-// ─────────────────────────────────────────────
-
-/// Builder for a router node; returned by [`Lab::add_router`].
-pub struct RouterBuilder {
-    inner: Arc<LabInner>,
-    lab_span: tracing::Span,
-    name: String,
-    region: Option<Arc<str>>,
-    upstream: Option<NodeId>,
-    nat: Nat,
-    ip_support: IpSupport,
-    nat_v6: NatV6Mode,
-    downstream_pool: Option<DownstreamPool>,
-    downstream_cidr: Option<Ipv4Net>,
-    downlink_condition: Option<LinkCondition>,
-    mtu: Option<u32>,
-    block_icmp_frag_needed: bool,
-    firewall: Firewall,
-    ra_enabled: bool,
-    ra_interval_secs: u64,
-    ra_lifetime_secs: u64,
-    result: Result<()>,
-}
-
-impl RouterBuilder {
-    /// Creates a builder in an error state; `build()` will return this error.
-    fn error(
-        inner: Arc<LabInner>,
-        lab_span: tracing::Span,
-        name: &str,
-        err: anyhow::Error,
-    ) -> Self {
+impl Clone for Ix {
+    fn clone(&self) -> Self {
         Self {
-            inner,
-            lab_span,
-            name: name.to_string(),
-            region: None,
-            upstream: None,
-            nat: Nat::None,
-            ip_support: IpSupport::V4Only,
-            nat_v6: NatV6Mode::None,
-            downstream_pool: None,
-            downstream_cidr: None,
-            downlink_condition: None,
-            mtu: None,
-            block_icmp_frag_needed: false,
-            firewall: Firewall::None,
-            ra_enabled: RA_DEFAULT_ENABLED,
-            ra_interval_secs: RA_DEFAULT_INTERVAL_SECS,
-            ra_lifetime_secs: RA_DEFAULT_LIFETIME_SECS,
-            result: Err(err),
+            lab: Arc::clone(&self.lab),
         }
     }
+}
 
-    /// Places this router in a region, connecting it to the region's bridge.
+impl std::fmt::Debug for Ix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ix").finish()
+    }
+}
+
+impl Ix {
+    pub(crate) fn new(lab: Arc<LabInner>) -> Self {
+        Self { lab }
+    }
+
+    /// Returns the root namespace name.
+    pub fn ns(&self) -> String {
+        self.lab.core.lock().unwrap().root_ns().to_string()
+    }
+
+    /// Returns the IX gateway IPv4 address (e.g. 203.0.113.1).
+    pub fn gw(&self) -> Ipv4Addr {
+        self.lab.core.lock().unwrap().ix_gw()
+    }
+
+    /// Returns the IX gateway IPv6 address (e.g. 2001:db8::1).
+    pub fn gw_v6(&self) -> Ipv6Addr {
+        self.lab.core.lock().unwrap().cfg.ix_gw_v6
+    }
+
+    /// Spawns an async task on the IX root namespace's tokio runtime.
     ///
-    /// The router becomes a sub-router of the region router. For `Nat::None`
-    /// routers, a return route is added in the region router's namespace.
-    pub fn region(mut self, region: &Region) -> Self {
-        if self.result.is_ok() {
-            self.region = Some(region.name.clone());
-            self.upstream = Some(region.router_id);
-        }
-        self
+    /// The closure receives a cloned [`Ix`] handle.
+    pub fn spawn<F, Fut, T>(&self, f: F) -> tokio::task::JoinHandle<T>
+    where
+        F: FnOnce(Ix) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        let rt = self
+            .lab
+            .rt_handle_for(&ns)
+            .expect("root namespace has async worker");
+        let handle = self.clone();
+        rt.spawn(f(handle))
     }
 
-    /// Connects this router as a sub-router behind `parent`'s downstream switch.
+    /// Runs a short-lived sync closure in the IX root namespace.
     ///
-    /// Without this, the router attaches directly to the IX switch.
-    pub fn upstream(mut self, parent: NodeId) -> Self {
-        if self.result.is_ok() {
-            self.upstream = Some(parent);
-        }
-        self
+    /// Blocks the caller until the closure returns.
+    pub fn run_sync<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.run_closure_in(&ns, f)
     }
 
-    /// Applies a [`RouterPreset`] that sets NAT, firewall, IP support, and
-    /// address pool to match a real-world deployment pattern.
+    /// Spawns a dedicated OS thread in the IX root namespace.
+    pub fn spawn_thread<F, R>(&self, f: F) -> Result<thread::JoinHandle<Result<R>>>
+    where
+        F: FnOnce() -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.spawn_thread_in(&ns, f)
+    }
+
+    /// Spawns a [`tokio::process::Command`] in the IX root namespace.
+    pub fn spawn_command(&self, mut cmd: tokio::process::Command) -> Result<tokio::process::Child> {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        let rt = self.lab.rt_handle_for(&ns)?;
+        self.lab.netns.run_closure_in(&ns, move || {
+            let _guard = rt.enter();
+            cmd.spawn().context("spawn async command in namespace")
+        })
+    }
+
+    /// Spawns a [`std::process::Command`] in the IX root namespace.
+    pub fn spawn_command_sync(&self, mut cmd: Command) -> Result<std::process::Child> {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.netns.run_closure_in(&ns, move || {
+            cmd.spawn().context("spawn command in namespace")
+        })
+    }
+
+    /// Spawns a STUN-like UDP reflector in the IX root namespace.
     ///
-    /// Individual methods (`.nat()`, `.firewall()`, etc.) called **after**
-    /// `preset()` override the preset's values.
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Home router with full-cone NAT instead of default port-restricted:
-    /// lab.add_router("home")
-    ///     .preset(RouterPreset::Home)
-    ///     .nat(Nat::FullCone)
-    ///     .build().await?;
-    /// ```
-    pub fn preset(mut self, p: RouterPreset) -> Self {
-        if self.result.is_ok() {
-            self.nat = p.nat();
-            self.nat_v6 = p.nat_v6();
-            self.firewall = p.firewall();
-            self.ip_support = p.ip_support();
-            self.downstream_pool = Some(p.downstream_pool());
-        }
-        self
-    }
-
-    /// Sets the NAT mode. Defaults to [`Nat::None`] (no NAT, public addressing).
-    pub fn nat(mut self, mode: Nat) -> Self {
-        if self.result.is_ok() {
-            self.nat = mode;
-        }
-        self
-    }
-
-    /// Sets an impairment condition on this router's downlink bridge, affecting
-    /// download-direction traffic to all downstream devices.
-    ///
-    /// Equivalent to calling [`Router::set_downlink_condition`] after build.
-    pub fn downlink_condition(mut self, condition: LinkCondition) -> Self {
-        if self.result.is_ok() {
-            self.downlink_condition = Some(condition);
-        }
-        self
-    }
-
-    /// Sets the MTU on this router's WAN and LAN bridge interfaces.
-    ///
-    /// Useful for simulating VPN tunnels (e.g. 1420 for WireGuard) or
-    /// constrained paths.
-    pub fn mtu(mut self, mtu: u32) -> Self {
-        if self.result.is_ok() {
-            self.mtu = Some(mtu);
-        }
-        self
-    }
-
-    /// Blocks ICMP "fragmentation needed" (type 3, code 4) in the forward chain.
-    ///
-    /// Simulates a PMTU blackhole middlebox — devices behind this router
-    /// will not receive path MTU discovery feedback.
-    pub fn block_icmp_frag_needed(mut self) -> Self {
-        if self.result.is_ok() {
-            self.block_icmp_frag_needed = true;
-        }
-        self
-    }
-
-    /// Sets a firewall preset for this router.
-    pub fn firewall(mut self, fw: Firewall) -> Self {
-        if self.result.is_ok() {
-            self.firewall = fw;
-        }
-        self
-    }
-
-    /// Configures a custom firewall via a builder closure.
-    ///
-    /// # Example
-    /// ```ignore
-    /// lab.add_router("fw")
-    ///     .firewall_custom(|f| f.allow_tcp(&[80, 443]).allow_udp(&[53]).block_udp())
-    ///     .build().await?;
-    /// ```
-    pub fn firewall_custom(
-        mut self,
-        f: impl FnOnce(&mut FirewallConfigBuilder) -> &mut FirewallConfigBuilder,
-    ) -> Self {
-        if self.result.is_ok() {
-            let mut builder = FirewallConfigBuilder::default();
-            f(&mut builder);
-            self.firewall = Firewall::Custom(builder.build());
-        }
-        self
-    }
-
-    /// Sets which IP address families this router supports. Defaults to [`IpSupport::V4Only`].
-    pub fn ip_support(mut self, support: IpSupport) -> Self {
-        if self.result.is_ok() {
-            self.ip_support = support;
-        }
-        self
-    }
-
-    /// Sets the IPv6 NAT mode. Defaults to [`NatV6Mode::None`].
-    pub fn nat_v6(mut self, mode: NatV6Mode) -> Self {
-        if self.result.is_ok() {
-            self.nat_v6 = mode;
-        }
-        self
-    }
-
-    /// Enables or disables router advertisement emission in RA-driven mode.
-    ///
-    /// In the current implementation, this controls structured RA events and
-    /// default-route behavior, not raw ICMPv6 packet emission.
-    pub fn ra_enabled(mut self, enabled: bool) -> Self {
-        if self.result.is_ok() {
-            self.ra_enabled = enabled;
-        }
-        self
-    }
-
-    /// Sets the RA interval in seconds, clamped to at least 1 second.
-    ///
-    /// This interval drives patchbay's RA event cadence in RA-driven mode.
-    pub fn ra_interval_secs(mut self, secs: u64) -> Self {
-        if self.result.is_ok() {
-            self.ra_interval_secs = secs.max(1);
-        }
-        self
-    }
-
-    /// Sets Router Advertisement lifetime in seconds.
-    ///
-    /// A value of `0` advertises default-router withdrawal semantics in
-    /// patchbay's RA-driven route model.
-    pub fn ra_lifetime_secs(mut self, secs: u64) -> Self {
-        if self.result.is_ok() {
-            self.ra_lifetime_secs = secs;
-        }
-        self
-    }
-
-    /// Overrides the downstream subnet instead of auto-allocating from the pool.
-    ///
-    /// The gateway address is the `.1` host of the given CIDR. Device addresses
-    /// are allocated sequentially starting at `.2`.
-    pub fn downstream_cidr(mut self, cidr: Ipv4Net) -> Self {
-        if self.result.is_ok() {
-            self.downstream_cidr = Some(cidr);
-        }
-        self
-    }
-
-    /// Finalizes the router, creates its namespace and links, and returns a [`Router`] handle.
-    pub async fn build(self) -> Result<Router> {
-        self.result?;
-
-        // Phase 1: Lock → register topology + extract snapshot → unlock.
-        let (id, setup_data) = {
-            let mut inner = self.inner.core.lock().unwrap();
-            let nat = self.nat;
-            let downstream_pool = self.downstream_pool.unwrap_or(if nat == Nat::None {
-                DownstreamPool::Public
-            } else {
-                DownstreamPool::Private
-            });
-            let id = inner.add_router(
-                &self.name,
-                nat,
-                downstream_pool,
-                self.region,
-                self.ip_support,
-                self.nat_v6,
-            );
-            // Apply builder-level config to the registered RouterData.
-            if let Some(r) = inner.router_mut(id) {
-                r.cfg.mtu = self.mtu;
-                r.cfg.block_icmp_frag_needed = self.block_icmp_frag_needed;
-                r.cfg.firewall = self.firewall.clone();
-                r.cfg.ra_enabled = self.ra_enabled;
-                r.cfg.ra_interval_secs = self.ra_interval_secs.max(1);
-                r.cfg.ra_lifetime_secs = self.ra_lifetime_secs;
-                r.ra_runtime.set_enabled(self.ra_enabled);
-                r.ra_runtime.set_interval_secs(self.ra_interval_secs);
-                r.ra_runtime.set_lifetime_secs(self.ra_lifetime_secs);
-            }
-            let has_v4 = self.ip_support.has_v4();
-            let has_v6 = self.ip_support.has_v6();
-            // NAT64 needs v4 on the uplink even when IpSupport::V6Only,
-            // but downstream devices stay v6-only (no v4 CIDR for them).
-            let uplink_needs_v4 = has_v4 || self.nat_v6 == NatV6Mode::Nat64;
-            let sub_switch =
-                inner.add_switch(&format!("{}-sub", self.name), None, None, None, None);
-            // For Nat::None sub-routers in a region, allocate downstream /24
-            // from the region's pool instead of the global pool.
-            let downstream_cidr = if self.downstream_cidr.is_some() {
-                self.downstream_cidr
-            } else if downstream_pool == DownstreamPool::Public {
-                if let Some(region_name) = inner.router(id).and_then(|r| r.region.clone()) {
-                    if inner.regions.contains_key(&region_name) {
-                        Some(inner.alloc_region_public_cidr(&region_name)?)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            inner.connect_router_downlink(id, sub_switch, downstream_cidr)?;
-            match self.upstream {
-                None => {
-                    let ix_ip = if uplink_needs_v4 {
-                        Some(inner.alloc_ix_ip_low()?)
-                    } else {
-                        None
-                    };
-                    let ix_ip_v6 = if has_v6 {
-                        Some(inner.alloc_ix_ip_v6_low()?)
-                    } else {
-                        None
-                    };
-                    let ix_sw = inner.ix_sw();
-                    inner.connect_router_uplink(id, ix_sw, ix_ip, ix_ip_v6)?;
-                }
-                Some(parent_id) => {
-                    let parent_downlink = inner
-                        .router(parent_id)
-                        .and_then(|r| r.downlink)
-                        .ok_or_else(|| anyhow!("parent router missing downlink switch"))?;
-                    let uplink_ip_v4 = if uplink_needs_v4 {
-                        Some(inner.alloc_from_switch(parent_downlink)?)
-                    } else {
-                        None
-                    };
-                    let uplink_ip_v6 = if has_v6 {
-                        Some(inner.alloc_from_switch_v6(parent_downlink)?)
-                    } else {
-                        None
-                    };
-                    inner.connect_router_uplink(id, parent_downlink, uplink_ip_v4, uplink_ip_v6)?;
-                }
-            }
-
-            // Extract snapshot for async setup.
-            let router = inner.router(id).unwrap().clone();
-            let cfg = &inner.cfg;
-            let ix_sw = inner.ix_sw();
-
-            // Upstream info for sub-routers.
-            let (
-                upstream_owner_ns,
-                upstream_bridge,
-                upstream_gw,
-                upstream_cidr_prefix,
-                upstream_gw_v6,
-                upstream_cidr_prefix_v6,
-            ) = if let Some(uplink) = router.uplink {
-                if uplink != ix_sw {
-                    let sw = inner.switch(uplink).unwrap();
-                    let owner = sw.owner_router.unwrap();
-                    let owner_ns = inner.router(owner).unwrap().ns.clone();
-                    let bridge = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
-                    let gw = sw.gw;
-                    let prefix = sw.cidr.map(|c| c.prefix_len());
-                    let gw_v6 = sw.gw_v6;
-                    let prefix_v6 = sw.cidr_v6.map(|c| c.prefix_len());
-                    (Some(owner_ns), Some(bridge), gw, prefix, gw_v6, prefix_v6)
-                } else {
-                    (None, None, None, None, None, None)
-                }
-            } else {
-                (None, None, None, None, None, None)
-            };
-
-            // Downlink bridge info.
-            let downlink_bridge = router.downlink.and_then(|sw_id| {
-                let sw = inner.switch(sw_id)?;
-                let br = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
-                let v4 = sw.gw.and_then(|gw| Some((gw, sw.cidr?.prefix_len())));
-                Some((br, v4))
-            });
-            let downlink_bridge_v6 = router.downlink.and_then(|sw_id| {
-                let sw = inner.switch(sw_id)?;
-                Some((sw.gw_v6?, sw.cidr_v6?.prefix_len()))
-            });
-
-            // Return route for public downstreams.
-            let return_route = if router.uplink == Some(ix_sw)
-                && router.cfg.downstream_pool == DownstreamPool::Public
-            {
-                if let (Some(cidr), Some(via)) = (router.downstream_cidr, router.upstream_ip) {
-                    Some((cidr.addr(), cidr.prefix_len(), via))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let mut return_route_v6 = if router.uplink == Some(ix_sw) {
-                // IX-level router: return route via this router's IX IP.
-                if let (Some(cidr6), Some(via6)) =
-                    (router.downstream_cidr_v6, router.upstream_ip_v6)
-                {
-                    Some((cidr6.addr(), cidr6.prefix_len(), via6))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            // For sub-routers with NatV6Mode::None: add routes so that return
-            // traffic for the sub-router's ULA subnet can reach it.
-            let parent_route_v6 = if let Some(uplink_sw) = router
-                .uplink
-                .filter(|&u| u != ix_sw && router.cfg.nat_v6 == NatV6Mode::None)
-            {
-                let parent_id = inner.switch(uplink_sw).and_then(|sw| sw.owner_router);
-                // Route in the parent router's ns: sub-router's LAN via sub-router's WAN IP.
-                let parent_rt = if let (Some(cidr6), Some(via6), Some(ref owner_ns)) = (
-                    router.downstream_cidr_v6,
-                    router.upstream_ip_v6,
-                    &upstream_owner_ns,
-                ) {
-                    Some((owner_ns.clone(), cidr6.addr(), cidr6.prefix_len(), via6))
-                } else {
-                    None
-                };
-                // Also need a root-ns route via the IX-level ancestor's IX IP.
-                if parent_rt.is_some() {
-                    if let Some(pid) = parent_id {
-                        if let Some(parent_router) = inner.router(pid) {
-                            if parent_router.uplink == Some(ix_sw) {
-                                // Parent is IX-level; use its IX IP as the root-ns next-hop.
-                                if let Some(parent_ix_v6) = parent_router.upstream_ip_v6 {
-                                    if let Some(cidr6) = router.downstream_cidr_v6 {
-                                        // Overwrite return_route_v6 for root ns
-                                        return_route_v6 =
-                                            Some((cidr6.addr(), cidr6.prefix_len(), parent_ix_v6));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                parent_rt
-            } else {
-                None
-            };
-
-            // For sub-routers with public downstream: add return route in
-            // parent router's NS (e.g. region router) so return traffic can
-            // reach this sub-router's downstream /24.
-            let parent_route_v4 = if router.uplink.is_some()
-                && router.uplink != Some(ix_sw)
-                && router.cfg.downstream_pool == DownstreamPool::Public
-            {
-                if let (Some(cidr), Some(via), Some(ref owner_ns)) = (
-                    router.downstream_cidr,
-                    router.upstream_ip,
-                    &upstream_owner_ns,
-                ) {
-                    Some((owner_ns.clone(), cidr.addr(), cidr.prefix_len(), via))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let has_v6 = router.cfg.ip_support.has_v6();
-            let ra_enabled = router.cfg.ra_enabled;
-            let setup_data = RouterSetupData {
-                router,
-                root_ns: cfg.root_ns.clone(),
-                prefix: cfg.prefix.clone(),
-                ix_sw,
-                ix_br: cfg.ix_br.clone(),
-                ix_gw: cfg.ix_gw,
-                ix_cidr_prefix: cfg.ix_cidr.prefix_len(),
-                upstream_owner_ns,
-                upstream_bridge,
-                upstream_gw,
-                upstream_cidr_prefix,
-                return_route,
-                downlink_bridge,
-                ix_gw_v6: if has_v6 { Some(cfg.ix_gw_v6) } else { None },
-                ix_cidr_v6_prefix: if has_v6 {
-                    Some(cfg.ix_cidr_v6.prefix_len())
-                } else {
-                    None
-                },
-                upstream_gw_v6,
-                upstream_cidr_prefix_v6,
-                return_route_v6,
-                downlink_bridge_v6,
-                parent_route_v6,
-                parent_route_v4,
-                cancel: self.inner.cancel.clone(),
-                dad_mode: self.inner.ipv6_dad_mode,
-                provisioning_mode: self.inner.ipv6_provisioning_mode,
-                ra_enabled,
-            };
-
-            (id, setup_data)
-        }; // lock released
-
-        // Phase 2: Async network setup (no lock held).
-        let netns = &self.inner.netns;
-        async { setup_router_async(netns, &setup_data).await }
-            .instrument(self.lab_span.clone())
-            .await?;
-
-        let router = {
-            let inner = self.inner.core.lock().unwrap();
-            let r = inner.router(id).unwrap();
-            let ix_sw = inner.ix_sw();
-
-            // Resolve upstream router name.
-            let upstream_name = r.uplink.and_then(|sw_id| {
-                if sw_id == ix_sw {
-                    return None;
-                }
-                let sw = inner.switch(sw_id)?;
-                let owner = sw.owner_router?;
-                Some(inner.router(owner)?.name.to_string())
-            });
-
-            // Resolve downstream bridge name.
-            let ds_bridge = r
-                .downlink
-                .and_then(|sw_id| inner.switch(sw_id)?.bridge.as_ref().map(|b| b.to_string()))
-                .unwrap_or_default();
-
-            // Emit RouterAdded event.
-            let router_state = RouterState::from_router_data(r, upstream_name, ds_bridge);
-            self.inner.emit(LabEventKind::RouterAdded {
-                name: r.name.to_string(),
-                state: Box::new(router_state),
-            });
-
-            // Register ns → name mapping.
-            self.inner
-                .ns_to_name
-                .lock()
-                .unwrap()
-                .insert(r.ns.to_string(), r.name.to_string());
-
-            Router::new(id, r.name.clone(), r.ns.clone(), Arc::clone(&self.inner))
-        };
-        if let Some(cond) = self.downlink_condition {
-            router.set_downlink_condition(Some(cond)).await?;
-        }
-        Ok(router)
+    /// See [`Device::spawn_reflector`] for details.
+    pub async fn spawn_reflector(&self, bind: SocketAddr) -> Result<core::ReflectorGuard> {
+        let ns = self.lab.core.lock().unwrap().root_ns().to_string();
+        self.lab.spawn_reflector_in(&ns, bind).await
     }
 }
 
 // ─────────────────────────────────────────────
-// DeviceBuilder
+// Helpers
 // ─────────────────────────────────────────────
 
-/// Builder for a device node; returned by [`Lab::add_device`].
-pub struct DeviceBuilder {
-    inner: Arc<LabInner>,
-    lab_span: tracing::Span,
-    id: NodeId,
-    mtu: Option<u32>,
-    provisioning_mode: Option<Ipv6ProvisioningMode>,
-    result: Result<()>,
+/// Normalizes a device/interface name for use in an environment variable name.
+pub(crate) fn normalize_env_name(s: &str) -> String {
+    s.to_uppercase().replace('-', "_")
 }
 
-impl DeviceBuilder {
-    /// Sets the MTU on all interfaces of this device.
-    pub fn mtu(mut self, mtu: u32) -> Self {
-        if self.result.is_ok() {
-            self.mtu = Some(mtu);
-        }
-        self
-    }
-
-    /// Overrides IPv6 provisioning mode for this device only.
-    pub fn ipv6_provisioning_mode(mut self, mode: Ipv6ProvisioningMode) -> Self {
-        if self.result.is_ok() {
-            self.provisioning_mode = Some(mode);
-        }
-        self
-    }
-
-    /// Attach `ifname` inside the device namespace to `router`'s downstream switch.
-    pub fn iface(mut self, ifname: &str, router: NodeId) -> Self {
-        if self.result.is_ok() {
-            self.result = self
-                .inner
-                .core
-                .lock()
-                .unwrap()
-                .add_device_iface(self.id, ifname, router, None)
-                .map(|_| ());
-        }
-        self
-    }
-
-    /// Attach `ifname` to `router`'s downstream switch with an initial link condition.
-    ///
-    /// This is used internally by the config/TOML loading path which needs to
-    /// set impairment at build time. Public callers should prefer [`iface`] and
-    /// then [`DeviceHandle::set_link_condition`] after build.
-    pub(crate) fn iface_impaired(
-        mut self,
-        ifname: &str,
-        router: NodeId,
-        impair: Option<LinkCondition>,
-    ) -> Self {
-        if self.result.is_ok() {
-            self.result = self
-                .inner
-                .core
-                .lock()
-                .unwrap()
-                .add_device_iface(self.id, ifname, router, impair)
-                .map(|_| ());
-        }
-        self
-    }
-
-    /// Attach to `router`'s downstream switch with auto-named interfaces (eth0, eth1, ...).
-    pub fn uplink(mut self, router: NodeId) -> Self {
-        if self.result.is_ok() {
-            let idx = {
-                let inner = self.inner.core.lock().unwrap();
-                inner
-                    .device(self.id)
-                    .map(|d| d.interfaces.len())
-                    .unwrap_or(0)
-            };
-            let ifname = format!("eth{}", idx);
-            self.result = self
-                .inner
-                .core
-                .lock()
-                .unwrap()
-                .add_device_iface(self.id, &ifname, router, None)
-                .map(|_| ());
-        }
-        self
-    }
-
-    /// Overrides which interface carries the default route.
-    pub fn default_via(mut self, ifname: &str) -> Self {
-        if self.result.is_ok() {
-            self.result = self
-                .inner
-                .core
-                .lock()
-                .unwrap()
-                .set_device_default_via(self.id, ifname);
-        }
-        self
-    }
-
-    /// Finalizes the device, creates its namespace and links, and returns a [`Device`] handle.
-    pub async fn build(self) -> Result<Device> {
-        self.result?;
-
-        // Phase 1: Lock → extract snapshot + DNS overlay → unlock.
-        let (dev, ifaces, prefix, root_ns, dns_overlay, provisioning_mode) = {
-            let mut inner = self.inner.core.lock().unwrap();
-            // Apply builder-level config before snapshot.
-            if let Some(d) = inner.device_mut(self.id) {
-                d.mtu = self.mtu;
-                d.provisioning_mode = self.provisioning_mode;
-            }
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("unknown device id"))?
-                .clone();
-            let provisioning_mode = dev
-                .provisioning_mode
-                .unwrap_or(self.inner.ipv6_provisioning_mode);
-
-            let mut iface_data = Vec::new();
-            for iface in &dev.interfaces {
-                let sw = inner.switch(iface.uplink).ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' iface '{}' switch missing",
-                        dev.name,
-                        iface.ifname
-                    )
-                })?;
-                let gw_router = sw.owner_router.ok_or_else(|| {
-                    anyhow!(
-                        "device '{}' iface '{}' switch missing owner",
-                        dev.name,
-                        iface.ifname
-                    )
-                })?;
-                let gw_br = sw.bridge.clone().unwrap_or_else(|| "br-lan".into());
-                let gw_ns = inner.router(gw_router).unwrap().ns.clone();
-                let gw_ip_v6 = if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
-                    None
-                } else {
-                    sw.gw_v6
-                };
-                let gw_ll_v6 = inner.router(gw_router).and_then(|r| {
-                    if provisioning_mode == Ipv6ProvisioningMode::RaDriven {
-                        r.active_downstream_ll_v6()
-                    } else {
-                        r.downstream_ll_v6
-                    }
-                });
-                iface_data.push(IfaceBuild {
-                    dev_ns: dev.ns.clone(),
-                    gw_ns,
-                    gw_ip: sw.gw,
-                    gw_br,
-                    dev_ip: iface.ip,
-                    prefix_len: sw.cidr.map(|c| c.prefix_len()).unwrap_or(24),
-                    gw_ip_v6,
-                    dev_ip_v6: iface.ip_v6,
-                    gw_ll_v6,
-                    dev_ll_v6: iface.ll_v6,
-                    prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
-                    impair: iface.impair,
-                    impair_direction: iface.impair_direction,
-                    ifname: iface.ifname.clone(),
-                    is_default: iface.ifname == dev.default_via,
-                    idx: iface.idx,
-                });
-            }
-
-            // Prepare DNS overlay: ensure the hosts file exists and build paths.
-            inner.dns.ensure_hosts_file(self.id)?;
-            let overlay = crate::netns::DnsOverlay {
-                hosts_path: inner.dns.hosts_path_for(self.id),
-                resolv_path: inner.dns.resolv_path(),
-            };
-
-            let prefix = inner.cfg.prefix.clone();
-            let root_ns = inner.cfg.root_ns.clone();
-            (dev, iface_data, prefix, root_ns, overlay, provisioning_mode)
-        }; // lock released
-
-        // Phase 2: Async network setup (no lock held).
-        // The DNS overlay is passed to create_named_netns so worker threads
-        // get /etc/hosts and /etc/resolv.conf bind-mounted at startup.
-        let netns = &self.inner.netns;
-        async {
-            setup_device_async(
-                netns,
-                DeviceSetupData {
-                    prefix,
-                    root_ns,
-                    dev: dev.clone(),
-                    ifaces,
-                    dns_overlay: Some(dns_overlay),
-                    dad_mode: self.inner.ipv6_dad_mode,
-                    provisioning_mode,
-                },
-            )
-            .await
-        }
-        .instrument(self.lab_span.clone())
-        .await?;
-
-        // Emit DeviceAdded event.
-        {
-            let inner = self.inner.core.lock().unwrap();
-            let d = inner.device(self.id).unwrap();
-            let device_state = DeviceState::from_device_data(d, &inner);
-
-            self.inner.emit(LabEventKind::DeviceAdded {
-                name: d.name.to_string(),
-                state: device_state,
-            });
-
-            // Register ns → name mapping.
-            self.inner
-                .ns_to_name
-                .lock()
-                .unwrap()
-                .insert(d.ns.to_string(), d.name.to_string());
-        }
-
-        Ok(Device::new(
-            self.id,
-            dev.name.clone(),
-            dev.ns.clone(),
-            Arc::clone(&self.inner),
-        ))
-    }
-}
+// Everything below (RouterPreset, RouterBuilder, DeviceBuilder) has moved to
+// router.rs and device.rs.  The rest of this file is TestGuard.
 
 /// RAII guard that records test pass/fail into the lab's state.json.
 ///

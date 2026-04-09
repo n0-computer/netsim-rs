@@ -199,6 +199,8 @@ pub mod config;
 /// Shared filename constants for the run output directory.
 pub mod consts;
 pub(crate) mod core;
+/// Device handle and builder.
+pub(crate) mod device;
 /// Minimal in-process DNS server for the lab IX bridge.
 pub mod dns_server;
 /// Lab event system: typed events, state reducer, file writer.
@@ -206,8 +208,9 @@ pub mod event;
 pub(crate) mod firewall;
 /// nftables rule generation, NAT application, and tc impairment.
 pub(crate) mod nft;
-pub(crate) mod handles;
 mod lab;
+/// Router handle, builder, and presets.
+pub(crate) mod router;
 mod metrics;
 pub(crate) mod nat;
 pub(crate) mod nat64;
@@ -229,13 +232,14 @@ pub(crate) mod writer;
 
 pub use firewall::PortPolicy;
 pub use ipnet::Ipv4Net;
+pub use device::{Device, DeviceBuilder, DeviceIface};
 pub use lab::{
-    ConntrackTimeouts, DefaultRegions, Device, DeviceBuilder, DeviceIface, Firewall,
-    FirewallConfig, FirewallConfigBuilder, IpSupport, Ipv6DadMode, Ipv6Profile,
-    Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition, LinkDirection, LinkLimits, Nat,
-    NatConfig, NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir, Region, RegionLink,
-    Router, RouterBuilder, RouterIface, RouterPreset, TestGuard,
+    ConntrackTimeouts, DefaultRegions, Firewall, FirewallConfig, FirewallConfigBuilder, IpSupport,
+    Ipv6DadMode, Ipv6Profile, Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition,
+    LinkDirection, LinkLimits, Nat, NatConfig, NatConfigBuilder, NatFiltering, NatMapping,
+    NatV6Mode, OutDir, Region, RegionLink, TestGuard,
 };
+pub use router::{Router, RouterBuilder, RouterIface, RouterPreset};
 pub use metrics::MetricsBuilder;
 
 pub use crate::{
