@@ -101,19 +101,16 @@ impl<'a> Qdisc<'a> {
     }
 
     async fn add_netem_root(&self, limits: LinkLimits) -> Result<()> {
-        let mut args: Vec<String> = vec![
-            "qdisc",
-            "add",
-            "dev",
-            self.ifname,
-            "root",
-            "handle",
-            "1:",
-            "netem",
-        ]
-        .into_iter()
-        .map(String::from)
-        .collect();
+        let mut args = vec![
+            "qdisc".to_string(),
+            "add".into(),
+            "dev".into(),
+            self.ifname.to_string(),
+            "root".into(),
+            "handle".into(),
+            "1:".into(),
+            "netem".into(),
+        ];
 
         if limits.latency_ms > 0 || limits.jitter_ms > 0 {
             args.push("delay".into());
@@ -140,8 +137,7 @@ impl<'a> Qdisc<'a> {
         }
 
         let mut cmd = Command::new("tc");
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        cmd.args(&arg_refs);
+        cmd.args(&args);
         ensure_success(cmd, "tc qdisc netem add").await?;
         Ok(())
     }

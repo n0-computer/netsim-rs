@@ -60,7 +60,8 @@ pub(crate) struct CoreConfig {
 /// Obtained from [`Device::id`](crate::Device::id), [`Router::id`](crate::Router::id),
 /// or builder methods.
 /// Cheaply copyable and usable as a hash-map key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display)]
+#[display("{_0}")]
 pub struct NodeId(pub u64);
 
 /// Selects the address pool used for router downstream links.
