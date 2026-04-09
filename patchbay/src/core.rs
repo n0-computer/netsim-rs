@@ -14,8 +14,8 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use crate::{
     nft::nptv6_wan_prefix,
     wiring::{add_host, link_local_from_seed, seed2, seed3},
-    Firewall, IpSupport, Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat,
-    NatConfig, NatV6Mode,
+    Firewall, IpSupport, Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat, NatConfig,
+    NatV6Mode,
 };
 
 pub(crate) const RA_DEFAULT_ENABLED: bool = true;

@@ -3,13 +3,12 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{anyhow, Context, Result};
-use ipnet::{Ipv6Net};
+use ipnet::Ipv6Net;
 use tracing::debug;
 
 use crate::{
-    netns, qdisc, ConntrackTimeouts, LinkCondition, NatConfig, NatFiltering, NatMapping, NatV6Mode,
-    core::RouterConfig,
-    wiring::set_sysctl_root,
+    core::RouterConfig, netns, qdisc, wiring::set_sysctl_root, ConntrackTimeouts, LinkCondition,
+    NatConfig, NatFiltering, NatMapping, NatV6Mode,
 };
 
 /// Applies nftables rules (assumes caller is already in the target namespace).

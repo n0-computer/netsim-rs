@@ -206,19 +206,19 @@ pub mod dns_server;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
 pub(crate) mod firewall;
-/// nftables rule generation, NAT application, and tc impairment.
-pub(crate) mod nft;
 mod lab;
-/// Router handle, builder, and presets.
-pub(crate) mod router;
 mod metrics;
 pub(crate) mod nat;
 pub(crate) mod nat64;
 mod netlink;
 mod netns;
+/// nftables rule generation, NAT application, and tc impairment.
+pub(crate) mod nft;
 #[path = "tracing.rs"]
 mod ns_tracing;
 mod qdisc;
+/// Router handle, builder, and presets.
+pub(crate) mod router;
 #[allow(dead_code)]
 pub(crate) mod test_utils;
 #[cfg(test)]
@@ -230,17 +230,17 @@ pub mod util;
 pub(crate) mod wiring;
 pub(crate) mod writer;
 
+pub use device::{Device, DeviceBuilder, DeviceIface};
 pub use firewall::PortPolicy;
 pub use ipnet::Ipv4Net;
-pub use device::{Device, DeviceBuilder, DeviceIface};
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Firewall, FirewallConfig, FirewallConfigBuilder, IpSupport,
-    Ipv6DadMode, Ipv6Profile, Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition,
-    LinkDirection, LinkLimits, Nat, NatConfig, NatConfigBuilder, NatFiltering, NatMapping,
-    NatV6Mode, OutDir, Region, RegionLink, TestGuard,
+    Ipv6DadMode, Ipv6Profile, Ipv6ProvisioningMode, Ix, Lab, LabOpts, LinkCondition, LinkDirection,
+    LinkLimits, Nat, NatConfig, NatConfigBuilder, NatFiltering, NatMapping, NatV6Mode, OutDir,
+    Region, RegionLink, TestGuard,
 };
-pub use router::{Router, RouterBuilder, RouterIface, RouterPreset};
 pub use metrics::MetricsBuilder;
+pub use router::{Router, RouterBuilder, RouterIface, RouterPreset};
 
 pub use crate::{
     core::{NodeId, ReflectorGuard},

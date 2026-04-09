@@ -15,8 +15,8 @@ use crate::{
     netlink::Netlink,
     netns,
     nft::{
-        apply_firewall, apply_icmp_frag_block, apply_impair_in, apply_nat_for_router,
-        apply_nat_v6, nptv6_wan_prefix, run_nft_in,
+        apply_firewall, apply_icmp_frag_block, apply_impair_in, apply_nat_for_router, apply_nat_v6,
+        nptv6_wan_prefix, run_nft_in,
     },
     Ipv6DadMode, Ipv6ProvisioningMode, LinkDirection, NatV6Mode,
 };

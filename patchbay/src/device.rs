@@ -18,7 +18,7 @@ use crate::{
     lab::{Ipv6ProvisioningMode, Lab, LabInner, LinkCondition, LinkDirection},
     netlink::Netlink,
     nft::apply_or_remove_impair,
-    wiring::{self, DeviceSetupData, setup_device_async},
+    wiring::{self, setup_device_async, DeviceSetupData},
 };
 
 /// Record a metric via the given tracing dispatch.

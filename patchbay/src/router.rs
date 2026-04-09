@@ -13,7 +13,10 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use tracing::{debug, Instrument as _};
 
 use crate::{
-    core::{self, DownstreamPool, NodeId},
+    core::{
+        self, DownstreamPool, NodeId, RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS,
+        RA_DEFAULT_LIFETIME_SECS,
+    },
     device::record_metric,
     event::{LabEventKind, RouterState},
     firewall::{Firewall, FirewallConfigBuilder},
@@ -21,13 +24,11 @@ use crate::{
     nat::{IpSupport, Nat, NatV6Mode},
     netlink::Netlink,
     nft::{
-        apply_firewall, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, remove_firewall,
-        run_nft_in,
+        apply_firewall, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair,
+        remove_firewall, run_nft_in,
     },
-    wiring::{self, RouterSetupData, setup_router_async},
+    wiring::{self, setup_router_async, RouterSetupData},
 };
-
-use crate::core::{RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS, RA_DEFAULT_LIFETIME_SECS};
 
 async fn reconcile_radriven_default_v6_routes(
     lab: &Arc<LabInner>,
