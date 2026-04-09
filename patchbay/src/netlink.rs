@@ -218,6 +218,24 @@ impl Netlink {
         Ok(())
     }
 
+    /// Replaces (or creates) a route for an IPv4 prefix via a gateway.
+    ///
+    /// Equivalent to `ip route replace <dst>/<prefix> via <via>`.
+    pub(crate) async fn replace_route_v4(
+        &self,
+        dst: Ipv4Addr,
+        prefix: u8,
+        via: Ipv4Addr,
+    ) -> Result<()> {
+        trace!(dst = %dst, prefix, via = %via, "replace route v4");
+        let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(dst, prefix)
+            .gateway(via)
+            .build();
+        self.handle.route().add(msg).replace().execute().await?;
+        Ok(())
+    }
+
     /// Adds a route for an IPv4 prefix via a specific output device (no gateway).
     pub(crate) async fn add_route_v4_dev(
         &self,

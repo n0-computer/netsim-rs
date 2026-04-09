@@ -87,7 +87,7 @@ async fn break_restore_link() -> Result<()> {
         "expected direct eu↔asia RTT >= 220ms, got {rtt_direct:?}"
     );
 
-    lab.break_region_link(&regions.eu, &regions.asia)?;
+    lab.break_region_link(&regions.eu, &regions.asia).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let rtt_broken = dc_eu.run_sync(move || test_utils::udp_rtt_sync(r_asia))?;
@@ -96,7 +96,7 @@ async fn break_restore_link() -> Result<()> {
         "expected broken eu↔asia RTT >= 240ms (via us), got {rtt_broken:?}"
     );
 
-    lab.restore_region_link(&regions.eu, &regions.asia)?;
+    lab.restore_region_link(&regions.eu, &regions.asia).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let rtt_restored = dc_eu.run_sync(move || test_utils::udp_rtt_sync(r_asia))?;

@@ -1254,7 +1254,7 @@ impl Lab {
     /// Finds a third region `m` that has non-broken links to both `a` and `b`,
     /// and replaces the direct routes with routes through `m`. Traffic will
     /// traverse two inter-region hops instead of one.
-    pub fn break_region_link(&self, a: &Region, b: &Region) -> Result<()> {
+    pub async fn break_region_link(&self, a: &Region, b: &Region) -> Result<()> {
         let s = self
             .inner
             .core
@@ -1267,42 +1267,18 @@ impl Lab {
         // On region_a: replace route to b's /20 via m (on a↔m veth)
         let b_net = region_base(b.idx);
         let a_via = s.m_ip_on_ma;
-        netns.run_closure_in(&s.a_ns, move || {
-            let status = Command::new("ip")
-                .args([
-                    "route",
-                    "replace",
-                    &format!("{b_net}/20"),
-                    "via",
-                    &a_via.to_string(),
-                ])
-                .status()
-                .context("ip route replace")?;
-            if !status.success() {
-                bail!("ip route replace failed");
-            }
-            Ok(())
-        })?;
+        wiring::nl_run(netns, &s.a_ns, move |nl| async move {
+            nl.replace_route_v4(b_net, 20, a_via).await
+        })
+        .await?;
 
         // On region_b: replace route to a's /20 via m (on b↔m veth)
         let a_net = region_base(a.idx);
         let b_via = s.m_ip_on_mb;
-        netns.run_closure_in(&s.b_ns, move || {
-            let status = Command::new("ip")
-                .args([
-                    "route",
-                    "replace",
-                    &format!("{a_net}/20"),
-                    "via",
-                    &b_via.to_string(),
-                ])
-                .status()
-                .context("ip route replace")?;
-            if !status.success() {
-                bail!("ip route replace failed");
-            }
-            Ok(())
-        })?;
+        wiring::nl_run(netns, &s.b_ns, move |nl| async move {
+            nl.replace_route_v4(a_net, 20, b_via).await
+        })
+        .await?;
 
         // Mark link as broken.
         self.inner
@@ -1343,7 +1319,7 @@ impl Lab {
     ///
     /// Returns an error if the link is not currently broken or if the regions
     /// are not connected.
-    pub fn restore_region_link(&self, a: &Region, b: &Region) -> Result<()> {
+    pub async fn restore_region_link(&self, a: &Region, b: &Region) -> Result<()> {
         let s = self
             .inner
             .core
@@ -1356,42 +1332,18 @@ impl Lab {
         // Direct route on a: b's /20 via b's IP on the a↔b veth.
         let b_net = region_base(b.idx);
         let b_direct_ip = s.b_direct_ip;
-        netns.run_closure_in(&s.a_ns, move || {
-            let status = Command::new("ip")
-                .args([
-                    "route",
-                    "replace",
-                    &format!("{b_net}/20"),
-                    "via",
-                    &b_direct_ip.to_string(),
-                ])
-                .status()
-                .context("ip route replace")?;
-            if !status.success() {
-                bail!("ip route replace failed");
-            }
-            Ok(())
-        })?;
+        wiring::nl_run(netns, &s.a_ns, move |nl| async move {
+            nl.replace_route_v4(b_net, 20, b_direct_ip).await
+        })
+        .await?;
 
         // Direct route on b: a's /20 via a's IP on the a↔b veth.
         let a_net = region_base(a.idx);
         let a_direct_ip = s.a_direct_ip;
-        netns.run_closure_in(&s.b_ns, move || {
-            let status = Command::new("ip")
-                .args([
-                    "route",
-                    "replace",
-                    &format!("{a_net}/20"),
-                    "via",
-                    &a_direct_ip.to_string(),
-                ])
-                .status()
-                .context("ip route replace")?;
-            if !status.success() {
-                bail!("ip route replace failed");
-            }
-            Ok(())
-        })?;
+        wiring::nl_run(netns, &s.b_ns, move |nl| async move {
+            nl.replace_route_v4(a_net, 20, a_direct_ip).await
+        })
+        .await?;
 
         // Mark link as restored.
         self.inner
