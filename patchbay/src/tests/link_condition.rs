@@ -1251,7 +1251,7 @@ async fn lab_bidirectional_via_two_calls() -> Result<()> {
     // Impair sender's link only. Netem applies to egress, so the outgoing
     // packet from sender is delayed 500ms, but the reply arrives unimpaired.
     // RTT ~ 500ms.
-    lab.set_link_condition(sender.id(), dc.id(), Some(condition.clone()))
+    lab.set_link_condition(sender.id(), dc.id(), Some(condition))
         .await?;
     let one_side = sender
         .run_sync(move || test_utils::udp_rtt_sync(reflector_addr))?
