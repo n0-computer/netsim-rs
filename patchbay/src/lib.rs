@@ -206,6 +206,8 @@ pub mod dns_server;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
 pub(crate) mod firewall;
+/// Unified interface configuration and runtime handle.
+pub(crate) mod iface;
 mod lab;
 mod metrics;
 pub(crate) mod nat;
@@ -232,6 +234,7 @@ pub(crate) mod writer;
 
 pub use device::{Device, DeviceBuilder, DeviceIface};
 pub use firewall::PortPolicy;
+pub use iface::IfaceConfig;
 pub use ipnet::Ipv4Net;
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Firewall, FirewallConfig, FirewallConfigBuilder, IpSupport,
