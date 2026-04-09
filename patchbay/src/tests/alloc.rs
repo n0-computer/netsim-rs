@@ -48,3 +48,44 @@ async fn ix_ip_v6_unique() -> Result<()> {
     assert_eq!(count, 65519, "expected 65519 unique v6 IPs");
     Ok(())
 }
+
+/// A /24 switch pool allows exactly 253 host allocations (hosts .2 through .254).
+///
+/// Host .1 is the gateway, .0 is network, .255 is broadcast. The allocator
+/// starts at host index 2, so allocating 253 hosts should succeed, and the
+/// 254th should fail.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn switch_pool_exhaustion() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+
+    // Find the downlink switch for this router so we can allocate directly.
+    let sw_id = {
+        let inner = lab.inner.core.lock().unwrap();
+        inner
+            .router(dc.id())
+            .expect("router should exist")
+            .downlink
+            .expect("router should have a downlink switch")
+    };
+
+    // Allocate 253 addresses (hosts .2 through .254).
+    let mut ips = std::collections::HashSet::new();
+    {
+        let mut inner = lab.inner.core.lock().unwrap();
+        for i in 0..253 {
+            let ip = inner
+                .alloc_from_switch(sw_id)
+                .with_context(|| format!("allocation {i} should succeed"))?;
+            assert!(ips.insert(ip), "duplicate IP {ip} at iteration {i}");
+        }
+
+        // The 254th allocation should fail — pool exhausted.
+        let err = inner.alloc_from_switch(sw_id);
+        assert!(err.is_err(), "254th allocation should fail");
+    }
+
+    assert_eq!(ips.len(), 253, "should have allocated exactly 253 unique IPs");
+    Ok(())
+}
