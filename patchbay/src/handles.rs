@@ -28,6 +28,7 @@ use tracing::debug;
 
 use crate::{
     core::{self, LabInner, NodeId},
+    wiring,
     nft::{
         apply_firewall, apply_nat_for_router, apply_nat_v6, apply_or_remove_impair, remove_firewall,
         run_nft_in,
@@ -65,7 +66,7 @@ async fn reconcile_radriven_default_v6_routes(
     };
     for t in targets {
         let ifname = t.ifname.to_string();
-        core::nl_run(&lab.netns, &t.ns, move |nl: Netlink| async move {
+        wiring::nl_run(&lab.netns, &t.ns, move |nl: Netlink| async move {
             nl.set_default_route_v6(&ifname, install_ll).await
         })
         .await?;
@@ -384,7 +385,7 @@ impl Device {
     pub async fn link_down(&self, ifname: &str) -> Result<()> {
         let ns = self.ns.to_string();
         let ifname_owned = ifname.to_string();
-        core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
+        wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.set_link_down(&ifname_owned).await
         })
         .await?;
@@ -416,7 +417,7 @@ impl Device {
             (dev.ns.clone(), iface.uplink, &*dev.default_via == ifname)
         };
         let ifname_owned = ifname.to_string();
-        core::nl_run(&self.lab.netns, &ns, {
+        wiring::nl_run(&self.lab.netns, &ns, {
             let ifname_owned = ifname_owned.clone();
             move |nl: Netlink| async move { nl.set_link_up(&ifname_owned).await }
         })
@@ -437,14 +438,14 @@ impl Device {
             };
             let primary_v6 =
                 select_default_v6_gateway(provisioning, ra_default_enabled, gw_v6, gw_ll_v6);
-            core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
+            wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
                 nl.replace_default_route_v4(&ifname_owned, gw_ip).await?;
                 nl.set_default_route_v6(&ifname_owned, primary_v6).await
             })
             .await?;
             if provisioning == Ipv6ProvisioningMode::RaDriven {
                 let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
-                core::emit_router_solicitation(
+                wiring::emit_router_solicitation(
                     &self.lab.netns,
                     ns.to_string(),
                     self.name.to_string(),
@@ -500,14 +501,14 @@ impl Device {
         let to_owned = to.to_string();
         let primary_v6 =
             select_default_v6_gateway(provisioning, ra_default_enabled, gw_v6, gw_ll_v6);
-        core::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
+        wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.replace_default_route_v4(&to_owned, gw_ip).await?;
             nl.set_default_route_v6(&to_owned, primary_v6).await
         })
         .await?;
         if provisioning == Ipv6ProvisioningMode::RaDriven {
             let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
-            core::emit_router_solicitation(
+            wiring::emit_router_solicitation(
                 &self.lab.netns,
                 ns.to_string(),
                 self.name.to_string(),
@@ -741,7 +742,7 @@ impl Device {
     /// the router has no downstream switch, or the name collides with an
     /// existing interface.
     pub async fn add_iface(&self, ifname: &str, router: NodeId) -> Result<()> {
-        use crate::core;
+        use crate::wiring;
 
         let op = self
             .lab
@@ -762,13 +763,13 @@ impl Device {
 
         // Phase 2: Wire the interface (veth pair, IPs, bridge attachment).
         let netns = &self.lab.netns;
-        core::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
+        wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
 
         // Phase 3: Apply MTU if the device has one configured.
         if let Some(mtu) = setup.mtu {
             let dev_ns = self.ns.to_string();
             let ifname_owned = ifname.to_string();
-            core::nl_run(netns, &dev_ns, move |h: Netlink| async move {
+            wiring::nl_run(netns, &dev_ns, move |h: Netlink| async move {
                 h.set_mtu(&ifname_owned, mtu).await?;
                 Ok(())
             })
@@ -813,7 +814,7 @@ impl Device {
     /// Returns an error if the device has been removed, `ifname` does not exist,
     /// or it is the only interface on the device.
     pub async fn remove_iface(&self, ifname: &str) -> Result<()> {
-        use crate::core;
+        use crate::wiring;
 
         let op = self
             .lab
@@ -830,7 +831,7 @@ impl Device {
 
         // Phase 2: Delete the veth pair (peer side auto-removed by kernel).
         let ifname_owned = ifname.to_string();
-        core::nl_run(&self.lab.netns, &dev_ns, move |h: Netlink| async move {
+        wiring::nl_run(&self.lab.netns, &dev_ns, move |h: Netlink| async move {
             h.ensure_link_deleted(&ifname_owned).await.ok();
             Ok(())
         })
@@ -856,7 +857,7 @@ impl Device {
     /// on this device, `to_router` is unknown, or the target router has no
     /// downstream switch.
     pub async fn replug_iface(&self, ifname: &str, to_router: NodeId) -> Result<()> {
-        use crate::core;
+        use crate::wiring;
 
         // Phase 1: Lock → extract data + allocate from new router's pool → unlock
         let mut setup = self
@@ -873,7 +874,7 @@ impl Device {
         let dev_ns = setup.iface_build.dev_ns.clone();
         let ifname_owned = ifname.to_string();
         let netns = &self.lab.netns;
-        core::nl_run(netns, &dev_ns, move |h: Netlink| async move {
+        wiring::nl_run(netns, &dev_ns, move |h: Netlink| async move {
             h.ensure_link_deleted(&ifname_owned).await.ok();
             Ok(())
         })
@@ -882,7 +883,7 @@ impl Device {
         // Phase 3: Wire new interface (reuses existing wiring logic)
         let new_ip = setup.iface_build.dev_ip;
         let new_ip_v6 = setup.iface_build.dev_ip_v6;
-        core::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
+        wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
 
         // Phase 4: Lock → update internal records → unlock
         let from_router_name = {
@@ -938,7 +939,7 @@ impl Device {
     /// Returns an error if the device has been removed, the interface has no
     /// IPv4 address, or the router's address pool is exhausted.
     pub async fn renew_ip(&self, ifname: &str) -> Result<Ipv4Addr> {
-        use crate::core;
+        use crate::wiring;
 
         let (ns, old_ip, new_ip, prefix_len) = self
             .lab
@@ -950,7 +951,7 @@ impl Device {
         // Phase 2: Async netlink — remove old addr, add new addr.
         let ifname_str = ifname.to_string();
         let ifname_owned = ifname_str.clone();
-        core::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
+        wiring::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
             h.del_addr4(&ifname_owned, old_ip, prefix_len).await?;
             h.add_addr4(&ifname_owned, new_ip, prefix_len).await?;
             Ok(())
@@ -977,7 +978,7 @@ impl Device {
     /// Returns an error if the device has been removed or the interface does
     /// not exist.
     pub async fn add_ip(&self, ifname: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<()> {
-        use crate::core;
+        use crate::wiring;
 
         let ns = {
             let inner = self.lab.core.lock().unwrap();
@@ -991,7 +992,7 @@ impl Device {
         };
 
         let ifname = ifname.to_string();
-        core::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
+        wiring::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
             h.add_addr4(&ifname, ip, prefix_len).await?;
             Ok(())
         })

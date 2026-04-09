@@ -19,13 +19,16 @@ use tracing::{debug, debug_span, Instrument as _};
 pub use crate::qdisc::LinkLimits;
 use crate::{
     core::{
-        self, setup_device_async, setup_root_ns_async, setup_router_async, CoreConfig,
-        DeviceSetupData, DownstreamPool, IfaceBuild, LabInner, NetworkCore, NodeId,
-        RouterSetupData, RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS, RA_DEFAULT_LIFETIME_SECS,
+        self, CoreConfig, DownstreamPool, IfaceBuild, LabInner, NetworkCore, NodeId,
+        RA_DEFAULT_ENABLED, RA_DEFAULT_INTERVAL_SECS, RA_DEFAULT_LIFETIME_SECS,
     },
     event::{DeviceState, LabEvent, LabEventKind, RouterState},
     netlink::Netlink,
     nft::apply_or_remove_impair,
+    wiring::{
+        self, setup_device_async, setup_root_ns_async, setup_router_async, DeviceSetupData,
+        RouterSetupData,
+    },
 };
 
 pub(crate) static LAB_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1007,7 +1010,7 @@ impl Lab {
         let via_v6 = setup_data.router.upstream_ip_v6;
         let downstream_cidr_v6 = setup_data.router.downstream_cidr_v6;
         let root_ns = setup_data.root_ns.clone();
-        core::nl_run(netns, &root_ns, move |h: Netlink| async move {
+        wiring::nl_run(netns, &root_ns, move |h: Netlink| async move {
             h.add_route_v4(region_net, 20, via).await.ok();
             if let (Some(via6), Some(cidr6)) = (via_v6, downstream_cidr_v6) {
                 h.add_route_v6(cidr6.addr(), cidr6.prefix_len(), via6)
@@ -1052,7 +1055,7 @@ impl Lab {
         let veth_b2 = veth_b.clone();
         let a_ns_fd = netns.ns_fd(&s.a.ns)?;
         let b_ns_fd = netns.ns_fd(&s.b.ns)?;
-        core::nl_run(netns, &s.root_ns, move |h: Netlink| async move {
+        wiring::nl_run(netns, &s.root_ns, move |h: Netlink| async move {
             h.ensure_link_deleted(&veth_a2).await.ok();
             h.add_veth(&veth_a2, &veth_b2).await?;
             h.move_link_to_netns(&veth_a2, &a_ns_fd).await?;
@@ -1069,7 +1072,7 @@ impl Lab {
         let veth_a3 = veth_a.clone();
         let b_region_net = region_base(s.b.idx);
         let b_sub_v6 = s.b.sub_v6;
-        core::nl_run(netns, &s.a.ns, move |h: Netlink| async move {
+        wiring::nl_run(netns, &s.a.ns, move |h: Netlink| async move {
             h.add_addr4(&veth_a3, a_ip, 30).await?;
             h.add_addr6(&veth_a3, a_ip6, 126).await?;
             h.set_link_up(&veth_a3).await?;
@@ -1085,7 +1088,7 @@ impl Lab {
         let veth_b3 = veth_b.clone();
         let a_region_net = region_base(s.a.idx);
         let a_sub_v6 = s.a.sub_v6;
-        core::nl_run(netns, &s.b.ns, move |h: Netlink| async move {
+        wiring::nl_run(netns, &s.b.ns, move |h: Netlink| async move {
             h.add_addr4(&veth_b3, b_ip, 30).await?;
             h.add_addr6(&veth_b3, b_ip6, 126).await?;
             h.set_link_up(&veth_b3).await?;

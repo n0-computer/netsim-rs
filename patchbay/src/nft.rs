@@ -8,7 +8,8 @@ use tracing::debug;
 
 use crate::{
     netns, qdisc, ConntrackTimeouts, LinkCondition, NatConfig, NatFiltering, NatMapping, NatV6Mode,
-    core::{RouterConfig, set_sysctl_root},
+    core::RouterConfig,
+    wiring::set_sysctl_root,
 };
 
 /// Applies nftables rules (assumes caller is already in the target namespace).

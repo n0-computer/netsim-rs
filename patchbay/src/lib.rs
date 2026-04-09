@@ -223,6 +223,8 @@ mod tests;
 mod userns;
 /// String sanitizers for filenames and environment variable names.
 pub mod util;
+/// Async namespace setup: router, device, and root-ns wiring.
+pub(crate) mod wiring;
 pub(crate) mod writer;
 
 pub use firewall::PortPolicy;
