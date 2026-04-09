@@ -155,8 +155,8 @@
 //! // Traffic between dc-eu and dc-us now carries ~80 ms of added latency.
 //!
 //! // Fault injection: break and restore the link at runtime.
-//! lab.break_region_link(&eu, &us)?;
-//! lab.restore_region_link(&eu, &us)?;
+//! lab.break_region_link(&eu, &us).await?;
+//! lab.restore_region_link(&eu, &us).await?;
 //! # Ok(())
 //! # }
 //! ```
