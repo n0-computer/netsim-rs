@@ -122,6 +122,182 @@ async fn add_secondary_ip() -> Result<()> {
     Ok(())
 }
 
+/// Build-time isolated interface has the configured address and no gateway.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn isolated_build_time() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let addr: ipnet::Ipv4Net = "172.17.0.2/16".parse()?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("docker0", IfaceConfig::isolated().addr(addr))
+        .build()
+        .await?;
+
+    let docker0 = dev.iface("docker0").expect("docker0 should exist");
+    assert!(docker0.is_isolated());
+    assert!(!docker0.is_routed());
+    assert_eq!(docker0.ip(), Some(addr.addr()));
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert!(eth0.is_routed());
+    assert!(!eth0.is_isolated());
+
+    Ok(())
+}
+
+/// Runtime isolated interface with explicit address.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn isolated_runtime() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    let addr: ipnet::Ipv4Net = "10.8.0.1/24".parse()?;
+    let tun = dev
+        .add_iface("tun0", IfaceConfig::isolated().addr(addr))
+        .await?;
+
+    assert!(tun.is_isolated());
+    assert_eq!(tun.ip(), Some(addr.addr()));
+    assert_eq!(dev.interfaces().len(), 2);
+
+    Ok(())
+}
+
+/// Bare isolated interface (no address) can be created.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn isolated_bare() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("bare0", IfaceConfig::isolated())
+        .build()
+        .await?;
+
+    let bare = dev.iface("bare0").expect("bare0 should exist");
+    assert!(bare.is_isolated());
+    assert!(bare.ip().is_none());
+
+    Ok(())
+}
+
+/// Build-time conditions are applied correctly.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn build_time_conditions() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface(
+            "eth0",
+            IfaceConfig::routed(dc.id()).condition(LinkCondition::Mobile4G, LinkDirection::Egress),
+        )
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert_eq!(eth0.egress(), Some(LinkCondition::Mobile4G));
+    assert!(eth0.ingress().is_none());
+
+    Ok(())
+}
+
+/// Asymmetric conditions: different egress and ingress.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn asymmetric_conditions() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface(
+            "eth0",
+            IfaceConfig::routed(dc.id())
+                .condition(LinkCondition::Mobile4G, LinkDirection::Egress)
+                .condition(LinkCondition::Mobile3G, LinkDirection::Ingress),
+        )
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert_eq!(eth0.egress(), Some(LinkCondition::Mobile4G));
+    assert_eq!(eth0.ingress(), Some(LinkCondition::Mobile3G));
+
+    Ok(())
+}
+
+/// Replug and renew_ip return errors on isolated interfaces.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn isolated_guards() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("tun0", IfaceConfig::isolated().addr("10.8.0.1/24".parse()?))
+        .build()
+        .await?;
+
+    let tun = dev.iface("tun0").unwrap();
+
+    // Cannot replug isolated interface.
+    let err = tun.replug(dc.id()).await;
+    assert!(err.is_err(), "replug on isolated should fail");
+
+    // Cannot renew IP on isolated interface.
+    let err = tun.renew_ip().await;
+    assert!(err.is_err(), "renew_ip on isolated should fail");
+
+    // Cannot set ingress condition on isolated interface.
+    let err = tun
+        .set_condition(LinkCondition::Mobile4G, LinkDirection::Ingress)
+        .await;
+    assert!(
+        err.is_err(),
+        "set_condition ingress on isolated should fail"
+    );
+
+    // Egress condition works on isolated interface.
+    tun.set_condition(LinkCondition::Mobile4G, LinkDirection::Egress)
+        .await?;
+    assert_eq!(tun.egress(), Some(LinkCondition::Mobile4G));
+
+    Ok(())
+}
+
+/// Iface handle returns errors after the interface is removed.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn iface_handle_after_removal() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("eth1", dc.id())
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").unwrap();
+    eth0.remove().await?;
+
+    // The handle is now stale.
+    assert!(eth0.ip().is_none());
+    let err = eth0.link_down().await;
+    assert!(err.is_err(), "link_down on removed iface should fail");
+
+    Ok(())
+}
+
 /// Replugging an interface to a different router assigns a new IP from
 /// the new router's subnet and establishes connectivity through it.
 #[tokio::test(flavor = "current_thread")]
