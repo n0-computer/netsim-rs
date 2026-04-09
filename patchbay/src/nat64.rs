@@ -461,12 +461,8 @@ pub(crate) async fn run_nat64_loop(
                                         };
 
                                         let dst4_addr = Ipv4Addr::from(dst4);
-                                        let mut map = translations.lock().unwrap();
-                                        // Cap the map to prevent unbounded growth.
-                                        if map.len() >= 8192 {
-                                            map.clear();
-                                        }
-                                        map.insert((dst4_addr, src_port), v6_src_addr);
+                                        translations.lock().unwrap()
+                                            .insert((dst4_addr, src_port), v6_src_addr);
                                     }
 
                                     // Write translated packet back to TUN.
