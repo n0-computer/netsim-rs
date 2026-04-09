@@ -14,7 +14,7 @@
 
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    os::fd::{AsRawFd, OwnedFd},
 };
 
 use anyhow::{Context, Result};
@@ -78,12 +78,7 @@ pub(crate) fn create_tun(name: &str) -> Result<OwnedFd> {
         return Err(std::io::Error::last_os_error()).context("fcntl F_SETFL O_NONBLOCK");
     }
 
-    // Consume the File, take ownership of the raw fd.
-    let owned = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-    // Prevent the File from closing the fd.
-    std::mem::forget(fd);
-
-    Ok(owned)
+    Ok(OwnedFd::from(fd))
 }
 
 // ── SIIT header translation ─────────────────────────────────────────────
