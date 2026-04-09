@@ -54,52 +54,6 @@ pub(crate) fn select_default_v6_gateway(
 }
 
 // ─────────────────────────────────────────────
-// DeviceIface
-// ─────────────────────────────────────────────
-
-/// Owned snapshot of a single device network interface.
-///
-/// Returned by [`Device::iface`], [`Device::default_iface`], and
-/// [`Device::interfaces`]. This is a lightweight value type — no `Arc`.
-#[derive(Clone, Debug)]
-pub struct DeviceIface {
-    ifname: String,
-    ip: Option<Ipv4Addr>,
-    ip_v6: Option<Ipv6Addr>,
-    ll_v6: Option<Ipv6Addr>,
-    impair: Option<LinkCondition>,
-}
-
-impl DeviceIface {
-    /// Returns the interface name (e.g. `"eth0"`).
-    pub fn name(&self) -> &str {
-        &self.ifname
-    }
-
-    /// Returns the assigned IPv4 address, if any.
-    pub fn ip(&self) -> Option<Ipv4Addr> {
-        self.ip
-    }
-
-    /// Returns the assigned IPv6 address, if any.
-    pub fn ip6(&self) -> Option<Ipv6Addr> {
-        self.ip_v6
-    }
-
-    /// Returns the assigned IPv6 link-local address, if any.
-    pub fn ll6(&self) -> Option<Ipv6Addr> {
-        self.ll_v6
-    }
-
-    /// Returns the egress impairment profile, if any.
-    ///
-    /// For backward compatibility, returns the egress condition.
-    pub fn impair(&self) -> Option<LinkCondition> {
-        self.impair
-    }
-}
-
-// ─────────────────────────────────────────────
 // Device handle
 // ─────────────────────────────────────────────
 
@@ -248,42 +202,38 @@ impl Device {
         self.lab.with_device(self.id, |d| d.mtu).flatten()
     }
 
-    /// Returns a snapshot of the named interface, if it exists.
+    /// Returns a handle to the named interface, if it exists.
     ///
     /// Returns `None` if the device has been removed or the interface does
     /// not exist.
-    pub fn iface(&self, name: &str) -> Option<DeviceIface> {
+    pub fn iface(&self, name: &str) -> Option<crate::Iface> {
         let inner = self.lab.core.lock().expect("poisoned");
         let dev = inner.device(self.id)?;
-        let iface = dev.iface(name)?;
-        Some(DeviceIface {
-            ifname: iface.ifname.to_string(),
-            ip: iface.ip,
-            ip_v6: iface.ip_v6,
-            ll_v6: iface.ll_v6,
-            impair: iface.egress,
-        })
+        let _ = dev.iface(name)?;
+        Some(crate::Iface::new(
+            self.id,
+            name.into(),
+            Arc::clone(&self.lab),
+        ))
     }
 
-    /// Returns a snapshot of the default interface, or `None` if the device
+    /// Returns a handle to the default interface, or `None` if the device
     /// has been removed.
-    pub fn default_iface(&self) -> Option<DeviceIface> {
-        self.lab.with_device(self.id, |dev| {
-            let iface = dev.default_iface();
-            DeviceIface {
-                ifname: iface.ifname.to_string(),
-                ip: iface.ip,
-                ip_v6: iface.ip_v6,
-                ll_v6: iface.ll_v6,
-                impair: iface.egress,
-            }
-        })
+    pub fn default_iface(&self) -> Option<crate::Iface> {
+        let inner = self.lab.core.lock().expect("poisoned");
+        let dev = inner.device(self.id)?;
+        let iface = dev.default_iface();
+        Some(crate::Iface::new(
+            self.id,
+            iface.ifname.clone(),
+            Arc::clone(&self.lab),
+        ))
     }
 
-    /// Returns snapshots of all interfaces.
+    /// Returns handles to all interfaces.
     ///
     /// Returns an empty `Vec` if the device has been removed.
-    pub fn interfaces(&self) -> Vec<DeviceIface> {
+    pub fn interfaces(&self) -> Vec<crate::Iface> {
         let inner = self.lab.core.lock().expect("poisoned");
         let dev = match inner.device(self.id) {
             Some(d) => d,
@@ -291,13 +241,7 @@ impl Device {
         };
         dev.interfaces
             .iter()
-            .map(|iface| DeviceIface {
-                ifname: iface.ifname.to_string(),
-                ip: iface.ip,
-                ip_v6: iface.ip_v6,
-                ll_v6: iface.ll_v6,
-                impair: iface.egress,
-            })
+            .map(|iface| crate::Iface::new(self.id, iface.ifname.clone(), Arc::clone(&self.lab)))
             .collect()
     }
 
@@ -691,11 +635,13 @@ impl Device {
         .flatten()
     }
 
-    /// Adds a new interface to this device at runtime, connected to the given
-    /// router's downstream network.
+    /// Adds a new interface to this device at runtime.
     ///
-    /// The new interface gets an IP allocated from the router's pool.  It does
-    /// **not** become the default route unless you call
+    /// Accepts anything that converts to [`IfaceConfig`](crate::IfaceConfig),
+    /// including a bare [`NodeId`] for simple routed interfaces. Returns an
+    /// [`Iface`](crate::Iface) handle to the new interface.
+    ///
+    /// The new interface does **not** become the default route unless you call
     /// [`set_default_route`](Self::set_default_route) afterwards.
     ///
     /// # Errors
@@ -703,8 +649,14 @@ impl Device {
     /// Returns an error if the device has been removed, the router is unknown,
     /// the router has no downstream switch, or the name collides with an
     /// existing interface.
-    pub async fn add_iface(&self, ifname: &str, router: NodeId) -> Result<()> {
+    pub async fn add_iface(
+        &self,
+        ifname: &str,
+        config: impl Into<crate::IfaceConfig>,
+    ) -> Result<crate::Iface> {
         use crate::wiring;
+
+        let config = config.into();
 
         let op = self
             .lab
@@ -712,43 +664,101 @@ impl Device {
             .ok_or_else(|| anyhow!("device removed"))?;
         let _guard = op.lock().await;
 
-        // Phase 1: Lock → register iface + allocate IP → unlock
-        let mut setup = self
-            .lab
-            .core
-            .lock()
-            .unwrap()
-            .prepare_add_iface(self.id, ifname, router, None)?;
-        if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
-            setup.iface_build.gw_ip_v6 = None;
-        }
+        if let Some(router) = config.gateway {
+            // Routed interface path.
+            let mut setup = self.lab.core.lock().expect("poisoned").prepare_add_iface(
+                self.id,
+                ifname,
+                router,
+                config.egress,
+            )?;
+            if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
+                setup.iface_build.gw_ip_v6 = None;
+            }
+            setup.iface_build.ingress = config.ingress;
+            setup.iface_build.start_down = config.start_down;
 
-        // Phase 2: Wire the interface (veth pair, IPs, bridge attachment).
-        let netns = &self.lab.netns;
-        wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
+            let netns = &self.lab.netns;
+            wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build)
+                .await?;
 
-        // Phase 3: Apply MTU if the device has one configured.
-        if let Some(mtu) = setup.mtu {
-            let dev_ns = self.ns.to_string();
-            let ifname_owned = ifname.to_string();
-            wiring::nl_run(netns, &dev_ns, move |h: Netlink| async move {
-                h.set_mtu(&ifname_owned, mtu).await?;
-                Ok(())
-            })
-            .await?;
+            if let Some(mtu) = setup.mtu {
+                let dev_ns = self.ns.to_string();
+                let ifname_owned = ifname.to_string();
+                wiring::nl_run(netns, &dev_ns, move |h: Netlink| async move {
+                    h.set_mtu(&ifname_owned, mtu).await?;
+                    Ok(())
+                })
+                .await?;
+            }
+
+            // Update ingress in stored state if set.
+            if config.ingress.is_some() {
+                let mut inner = self.lab.core.lock().expect("poisoned");
+                if let Some(dev) = inner.device_mut(self.id) {
+                    if let Some(iface) = dev.iface_mut(ifname) {
+                        iface.ingress = config.ingress;
+                    }
+                }
+            }
+        } else {
+            // Isolated interface path.
+            self.lab
+                .core
+                .lock()
+                .expect("poisoned")
+                .add_device_iface_from_config(self.id, ifname, config)?;
+
+            let (dev_ns, prefix, root_ns) = {
+                let inner = self.lab.core.lock().expect("poisoned");
+                let dev = inner
+                    .device(self.id)
+                    .ok_or_else(|| anyhow!("device removed"))?;
+                let iface = dev.iface(ifname).expect("just inserted");
+                let prefix_len = iface.prefix_len.unwrap_or(24);
+                let prefix_len_v6 = iface.prefix_len_v6.unwrap_or(64);
+                let build = IfaceBuild {
+                    dev_ns: dev.ns.clone(),
+                    gw_ns: "".into(),
+                    gw_ip: None,
+                    gw_br: "".into(),
+                    dev_ip: iface.ip,
+                    prefix_len,
+                    gw_ip_v6: None,
+                    dev_ip_v6: iface.ip_v6,
+                    gw_ll_v6: None,
+                    dev_ll_v6: None,
+                    prefix_len_v6,
+                    egress: iface.egress,
+                    ingress: None,
+                    isolated: true,
+                    start_down: config.start_down,
+                    ifname: iface.ifname.clone(),
+                    is_default: false,
+                    idx: iface.idx,
+                };
+                let cfg_prefix = inner.cfg.prefix.clone();
+                let cfg_root = inner.cfg.root_ns.clone();
+                (build, cfg_prefix, cfg_root)
+            };
+            wiring::wire_iface_async(&self.lab.netns, &prefix, &root_ns, dev_ns).await?;
         }
 
         // Emit event.
         {
-            let inner = self.lab.core.lock().unwrap();
-            let router_name = inner
-                .router(router)
+            let inner = self.lab.core.lock().expect("poisoned");
+            let dev = inner.device(self.id);
+            let iface_data = dev.and_then(|d| d.iface(ifname));
+            let router_name = iface_data
+                .and_then(|i| i.uplink)
+                .and_then(|sw| inner.switch(sw))
+                .and_then(|sw| sw.owner_router)
+                .and_then(|rid| inner.router(rid))
                 .map(|r| r.name.to_string())
                 .unwrap_or_default();
-            let dev = inner.device(self.id);
-            let iface_ip = dev.and_then(|d| d.iface(ifname)).and_then(|i| i.ip);
-            let iface_ip_v6 = dev.and_then(|d| d.iface(ifname)).and_then(|i| i.ip_v6);
-            let iface_ll_v6 = dev.and_then(|d| d.iface(ifname)).and_then(|i| i.ll_v6);
+            let iface_ip = iface_data.and_then(|i| i.ip);
+            let iface_ip_v6 = iface_data.and_then(|i| i.ip_v6);
+            let iface_ll_v6 = iface_data.and_then(|i| i.ll_v6);
             drop(inner);
             self.lab.emit(LabEventKind::InterfaceAdded {
                 device: self.name.to_string(),
@@ -758,12 +768,16 @@ impl Device {
                     ip: iface_ip,
                     ip_v6: iface_ip_v6,
                     ll_v6: iface_ll_v6,
-                    link_condition: None,
+                    link_condition: config.egress,
                 },
             });
         }
 
-        Ok(())
+        Ok(crate::Iface::new(
+            self.id,
+            ifname.into(),
+            Arc::clone(&self.lab),
+        ))
     }
 
     /// Removes an interface from this device, tearing down its veth pair.

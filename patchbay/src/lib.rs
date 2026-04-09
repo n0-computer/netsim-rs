@@ -232,7 +232,7 @@ pub mod util;
 pub(crate) mod wiring;
 pub(crate) mod writer;
 
-pub use device::{Device, DeviceBuilder, DeviceIface};
+pub use device::{Device, DeviceBuilder};
 pub use firewall::PortPolicy;
 pub use iface::{Iface, IfaceConfig};
 pub use ipnet::Ipv4Net;
