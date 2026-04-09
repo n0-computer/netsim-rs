@@ -703,6 +703,39 @@ pub(crate) async fn setup_device_async(
     Ok(())
 }
 
+/// Wire an isolated (dummy) interface inside a device namespace.
+#[instrument(name = "iface_isolated", skip_all, fields(iface = %build.ifname))]
+async fn wire_isolated_async(netns: &Arc<netns::NetnsManager>, build: &IfaceBuild) -> Result<()> {
+    debug!(ip = ?build.dev_ip, ip6 = ?build.dev_ip_v6, "iface_isolated: setup");
+    nl_run(netns, &build.dev_ns, {
+        let ifname = build.ifname.clone();
+        let dev_ip = build.dev_ip;
+        let prefix_len = build.prefix_len;
+        let dev_ip_v6 = build.dev_ip_v6;
+        let prefix_len_v6 = build.prefix_len_v6;
+        let start_down = build.start_down;
+        move |h: Netlink| async move {
+            h.set_link_up("lo").await?;
+            h.add_dummy(&ifname).await?;
+            if let Some(ip4) = dev_ip {
+                h.add_addr4(&ifname, ip4, prefix_len).await?;
+            }
+            if let Some(ip6) = dev_ip_v6 {
+                h.add_addr6(&ifname, ip6, prefix_len_v6).await?;
+            }
+            if !start_down {
+                h.set_link_up(&ifname).await?;
+            }
+            Ok(())
+        }
+    })
+    .await?;
+    if let Some(cond) = build.egress {
+        apply_impair_in(netns, &build.dev_ns, &build.ifname, cond).await;
+    }
+    Ok(())
+}
+
 /// Wire one device interface: veth pair, move, IP, route, impairment.
 #[instrument(name = "iface", skip_all, fields(iface = %dev.ifname))]
 pub(crate) async fn wire_iface_async(
@@ -711,6 +744,9 @@ pub(crate) async fn wire_iface_async(
     root_ns: &str,
     dev: IfaceBuild,
 ) -> Result<()> {
+    if dev.isolated {
+        return wire_isolated_async(netns, &dev).await;
+    }
     debug!(ip = ?dev.dev_ip, ip6 = ?dev.dev_ip_v6, gw = ?dev.gw_ip, gw6 = ?dev.gw_ip_v6, "iface: assigned addresses");
     let root_gw = format!("{}g{}", prefix, dev.idx);
     let root_dev = format!("{}e{}", prefix, dev.idx);
