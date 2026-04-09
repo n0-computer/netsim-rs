@@ -199,6 +199,8 @@ pub mod config;
 /// Shared filename constants for the run output directory.
 pub mod consts;
 pub(crate) mod core;
+/// Minimal in-process DNS server for the lab IX bridge.
+pub mod dns_server;
 /// Lab event system: typed events, state reducer, file writer.
 pub mod event;
 pub(crate) mod firewall;
@@ -234,6 +236,7 @@ pub use metrics::MetricsBuilder;
 
 pub use crate::{
     core::{NodeId, ReflectorGuard},
+    dns_server::DnsServer,
     event::{IfaceCounters, IfaceSnapshot, LabEvent, LabEventKind, LabState},
     userns::{init_userns, init_userns_for_ctor},
 };

@@ -701,28 +701,30 @@ impl Device {
         self.lab.spawn_reflector_in(&self.ns, bind).await
     }
 
-    /// Adds a hosts entry visible only to this device.
+    /// Adds a hosts entry visible only to this device (via `/etc/hosts` overlay).
     ///
-    /// Written to this device's hosts file overlay. glibc picks up changes
-    /// on the next `getaddrinfo()` via mtime check.
-    pub fn dns_entry(&self, name: &str, ip: IpAddr) -> Result<()> {
-        let mut inner = self.lab.core.lock().unwrap();
-        inner
-            .dns
-            .per_device
-            .entry(self.id)
-            .or_default()
-            .push((name.to_string(), ip));
-        inner.dns.write_hosts_file(self.id)
+    /// glibc picks up changes on the next `getaddrinfo()` via mtime check.
+    /// For lab-wide DNS records, use [`Lab::dns_server`] instead.
+    pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
+        let inner = self.lab.core.lock().unwrap();
+        inner.dns.append_host(self.id, name, ip)
     }
 
-    /// Resolves a name using this device's entries plus lab-wide entries.
-    ///
-    /// For in-process Rust code that cannot see the bind-mounted `/etc/hosts`.
-    /// Spawned child processes resolve names through glibc automatically.
-    pub fn resolve(&self, name: &str) -> Option<IpAddr> {
-        let inner = self.lab.core.lock().unwrap();
-        inner.dns.resolve(Some(self.id), name)
+    /// Resolves a name via this device's `/etc/hosts` + `resolv.conf` overlay,
+    /// using `tokio::net::lookup_host` on the device's async worker.
+    pub async fn resolve(&self, name: &str) -> Option<IpAddr> {
+        let name = format!("{name}:0");
+        self.spawn(move |_dev| async move {
+            tokio::net::lookup_host(&name)
+                .await
+                .ok()
+                .and_then(|mut addrs| addrs.next())
+                .map(|a| a.ip())
+        })
+        .ok()?
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Adds a new interface to this device at runtime, connected to the given

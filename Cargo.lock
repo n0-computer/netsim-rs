@@ -1942,6 +1942,7 @@ dependencies = [
  "derive_more",
  "futures",
  "futures-buffered",
+ "hickory-proto",
  "hickory-resolver",
  "ipnet",
  "iroh-metrics",
