@@ -91,7 +91,9 @@ impl DeviceIface {
         self.ll_v6
     }
 
-    /// Returns the impairment profile, if any.
+    /// Returns the egress impairment profile, if any.
+    ///
+    /// For backward compatibility, returns the egress condition.
     pub fn impair(&self) -> Option<LinkCondition> {
         self.impair
     }
@@ -251,7 +253,7 @@ impl Device {
     /// Returns `None` if the device has been removed or the interface does
     /// not exist.
     pub fn iface(&self, name: &str) -> Option<DeviceIface> {
-        let inner = self.lab.core.lock().unwrap();
+        let inner = self.lab.core.lock().expect("poisoned");
         let dev = inner.device(self.id)?;
         let iface = dev.iface(name)?;
         Some(DeviceIface {
@@ -259,7 +261,7 @@ impl Device {
             ip: iface.ip,
             ip_v6: iface.ip_v6,
             ll_v6: iface.ll_v6,
-            impair: iface.impair,
+            impair: iface.egress,
         })
     }
 
@@ -273,7 +275,7 @@ impl Device {
                 ip: iface.ip,
                 ip_v6: iface.ip_v6,
                 ll_v6: iface.ll_v6,
-                impair: iface.impair,
+                impair: iface.egress,
             }
         })
     }
@@ -282,7 +284,7 @@ impl Device {
     ///
     /// Returns an empty `Vec` if the device has been removed.
     pub fn interfaces(&self) -> Vec<DeviceIface> {
-        let inner = self.lab.core.lock().unwrap();
+        let inner = self.lab.core.lock().expect("poisoned");
         let dev = match inner.device(self.id) {
             Some(d) => d,
             None => return vec![],
@@ -294,7 +296,7 @@ impl Device {
                 ip: iface.ip,
                 ip_v6: iface.ip_v6,
                 ll_v6: iface.ll_v6,
-                impair: iface.impair,
+                impair: iface.egress,
             })
             .collect()
     }
@@ -349,7 +351,11 @@ impl Device {
             let iface = dev
                 .iface(ifname)
                 .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-            (dev.ns.clone(), iface.uplink, &*dev.default_via == ifname)
+            (
+                dev.ns.clone(),
+                iface.uplink.expect("routed interface has uplink"),
+                &*dev.default_via == ifname,
+            )
         };
         let ifname_owned = ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, {
@@ -413,20 +419,23 @@ impl Device {
             .ok_or_else(|| anyhow!("device removed"))?;
         let _guard = op.lock().await;
         let provisioning = self.provisioning_mode()?;
-        let (ns, impair, gw_ip, gw_v6, gw_ll_v6, ra_default_enabled) = {
-            let inner = self.lab.core.lock().unwrap();
+        let (ns, egress, gw_ip, gw_v6, gw_ll_v6, ra_default_enabled) = {
+            let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("device removed"))?;
             let iface = dev
                 .iface(to)
                 .ok_or_else(|| anyhow!("interface '{}' not found", to))?;
-            let gw_ip = inner.router_downlink_gw_for_switch(iface.uplink)?;
-            let gw_v6 = inner.router_downlink_gw6_for_switch(iface.uplink)?;
-            let ra_default_enabled = inner.ra_default_enabled_for_switch(iface.uplink)?;
+            let uplink = iface.uplink.ok_or_else(|| {
+                anyhow!("cannot set default route to isolated interface '{}'", to)
+            })?;
+            let gw_ip = inner.router_downlink_gw_for_switch(uplink)?;
+            let gw_v6 = inner.router_downlink_gw6_for_switch(uplink)?;
+            let ra_default_enabled = inner.ra_default_enabled_for_switch(uplink)?;
             (
                 dev.ns.clone(),
-                iface.impair,
+                iface.egress,
                 gw_ip,
                 gw_v6.global_v6,
                 gw_v6.link_local_v6,
@@ -452,7 +461,7 @@ impl Device {
             )
             .await?;
         }
-        apply_or_remove_impair(&self.lab.netns, &ns, to, impair).await;
+        apply_or_remove_impair(&self.lab.netns, &ns, to, egress).await;
         self.lab
             .core
             .lock()
@@ -482,7 +491,7 @@ impl Device {
             .ok_or_else(|| anyhow!("device removed"))?;
         let _guard = op.lock().await;
         let (dev_ns, resolved_ifname, gw_ns, gw_ifname) = {
-            let inner = self.lab.core.lock().unwrap();
+            let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.id)
                 .ok_or_else(|| anyhow!("device removed"))?;
@@ -490,8 +499,14 @@ impl Device {
             let iface = dev
                 .iface(&iname)
                 .ok_or_else(|| anyhow!("interface '{}' not found", iname))?;
+            let uplink = iface.uplink.ok_or_else(|| {
+                anyhow!(
+                    "cannot impair isolated interface '{}' via Device::set_link_condition",
+                    iname
+                )
+            })?;
             let gw_router = inner
-                .switch(iface.uplink)
+                .switch(uplink)
                 .and_then(|sw| sw.owner_router)
                 .and_then(|rid| inner.router(rid))
                 .ok_or_else(|| anyhow!("gateway router not found for interface '{}'", iname))?;
@@ -518,11 +533,23 @@ impl Device {
             }
         }
         {
-            let mut inner = self.lab.core.lock().unwrap();
+            let mut inner = self.lab.core.lock().expect("poisoned");
             if let Some(dev) = inner.device_mut(self.id) {
                 if let Some(iface) = dev.iface_mut(&resolved_ifname) {
-                    iface.impair = impair;
-                    iface.impair_direction = direction;
+                    match direction {
+                        LinkDirection::Egress => {
+                            iface.egress = impair;
+                            iface.ingress = None;
+                        }
+                        LinkDirection::Ingress => {
+                            iface.egress = None;
+                            iface.ingress = impair;
+                        }
+                        LinkDirection::Both => {
+                            iface.egress = impair;
+                            iface.ingress = impair;
+                        }
+                    }
                 }
             }
         }
@@ -828,10 +855,10 @@ impl Device {
 
         // Phase 4: Lock → update internal records → unlock
         let from_router_name = {
-            let inner = self.lab.core.lock().unwrap();
+            let inner = self.lab.core.lock().expect("poisoned");
             // Get old router name before finishing replug
             let dev = inner.device(self.id);
-            let old_uplink = dev.and_then(|d| d.iface(ifname)).map(|i| i.uplink);
+            let old_uplink = dev.and_then(|d| d.iface(ifname)).and_then(|i| i.uplink);
             let from_name = old_uplink
                 .and_then(|sw| inner.switch(sw))
                 .and_then(|sw| sw.owner_router)
@@ -1068,7 +1095,14 @@ impl DeviceBuilder {
 
             let mut iface_data = Vec::new();
             for iface in &dev.interfaces {
-                let sw = inner.switch(iface.uplink).ok_or_else(|| {
+                let uplink = iface.uplink.ok_or_else(|| {
+                    anyhow!(
+                        "device '{}' iface '{}' switch missing",
+                        dev.name,
+                        iface.ifname
+                    )
+                })?;
+                let sw = inner.switch(uplink).ok_or_else(|| {
                     anyhow!(
                         "device '{}' iface '{}' switch missing",
                         dev.name,
@@ -1108,8 +1142,10 @@ impl DeviceBuilder {
                     gw_ll_v6,
                     dev_ll_v6: iface.ll_v6,
                     prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
-                    impair: iface.impair,
-                    impair_direction: iface.impair_direction,
+                    egress: iface.egress,
+                    ingress: iface.ingress,
+                    isolated: iface.isolated,
+                    start_down: false,
                     ifname: iface.ifname.clone(),
                     is_default: iface.ifname == dev.default_via,
                     idx: iface.idx,

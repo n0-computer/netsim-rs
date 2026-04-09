@@ -18,7 +18,7 @@ use crate::{
         apply_firewall, apply_icmp_frag_block, apply_impair_in, apply_nat_for_router, apply_nat_v6,
         nptv6_wan_prefix, run_nft_in,
     },
-    Ipv6DadMode, Ipv6ProvisioningMode, LinkDirection, NatV6Mode,
+    Ipv6DadMode, Ipv6ProvisioningMode, NatV6Mode,
 };
 
 // ─────────────────────────────────────────────
@@ -778,20 +778,21 @@ pub(crate) async fn wire_iface_async(
     })
     .await?;
 
-    if let Some(imp) = dev.impair {
-        match dev.impair_direction {
-            LinkDirection::Egress | LinkDirection::Both => {
-                apply_impair_in(netns, &dev.dev_ns, &dev.ifname, imp).await;
-            }
-            LinkDirection::Ingress => {}
+    if let Some(cond) = dev.egress {
+        apply_impair_in(netns, &dev.dev_ns, &dev.ifname, cond).await;
+    }
+    if let Some(cond) = dev.ingress {
+        if !dev.isolated {
+            let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
+            apply_impair_in(netns, &dev.gw_ns, &gw_ifname, cond).await;
         }
-        match dev.impair_direction {
-            LinkDirection::Ingress | LinkDirection::Both => {
-                let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
-                apply_impair_in(netns, &dev.gw_ns, &gw_ifname, imp).await;
-            }
-            LinkDirection::Egress => {}
-        }
+    }
+    if dev.start_down {
+        nl_run(netns, &dev.dev_ns, {
+            let ifname = dev.ifname.clone();
+            move |h: Netlink| async move { h.set_link_down(&ifname).await }
+        })
+        .await?;
     }
     Ok(())
 }

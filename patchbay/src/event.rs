@@ -459,8 +459,9 @@ impl DeviceState {
             .interfaces
             .iter()
             .map(|iface| {
-                let router_name = core
-                    .switch(iface.uplink)
+                let router_name = iface
+                    .uplink
+                    .and_then(|sw| core.switch(sw))
                     .and_then(|sw| sw.owner_router)
                     .and_then(|rid| core.router(rid))
                     .map(|r| r.name.to_string())
@@ -471,7 +472,7 @@ impl DeviceState {
                     ip: iface.ip,
                     ip_v6: iface.ip_v6,
                     ll_v6: iface.ll_v6,
-                    link_condition: iface.impair,
+                    link_condition: iface.egress,
                 }
             })
             .collect();
