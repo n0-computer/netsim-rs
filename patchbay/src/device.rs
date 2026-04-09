@@ -258,93 +258,21 @@ impl Device {
     // ── Dynamic operations ──────────────────────────────────────────────
 
     /// Brings an interface administratively down.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed or the netlink
-    /// operation fails.
+    #[deprecated(note = "use dev.iface(name).unwrap().link_down().await")]
     pub async fn link_down(&self, ifname: &str) -> Result<()> {
-        let ns = self.ns.to_string();
-        let ifname_owned = ifname.to_string();
-        wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
-            nl.set_link_down(&ifname_owned).await
-        })
-        .await?;
-        self.lab.emit(LabEventKind::LinkDown {
-            device: self.name.to_string(),
-            iface: ifname.to_string(),
-        });
-        Ok(())
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.link_down().await
     }
 
     /// Brings an interface administratively up.
-    ///
-    /// Linux removes routes via an interface when it goes admin-down, so we
-    /// re-add the default route if `ifname` is the device's current `default_via`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed or the netlink
-    /// operation fails.
+    #[deprecated(note = "use dev.iface(name).unwrap().link_up().await")]
     pub async fn link_up(&self, ifname: &str) -> Result<()> {
-        let (ns, uplink, is_default_via) = {
-            let inner = self.lab.core.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let iface = dev
-                .iface(ifname)
-                .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-            (
-                dev.ns.clone(),
-                iface.uplink.expect("routed interface has uplink"),
-                &*dev.default_via == ifname,
-            )
-        };
-        let ifname_owned = ifname.to_string();
-        wiring::nl_run(&self.lab.netns, &ns, {
-            let ifname_owned = ifname_owned.clone();
-            move |nl: Netlink| async move { nl.set_link_up(&ifname_owned).await }
-        })
-        .await?;
-        if is_default_via {
-            let provisioning = self.provisioning_mode()?;
-            let (gw_ip, gw_v6, gw_ll_v6, ra_default_enabled) = {
-                let inner = self.lab.core.lock().unwrap();
-                let gw_ip = inner.router_downlink_gw_for_switch(uplink)?;
-                let gw_v6 = inner.router_downlink_gw6_for_switch(uplink)?;
-                let ra_default_enabled = inner.ra_default_enabled_for_switch(uplink)?;
-                (
-                    gw_ip,
-                    gw_v6.global_v6,
-                    gw_v6.link_local_v6,
-                    ra_default_enabled,
-                )
-            };
-            let primary_v6 =
-                select_default_v6_gateway(provisioning, ra_default_enabled, gw_v6, gw_ll_v6);
-            wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
-                nl.replace_default_route_v4(&ifname_owned, gw_ip).await?;
-                nl.set_default_route_v6(&ifname_owned, primary_v6).await
-            })
-            .await?;
-            if provisioning == Ipv6ProvisioningMode::RaDriven {
-                let rs_router_ll = if ra_default_enabled { gw_ll_v6 } else { None };
-                wiring::emit_router_solicitation(
-                    &self.lab.netns,
-                    ns.to_string(),
-                    self.name.to_string(),
-                    ifname.to_string(),
-                    rs_router_ll,
-                )
-                .await?;
-            }
-        }
-        self.lab.emit(LabEventKind::LinkUp {
-            device: self.name.to_string(),
-            iface: ifname.to_string(),
-        });
-        Ok(())
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.link_up().await
     }
 
     /// Sets the active default route to a different interface.
@@ -415,94 +343,21 @@ impl Device {
     }
 
     /// Applies or removes a link-layer impairment on the named interface.
-    ///
-    /// Pass `Some(condition)` to apply `tc netem` rules, or `None` to remove
-    /// any existing impairment and restore the default qdisc.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed or the interface does
-    /// not exist on this device.
+    #[deprecated(note = "use dev.iface(name).unwrap().set_condition() or .clear_condition()")]
     pub async fn set_link_condition(
         &self,
         ifname: &str,
         impair: Option<LinkCondition>,
         direction: LinkDirection,
     ) -> Result<()> {
-        let op = self
-            .lab
-            .with_device(self.id, |d| Arc::clone(&d.op))
-            .ok_or_else(|| anyhow!("device removed"))?;
-        let _guard = op.lock().await;
-        let (dev_ns, resolved_ifname, gw_ns, gw_ifname) = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let iname = ifname.to_string();
-            let iface = dev
-                .iface(&iname)
-                .ok_or_else(|| anyhow!("interface '{}' not found", iname))?;
-            let uplink = iface.uplink.ok_or_else(|| {
-                anyhow!(
-                    "cannot impair isolated interface '{}' via Device::set_link_condition",
-                    iname
-                )
-            })?;
-            let gw_router = inner
-                .switch(uplink)
-                .and_then(|sw| sw.owner_router)
-                .and_then(|rid| inner.router(rid))
-                .ok_or_else(|| anyhow!("gateway router not found for interface '{}'", iname))?;
-            let gw_ns = gw_router.ns.clone();
-            let gw_ifname = format!("v{}", iface.idx);
-            (dev.ns.clone(), iname, gw_ns, gw_ifname)
-        };
-        match direction {
-            LinkDirection::Egress | LinkDirection::Both => {
-                apply_or_remove_impair(&self.lab.netns, &dev_ns, &resolved_ifname, impair).await;
-            }
-            LinkDirection::Ingress => {
-                // Remove any existing egress impairment when switching to ingress-only.
-                apply_or_remove_impair(&self.lab.netns, &dev_ns, &resolved_ifname, None).await;
-            }
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        // Preserve old behavior: clear both directions first, then set.
+        handle.clear_condition(LinkDirection::Both).await?;
+        if let Some(cond) = impair {
+            handle.set_condition(cond, direction).await?;
         }
-        match direction {
-            LinkDirection::Ingress | LinkDirection::Both => {
-                apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, impair).await;
-            }
-            LinkDirection::Egress => {
-                // Remove any existing ingress impairment when switching to egress-only.
-                apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, None).await;
-            }
-        }
-        {
-            let mut inner = self.lab.core.lock().expect("poisoned");
-            if let Some(dev) = inner.device_mut(self.id) {
-                if let Some(iface) = dev.iface_mut(&resolved_ifname) {
-                    match direction {
-                        LinkDirection::Egress => {
-                            iface.egress = impair;
-                            iface.ingress = None;
-                        }
-                        LinkDirection::Ingress => {
-                            iface.egress = None;
-                            iface.ingress = impair;
-                        }
-                        LinkDirection::Both => {
-                            iface.egress = impair;
-                            iface.ingress = impair;
-                        }
-                    }
-                }
-            }
-        }
-        self.lab.emit(LabEventKind::LinkConditionChanged {
-            device: self.name.to_string(),
-            iface: resolved_ifname,
-            condition: impair,
-            direction,
-        });
         Ok(())
     }
 
@@ -780,207 +635,40 @@ impl Device {
         ))
     }
 
-    /// Removes an interface from this device, tearing down its veth pair.
-    ///
-    /// If the removed interface was the default route, the default switches to
-    /// the first remaining interface (if any).  Cannot remove the last interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed, `ifname` does not exist,
-    /// or it is the only interface on the device.
+    /// Removes an interface from this device.
+    #[deprecated(note = "use dev.iface(name).unwrap().remove().await")]
     pub async fn remove_iface(&self, ifname: &str) -> Result<()> {
-        use crate::wiring;
-
-        let op = self
-            .lab
-            .with_device(self.id, |d| Arc::clone(&d.op))
-            .ok_or_else(|| anyhow!("device removed"))?;
-        let _guard = op.lock().await;
-
-        let dev_ns = self
-            .lab
-            .core
-            .lock()
-            .unwrap()
-            .remove_device_iface(self.id, ifname)?;
-
-        // Phase 2: Delete the veth pair (peer side auto-removed by kernel).
-        let ifname_owned = ifname.to_string();
-        wiring::nl_run(&self.lab.netns, &dev_ns, move |h: Netlink| async move {
-            h.ensure_link_deleted(&ifname_owned).await.ok();
-            Ok(())
-        })
-        .await?;
-
-        self.lab.emit(LabEventKind::InterfaceRemoved {
-            device: self.name.to_string(),
-            iface_name: ifname.to_string(),
-        });
-        Ok(())
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.remove().await
     }
 
-    /// Moves one of this device's interfaces to a different router's downstream
-    /// network, simulating unplugging a cable and plugging it into a new router.
-    ///
-    /// The interface name is preserved but the IP address changes (allocated from
-    /// the new router's pool). The old veth pair is torn down and a fresh one is
-    /// created.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed, `ifname` does not exist
-    /// on this device, `to_router` is unknown, or the target router has no
-    /// downstream switch.
+    /// Moves an interface to a different router's downstream network.
+    #[deprecated(note = "use dev.iface(name).unwrap().replug(router).await")]
     pub async fn replug_iface(&self, ifname: &str, to_router: NodeId) -> Result<()> {
-        use crate::wiring;
-
-        let op = self
-            .lab
-            .with_device(self.id, |d| Arc::clone(&d.op))
-            .ok_or_else(|| anyhow!("device removed"))?;
-        let _guard = op.lock().await;
-
-        // Phase 1: Lock → extract data + allocate from new router's pool → unlock
-        let mut setup = self
-            .lab
-            .core
-            .lock()
-            .unwrap()
-            .prepare_replug_iface(self.id, ifname, to_router)?;
-        if self.provisioning_mode()? == Ipv6ProvisioningMode::RaDriven {
-            setup.iface_build.gw_ip_v6 = None;
-        }
-
-        // Phase 2: Delete old veth pair.
-        let dev_ns = setup.iface_build.dev_ns.clone();
-        let ifname_owned = ifname.to_string();
-        let netns = &self.lab.netns;
-        wiring::nl_run(netns, &dev_ns, move |h: Netlink| async move {
-            h.ensure_link_deleted(&ifname_owned).await.ok();
-            Ok(())
-        })
-        .await?;
-
-        // Phase 3: Wire new interface (reuses existing wiring logic)
-        let new_ip = setup.iface_build.dev_ip;
-        let new_ip_v6 = setup.iface_build.dev_ip_v6;
-        wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
-
-        // Phase 4: Lock → update internal records → unlock
-        let from_router_name = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            // Get old router name before finishing replug
-            let dev = inner.device(self.id);
-            let old_uplink = dev.and_then(|d| d.iface(ifname)).and_then(|i| i.uplink);
-            let from_name = old_uplink
-                .and_then(|sw| inner.switch(sw))
-                .and_then(|sw| sw.owner_router)
-                .and_then(|r| inner.router(r))
-                .map(|r| r.name.to_string())
-                .unwrap_or_default();
-            drop(inner);
-            from_name
-        };
-
-        self.lab
-            .core
-            .lock()
-            .unwrap()
-            .finish_replug_iface(self.id, ifname, to_router, new_ip, new_ip_v6)?;
-
-        let to_router_name = self
-            .lab
-            .core
-            .lock()
-            .unwrap()
-            .router(to_router)
-            .map(|r| r.name.to_string())
-            .unwrap_or_default();
-
-        self.lab.emit(LabEventKind::InterfaceReplugged {
-            device: self.name.to_string(),
-            iface_name: ifname.to_string(),
-            from_router: from_router_name,
-            to_router: to_router_name,
-            new_ip,
-            new_ip_v6,
-        });
-
-        Ok(())
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.replug(to_router).await
     }
 
-    /// Simulates DHCP renewal: allocates a new IP from the current router's pool,
-    /// replaces the old address on the interface, and returns the new address.
-    ///
-    /// The default route remains unchanged (same gateway). The old address is
-    /// removed before the new one is added.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed, the interface has no
-    /// IPv4 address, or the router's address pool is exhausted.
+    /// Simulates DHCP renewal: allocates a new IP from the current router's pool.
+    #[deprecated(note = "use dev.iface(name).unwrap().renew_ip().await")]
     pub async fn renew_ip(&self, ifname: &str) -> Result<Ipv4Addr> {
-        use crate::wiring;
-
-        let (ns, old_ip, new_ip, prefix_len) = self
-            .lab
-            .core
-            .lock()
-            .unwrap()
-            .renew_device_ip(self.id, ifname)?;
-
-        // Phase 2: Async netlink — remove old addr, add new addr.
-        let ifname_str = ifname.to_string();
-        let ifname_owned = ifname_str.clone();
-        wiring::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
-            h.del_addr4(&ifname_owned, old_ip, prefix_len).await?;
-            h.add_addr4(&ifname_owned, new_ip, prefix_len).await?;
-            Ok(())
-        })
-        .await?;
-
-        self.lab.emit(LabEventKind::DeviceIpChanged {
-            device: self.name.to_string(),
-            iface_name: ifname_str,
-            new_ip: Some(new_ip),
-            new_ip_v6: None,
-        });
-
-        Ok(new_ip)
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.renew_ip().await
     }
 
     /// Adds a secondary IPv4 address to an interface.
-    ///
-    /// The address is added via netlink without removing existing addresses.
-    /// Linux natively supports multiple addresses per interface.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device has been removed or the interface does
-    /// not exist.
+    #[deprecated(note = "use dev.iface(name).unwrap().add_ip(ip, pfx).await")]
     pub async fn add_ip(&self, ifname: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<()> {
-        use crate::wiring;
-
-        let ns = {
-            let inner = self.lab.core.lock().unwrap();
-            let dev = inner
-                .device(self.id)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let _ = dev
-                .iface(ifname)
-                .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
-            dev.ns.clone()
-        };
-
-        let ifname = ifname.to_string();
-        wiring::nl_run(&self.lab.netns, &ns, move |h: Netlink| async move {
-            h.add_addr4(&ifname, ip, prefix_len).await?;
-            Ok(())
-        })
-        .await?;
-
-        Ok(())
+        let handle = self
+            .iface(ifname)
+            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
+        handle.add_ip(ip, prefix_len).await
     }
 }
 
