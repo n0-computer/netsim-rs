@@ -65,7 +65,10 @@ async fn server_entry_without_trailing_dot() -> Result<()> {
         "should resolve name without trailing dot: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("10.0.0.42"), "expected IP in output: {stdout}");
+    assert!(
+        stdout.contains("10.0.0.42"),
+        "expected IP in output: {stdout}"
+    );
     Ok(())
 }
 
