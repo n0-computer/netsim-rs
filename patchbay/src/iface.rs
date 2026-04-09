@@ -327,8 +327,8 @@ impl Iface {
             .emit(crate::event::LabEventKind::LinkConditionChanged {
                 device: self.device_name(),
                 iface: self.ifname.to_string(),
-                condition: Some(condition),
-                direction,
+                egress: self.egress(),
+                ingress: self.ingress(),
             });
         Ok(())
     }
@@ -406,8 +406,8 @@ impl Iface {
             .emit(crate::event::LabEventKind::LinkConditionChanged {
                 device: self.device_name(),
                 iface: self.ifname.to_string(),
-                condition: None,
-                direction,
+                egress: self.egress(),
+                ingress: self.ingress(),
             });
         Ok(())
     }
