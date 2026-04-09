@@ -759,7 +759,7 @@ pub fn parse_proc_net_dev(content: &str) -> Vec<IfaceCounters> {
 // Emit helper on LabInner
 // ─────────────────────────────────────────────
 
-impl crate::core::LabInner {
+impl crate::lab::LabInner {
     /// Emits an event on the broadcast channel. Returns the assigned opid.
     pub(crate) fn emit(&self, kind: LabEventKind) -> u64 {
         let opid = self.opid.fetch_add(1, Ordering::Relaxed);
