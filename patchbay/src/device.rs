@@ -36,7 +36,7 @@ pub(crate) fn record_metric(dispatch: &tracing::Dispatch, key: &str, value: f64)
     );
 }
 
-fn select_default_v6_gateway(
+pub(crate) fn select_default_v6_gateway(
     provisioning: Ipv6ProvisioningMode,
     ra_default_enabled: bool,
     gw_v6: Option<Ipv6Addr>,

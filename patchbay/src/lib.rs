@@ -234,7 +234,7 @@ pub(crate) mod writer;
 
 pub use device::{Device, DeviceBuilder, DeviceIface};
 pub use firewall::PortPolicy;
-pub use iface::IfaceConfig;
+pub use iface::{Iface, IfaceConfig};
 pub use ipnet::Ipv4Net;
 pub use lab::{
     ConntrackTimeouts, DefaultRegions, Firewall, FirewallConfig, FirewallConfigBuilder, IpSupport,
