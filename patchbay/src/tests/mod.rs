@@ -39,16 +39,20 @@ mod dns;
 mod firewall;
 mod hairpin;
 mod holepunch;
+#[allow(deprecated)]
 mod iface;
 mod ipv6;
 mod lifecycle;
+#[allow(deprecated)]
 mod link_condition;
 mod mtu;
 mod nat;
 mod nat64;
 mod nat_rebind;
 mod preset;
+#[allow(deprecated)]
 mod region;
+#[allow(deprecated)]
 mod route;
 mod smoke;
 

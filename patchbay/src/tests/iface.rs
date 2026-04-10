@@ -128,7 +128,7 @@ async fn add_secondary_ip() -> Result<()> {
 async fn isolated_build_time() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
-    let addr: ipnet::Ipv4Net = "172.17.0.2/16".parse()?;
+    let addr: Ipv4Net = "172.17.0.2/16".parse()?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", dc.id())
@@ -156,7 +156,7 @@ async fn isolated_runtime() -> Result<()> {
     let dc = lab.add_router("dc").build().await?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
-    let addr: ipnet::Ipv4Net = "10.8.0.1/24".parse()?;
+    let addr: Ipv4Net = "10.8.0.1/24".parse()?;
     let tun = dev
         .add_iface("tun0", IfaceConfig::isolated().addr(addr))
         .await?;
