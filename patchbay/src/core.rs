@@ -894,6 +894,14 @@ impl NetworkCore {
             // Apply fields that add_device_iface doesn't handle.
             let dev = self.device_mut(device).expect("just inserted");
             let iface = dev.iface_mut(ifname).expect("just inserted");
+            if let Some(addr) = config.addr {
+                iface.ip = Some(addr.addr());
+                iface.prefix_len = Some(addr.prefix_len());
+            }
+            if let Some(addr_v6) = config.addr_v6 {
+                iface.ip_v6 = Some(addr_v6.addr());
+                iface.prefix_len_v6 = Some(addr_v6.prefix_len());
+            }
             iface.ingress = config.ingress;
             iface.start_down = config.start_down;
         } else {

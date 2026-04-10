@@ -495,6 +495,15 @@ impl Device {
             }
             setup.iface_build.ingress = config.ingress;
             setup.iface_build.start_down = config.start_down;
+            // Override pool-allocated addresses with explicit ones.
+            if let Some(addr) = config.addr {
+                setup.iface_build.dev_ip = Some(addr.addr());
+                setup.iface_build.prefix_len = addr.prefix_len();
+            }
+            if let Some(addr_v6) = config.addr_v6 {
+                setup.iface_build.dev_ip_v6 = Some(addr_v6.addr());
+                setup.iface_build.prefix_len_v6 = addr_v6.prefix_len();
+            }
 
             let netns = &self.lab.netns;
             wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build)
@@ -510,12 +519,20 @@ impl Device {
                 .await?;
             }
 
-            // Update ingress in stored state if set.
-            if config.ingress.is_some() {
+            // Update stored state for fields not handled by prepare_add_iface.
+            {
                 let mut inner = self.lab.core.lock().expect("poisoned");
                 if let Some(dev) = inner.device_mut(self.id) {
                     if let Some(iface) = dev.iface_mut(ifname) {
                         iface.ingress = config.ingress;
+                        if let Some(addr) = config.addr {
+                            iface.ip = Some(addr.addr());
+                            iface.prefix_len = Some(addr.prefix_len());
+                        }
+                        if let Some(addr_v6) = config.addr_v6 {
+                            iface.ip_v6 = Some(addr_v6.addr());
+                            iface.prefix_len_v6 = Some(addr_v6.prefix_len());
+                        }
                     }
                 }
             }
@@ -778,12 +795,16 @@ impl DeviceBuilder {
                         gw_ip: sw.gw,
                         gw_br,
                         dev_ip: iface.ip,
-                        prefix_len: sw.cidr.map(|c| c.prefix_len()).unwrap_or(24),
+                        prefix_len: iface
+                            .prefix_len
+                            .unwrap_or_else(|| sw.cidr.map(|c| c.prefix_len()).unwrap_or(24)),
                         gw_ip_v6,
                         dev_ip_v6: iface.ip_v6,
                         gw_ll_v6,
                         dev_ll_v6: iface.ll_v6,
-                        prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
+                        prefix_len_v6: iface
+                            .prefix_len_v6
+                            .unwrap_or_else(|| sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64)),
                         egress: iface.egress,
                         ingress: iface.ingress,
                         isolated: false,
