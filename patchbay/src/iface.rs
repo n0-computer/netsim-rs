@@ -206,11 +206,15 @@ impl Iface {
     }
 
     /// Returns `true` if this interface is routed (connected to a router).
+    ///
+    /// Returns `false` on a stale handle (device or interface removed).
     pub fn is_routed(&self) -> bool {
         self.with_iface(|i| !i.isolated).unwrap_or(false)
     }
 
     /// Returns `true` if this interface is isolated (dummy device, no bridge).
+    ///
+    /// Returns `false` on a stale handle (device or interface removed).
     pub fn is_isolated(&self) -> bool {
         self.with_iface(|i| i.isolated).unwrap_or(false)
     }
@@ -261,7 +265,7 @@ impl Iface {
 
         let verb = if condition.is_some() { "set" } else { "clear" };
 
-        let (dev_ns, gw_ns, gw_ifname, isolated, op) = {
+        let (dev_ns, gateway, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.device)
@@ -270,9 +274,8 @@ impl Iface {
                 .iface(&self.ifname)
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
             let op = Arc::clone(&dev.op);
-            let isolated = iface.isolated;
 
-            if isolated && matches!(direction, LinkDirection::Ingress) {
+            if iface.isolated && matches!(direction, LinkDirection::Ingress) {
                 bail!(
                     "cannot {verb} ingress condition on isolated interface '{}' \
                      (no bridge-side veth)",
@@ -280,7 +283,7 @@ impl Iface {
                 );
             }
 
-            let (gw_ns, gw_ifname) = if !isolated {
+            let gateway = if !iface.isolated {
                 let uplink = iface.uplink.expect("routed interface has uplink");
                 let gw_router = inner
                     .switch(uplink)
@@ -289,12 +292,12 @@ impl Iface {
                     .ok_or_else(|| {
                         anyhow!("gateway router not found for interface '{}'", self.ifname)
                     })?;
-                (gw_router.ns.clone(), format!("v{}", iface.idx))
+                Some((gw_router.ns.clone(), format!("v{}", iface.idx)))
             } else {
-                (Arc::from(""), String::new())
+                None
             };
 
-            (dev.ns.clone(), gw_ns, gw_ifname, isolated, op)
+            (dev.ns.clone(), gateway, op)
         };
         let _guard = op.lock().await;
 
@@ -304,8 +307,10 @@ impl Iface {
         }
 
         // Apply ingress (skip silently for isolated + Both).
-        if !isolated && matches!(direction, LinkDirection::Ingress | LinkDirection::Both) {
-            apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, condition).await;
+        if let Some((ref gw_ns, ref gw_ifname)) = gateway {
+            if matches!(direction, LinkDirection::Ingress | LinkDirection::Both) {
+                apply_or_remove_impair(&self.lab.netns, gw_ns, gw_ifname, condition).await;
+            }
         }
 
         // Update stored state.
@@ -318,7 +323,7 @@ impl Iface {
                         LinkDirection::Ingress => iface.ingress = condition,
                         LinkDirection::Both => {
                             iface.egress = condition;
-                            if !isolated {
+                            if gateway.is_some() {
                                 iface.ingress = condition;
                             }
                         }
@@ -646,6 +651,8 @@ impl Iface {
 
     // ── Internal helpers ──
 
+    /// Returns the owning device's name, or an empty string if the device
+    /// has been removed (stale handle).
     fn device_name(&self) -> String {
         let inner = self.lab.core.lock().expect("poisoned");
         inner
