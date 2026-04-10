@@ -344,7 +344,7 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
-        let sim_path = workspace_root.join("iroh-integration/patchbay/sims/iperf-1to1-public.toml");
+        let sim_path = workspace_root.join("patchbay-cli/tests/fixtures/iperf-1to1-public.toml");
         run_sims(
             vec![sim_path],
             root.clone(),
