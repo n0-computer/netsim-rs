@@ -274,8 +274,13 @@ pub struct IfaceSnapshot {
     pub ip_v6: Option<Ipv6Addr>,
     /// IPv6 link-local address.
     pub ll_v6: Option<Ipv6Addr>,
-    /// Link condition.
+    /// Egress link condition (device-side veth / dummy device).
+    ///
+    /// Named `link_condition` for backward compatibility with serialized state.
     pub link_condition: Option<LinkCondition>,
+    /// Ingress link condition (bridge-side veth). Always `None` for isolated interfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_condition: Option<LinkCondition>,
 }
 
 /// Traffic counters for one interface (from `/proc/net/dev`).
@@ -473,6 +478,7 @@ impl DeviceState {
                     ip_v6: iface.ip_v6,
                     ll_v6: iface.ll_v6,
                     link_condition: iface.egress,
+                    ingress_condition: iface.ingress,
                 }
             })
             .collect();
@@ -606,12 +612,13 @@ impl LabState {
                 device,
                 iface,
                 egress,
-                ingress: _,
+                ingress,
             } => {
                 if let Some(d) = self.devices.get_mut(device) {
                     for i in &mut d.interfaces {
                         if i.name == *iface {
                             i.link_condition = *egress;
+                            i.ingress_condition = *ingress;
                         }
                     }
                 }
@@ -824,6 +831,7 @@ mod tests {
                         ip_v6: None,
                         ll_v6: None,
                         link_condition: None,
+                        ingress_condition: None,
                     }],
                     counters: BTreeMap::new(),
                 },

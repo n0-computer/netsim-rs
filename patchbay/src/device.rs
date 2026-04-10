@@ -604,6 +604,7 @@ impl Device {
                     ip_v6: iface_ip_v6,
                     ll_v6: iface_ll_v6,
                     link_condition: config.egress,
+                    ingress_condition: config.ingress,
                 },
             });
         }
