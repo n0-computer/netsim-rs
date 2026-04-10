@@ -141,8 +141,8 @@ let phone = lab
     .default_via("wlan0")
     .build()
     .await?;
-phone.set_link_condition("wlan0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
-phone.set_link_condition("cell0", Some(LinkCondition::Mobile4G), LinkDirection::Both).await?;
+phone.iface("wlan0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
+phone.iface("cell0").unwrap().set_condition(LinkCondition::Mobile4G, LinkDirection::Both).await?;
 ```
 
 The `.default_via("wlan0")` call sets which interface carries the default
@@ -177,7 +177,7 @@ Apply a preset after building the device:
 let dev = lab.add_device("laptop")
     .iface("eth0", home.id())
     .build().await?;
-dev.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+dev.iface("eth0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
 ```
 
 ### Custom parameters
@@ -199,7 +199,7 @@ let degraded = LinkCondition::Manual(LinkLimits {
 let dev = lab.add_device("laptop")
     .iface("eth0", home.id())
     .build().await?;
-dev.set_link_condition("eth0", Some(degraded), LinkDirection::Both).await?;
+dev.iface("eth0").unwrap().set_condition(degraded, LinkDirection::Both).await?;
 ```
 
 ### Runtime changes
@@ -210,10 +210,10 @@ for example switching from WiFi to a congested 3G link and verifying that
 your application adapts:
 
 ```rust
-dev.set_link_condition("eth0", Some(LinkCondition::Mobile3G), LinkDirection::Both).await?;
+dev.iface("eth0").unwrap().set_condition(LinkCondition::Mobile3G, LinkDirection::Both).await?;
 
 // Later, restore a clean link.
-dev.set_link_condition("eth0", None, LinkDirection::Both).await?;
+dev.iface("eth0").unwrap().clear_condition(LinkDirection::Both).await?;
 ```
 
 ## Regions
