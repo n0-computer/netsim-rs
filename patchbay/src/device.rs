@@ -246,7 +246,7 @@ impl Device {
     }
 
     fn provisioning_mode(&self) -> Result<Ipv6ProvisioningMode> {
-        let inner = self.lab.core.lock().unwrap();
+        let inner = self.lab.core.lock().expect("poisoned");
         let dev = inner
             .device(self.id)
             .ok_or_else(|| anyhow!("device removed"))?;
@@ -319,7 +319,7 @@ impl Device {
         self.lab
             .core
             .lock()
-            .unwrap()
+            .expect("poisoned")
             .set_device_default_via(self.id, to)?;
         Ok(())
     }
@@ -432,7 +432,7 @@ impl Device {
     /// glibc picks up changes on the next `getaddrinfo()` via mtime check.
     /// For lab-wide DNS records, use [`Lab::dns_server`] instead.
     pub fn set_host(&self, name: &str, ip: IpAddr) -> Result<()> {
-        let inner = self.lab.core.lock().unwrap();
+        let inner = self.lab.core.lock().expect("poisoned");
         inner.dns.append_host(self.id, name, ip)
     }
 
@@ -683,7 +683,7 @@ impl DeviceBuilder {
                 .inner
                 .core
                 .lock()
-                .unwrap()
+                .expect("poisoned")
                 .set_device_default_via(self.id, ifname);
         }
         self
@@ -695,7 +695,7 @@ impl DeviceBuilder {
 
         // Phase 1: Lock → extract snapshot + DNS overlay → unlock.
         let (dev, ifaces, prefix, root_ns, dns_overlay, provisioning_mode) = {
-            let mut inner = self.inner.core.lock().unwrap();
+            let mut inner = self.inner.core.lock().expect("poisoned");
             // Apply builder-level config before snapshot.
             if let Some(d) = inner.device_mut(self.id) {
                 d.mtu = self.mtu;
@@ -831,8 +831,8 @@ impl DeviceBuilder {
 
         // Emit DeviceAdded event.
         {
-            let inner = self.inner.core.lock().unwrap();
-            let d = inner.device(self.id).unwrap();
+            let inner = self.inner.core.lock().expect("poisoned");
+            let d = inner.device(self.id).expect("device just created");
             let device_state = DeviceState::from_device_data(d, &inner);
 
             self.inner.emit(LabEventKind::DeviceAdded {
@@ -844,7 +844,7 @@ impl DeviceBuilder {
             self.inner
                 .ns_to_name
                 .lock()
-                .unwrap()
+                .expect("poisoned")
                 .insert(d.ns.to_string(), d.name.to_string());
         }
 

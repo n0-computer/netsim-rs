@@ -6,7 +6,8 @@ use anyhow::{anyhow, bail, Result};
 use ipnet::{Ipv4Net, Ipv6Net};
 
 use crate::{
-    core::NodeId,
+    core::{DeviceIfaceData, NodeId},
+    event::LabEventKind,
     lab::{LabInner, LinkCondition, LinkDirection},
 };
 
@@ -181,67 +182,47 @@ impl Iface {
 
     /// Returns the assigned IPv4 address, if any.
     pub fn ip(&self) -> Option<std::net::Ipv4Addr> {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .and_then(|i| i.ip)
+        self.with_iface(|i| i.ip).flatten()
     }
 
     /// Returns the assigned IPv6 address, if any.
     pub fn ip6(&self) -> Option<std::net::Ipv6Addr> {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .and_then(|i| i.ip_v6)
+        self.with_iface(|i| i.ip_v6).flatten()
     }
 
     /// Returns the assigned IPv6 link-local address, if any.
     pub fn ll6(&self) -> Option<std::net::Ipv6Addr> {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .and_then(|i| i.ll_v6)
+        self.with_iface(|i| i.ll_v6).flatten()
     }
 
     /// Returns the egress link condition, if any.
     pub fn egress(&self) -> Option<LinkCondition> {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .and_then(|i| i.egress)
+        self.with_iface(|i| i.egress).flatten()
     }
 
     /// Returns the ingress link condition, if any.
     pub fn ingress(&self) -> Option<LinkCondition> {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .and_then(|i| i.ingress)
+        self.with_iface(|i| i.ingress).flatten()
     }
 
     /// Returns `true` if this interface is routed (connected to a router).
     pub fn is_routed(&self) -> bool {
-        let inner = self.lab.core.lock().expect("poisoned");
-        inner
-            .device(self.device)
-            .and_then(|d| d.iface(&self.ifname))
-            .map(|i| !i.isolated)
-            .unwrap_or(false)
+        self.with_iface(|i| !i.isolated).unwrap_or(false)
     }
 
     /// Returns `true` if this interface is isolated (dummy device, no bridge).
     pub fn is_isolated(&self) -> bool {
+        self.with_iface(|i| i.isolated).unwrap_or(false)
+    }
+
+    /// Locks the core, looks up the device and interface, and applies `f`.
+    /// Returns `None` if the device or interface has been removed.
+    fn with_iface<T>(&self, f: impl FnOnce(&DeviceIfaceData) -> T) -> Option<T> {
         let inner = self.lab.core.lock().expect("poisoned");
         inner
             .device(self.device)
             .and_then(|d| d.iface(&self.ifname))
-            .map(|i| i.isolated)
-            .unwrap_or(false)
+            .map(f)
     }
 
     // ── Mutate: link conditions ──
@@ -255,7 +236,30 @@ impl Iface {
         condition: LinkCondition,
         direction: LinkDirection,
     ) -> Result<()> {
+        self.apply_condition(Some(condition), direction).await
+    }
+
+    /// Removes any link condition for the given direction.
+    ///
+    /// For isolated interfaces, `Ingress` returns an error. `Both` clears
+    /// egress only and silently skips ingress.
+    pub async fn clear_condition(&self, direction: LinkDirection) -> Result<()> {
+        self.apply_condition(None, direction).await
+    }
+
+    /// Shared implementation for [`set_condition`](Self::set_condition) and
+    /// [`clear_condition`](Self::clear_condition).
+    ///
+    /// When `condition` is `Some`, the impairment is applied; when `None`,
+    /// it is removed.
+    async fn apply_condition(
+        &self,
+        condition: Option<LinkCondition>,
+        direction: LinkDirection,
+    ) -> Result<()> {
         use crate::nft::apply_or_remove_impair;
+
+        let verb = if condition.is_some() { "set" } else { "clear" };
 
         let (dev_ns, gw_ns, gw_ifname, isolated, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
@@ -270,7 +274,7 @@ impl Iface {
 
             if isolated && matches!(direction, LinkDirection::Ingress) {
                 bail!(
-                    "cannot set ingress condition on isolated interface '{}' \
+                    "cannot {verb} ingress condition on isolated interface '{}' \
                      (no bridge-side veth)",
                     self.ifname
                 );
@@ -294,14 +298,14 @@ impl Iface {
         };
         let _guard = op.lock().await;
 
-        // Apply egress condition.
+        // Apply egress.
         if matches!(direction, LinkDirection::Egress | LinkDirection::Both) {
-            apply_or_remove_impair(&self.lab.netns, &dev_ns, &self.ifname, Some(condition)).await;
+            apply_or_remove_impair(&self.lab.netns, &dev_ns, &self.ifname, condition).await;
         }
 
-        // Apply ingress condition (skip silently for isolated + Both).
+        // Apply ingress (skip silently for isolated + Both).
         if !isolated && matches!(direction, LinkDirection::Ingress | LinkDirection::Both) {
-            apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, Some(condition)).await;
+            apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, condition).await;
         }
 
         // Update stored state.
@@ -310,12 +314,12 @@ impl Iface {
             if let Some(dev) = inner.device_mut(self.device) {
                 if let Some(iface) = dev.iface_mut(&self.ifname) {
                     match direction {
-                        LinkDirection::Egress => iface.egress = Some(condition),
-                        LinkDirection::Ingress => iface.ingress = Some(condition),
+                        LinkDirection::Egress => iface.egress = condition,
+                        LinkDirection::Ingress => iface.ingress = condition,
                         LinkDirection::Both => {
-                            iface.egress = Some(condition);
+                            iface.egress = condition;
                             if !isolated {
-                                iface.ingress = Some(condition);
+                                iface.ingress = condition;
                             }
                         }
                     }
@@ -323,92 +327,12 @@ impl Iface {
             }
         }
 
-        self.lab
-            .emit(crate::event::LabEventKind::LinkConditionChanged {
-                device: self.device_name(),
-                iface: self.ifname.to_string(),
-                egress: self.egress(),
-                ingress: self.ingress(),
-            });
-        Ok(())
-    }
-
-    /// Removes any link condition for the given direction.
-    ///
-    /// For isolated interfaces, `Ingress` returns an error. `Both` clears
-    /// egress only and silently skips ingress.
-    pub async fn clear_condition(&self, direction: LinkDirection) -> Result<()> {
-        use crate::nft::apply_or_remove_impair;
-
-        let (dev_ns, gw_ns, gw_ifname, isolated, op) = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner
-                .device(self.device)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let iface = dev
-                .iface(&self.ifname)
-                .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
-            let op = Arc::clone(&dev.op);
-            let isolated = iface.isolated;
-
-            if isolated && matches!(direction, LinkDirection::Ingress) {
-                bail!(
-                    "cannot clear ingress condition on isolated interface '{}' \
-                     (no bridge-side veth)",
-                    self.ifname
-                );
-            }
-
-            let (gw_ns, gw_ifname) = if !isolated {
-                let uplink = iface.uplink.expect("routed interface has uplink");
-                let gw_router = inner
-                    .switch(uplink)
-                    .and_then(|sw| sw.owner_router)
-                    .and_then(|rid| inner.router(rid))
-                    .ok_or_else(|| {
-                        anyhow!("gateway router not found for interface '{}'", self.ifname)
-                    })?;
-                (gw_router.ns.clone(), format!("v{}", iface.idx))
-            } else {
-                (Arc::from(""), String::new())
-            };
-
-            (dev.ns.clone(), gw_ns, gw_ifname, isolated, op)
-        };
-        let _guard = op.lock().await;
-
-        if matches!(direction, LinkDirection::Egress | LinkDirection::Both) {
-            apply_or_remove_impair(&self.lab.netns, &dev_ns, &self.ifname, None).await;
-        }
-        if !isolated && matches!(direction, LinkDirection::Ingress | LinkDirection::Both) {
-            apply_or_remove_impair(&self.lab.netns, &gw_ns, &gw_ifname, None).await;
-        }
-
-        {
-            let mut inner = self.lab.core.lock().expect("poisoned");
-            if let Some(dev) = inner.device_mut(self.device) {
-                if let Some(iface) = dev.iface_mut(&self.ifname) {
-                    match direction {
-                        LinkDirection::Egress => iface.egress = None,
-                        LinkDirection::Ingress => iface.ingress = None,
-                        LinkDirection::Both => {
-                            iface.egress = None;
-                            if !isolated {
-                                iface.ingress = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        self.lab
-            .emit(crate::event::LabEventKind::LinkConditionChanged {
-                device: self.device_name(),
-                iface: self.ifname.to_string(),
-                egress: self.egress(),
-                ingress: self.ingress(),
-            });
+        self.lab.emit(LabEventKind::LinkConditionChanged {
+            device: self.device_name(),
+            iface: self.ifname.to_string(),
+            egress: self.egress(),
+            ingress: self.ingress(),
+        });
         Ok(())
     }
 
@@ -433,7 +357,7 @@ impl Iface {
             nl.set_link_down(&ifname).await
         })
         .await?;
-        self.lab.emit(crate::event::LabEventKind::LinkDown {
+        self.lab.emit(LabEventKind::LinkDown {
             device: self.device_name(),
             iface: self.ifname.to_string(),
         });
@@ -516,7 +440,7 @@ impl Iface {
             }
         }
 
-        self.lab.emit(crate::event::LabEventKind::LinkUp {
+        self.lab.emit(LabEventKind::LinkUp {
             device: self.device_name(),
             iface: self.ifname.to_string(),
         });
@@ -574,7 +498,7 @@ impl Iface {
         })
         .await?;
 
-        self.lab.emit(crate::event::LabEventKind::DeviceIpChanged {
+        self.lab.emit(LabEventKind::DeviceIpChanged {
             device: self.device_name(),
             iface_name: self.ifname.to_string(),
             new_ip: Some(new_ip),
@@ -590,7 +514,7 @@ impl Iface {
     ///
     /// Returns an error on isolated interfaces (nothing to replug to).
     pub async fn replug(&self, to_router: NodeId) -> Result<()> {
-        use crate::{event::LabEventKind, netlink::Netlink, wiring, Ipv6ProvisioningMode};
+        use crate::{netlink::Netlink, wiring, Ipv6ProvisioningMode};
 
         if self.is_isolated() {
             bail!("cannot replug isolated interface '{}'", self.ifname);
@@ -705,7 +629,7 @@ impl Iface {
         })
         .await?;
 
-        self.lab.emit(crate::event::LabEventKind::InterfaceRemoved {
+        self.lab.emit(LabEventKind::InterfaceRemoved {
             device: self.device_name(),
             iface_name: self.ifname.to_string(),
         });
