@@ -26,6 +26,7 @@ use crate::{
     },
     device::{Device, DeviceBuilder},
     event::{LabEvent, LabEventKind},
+    iface::IfaceConfig,
     netlink::Netlink,
     nft::apply_or_remove_impair,
     router::{Router, RouterBuilder},
@@ -859,7 +860,13 @@ impl Lab {
         for dev in dev_data {
             let mut builder = lab.add_device(&dev.name);
             for (ifname, router_id, impair) in dev.ifaces {
-                builder = builder.iface_impaired(&ifname, router_id, impair);
+                let config = IfaceConfig::routed(router_id);
+                let config = if let Some(cond) = impair {
+                    config.condition(cond, LinkDirection::Both)
+                } else {
+                    config
+                };
+                builder = builder.iface(&ifname, config);
             }
             if let Some(via) = dev.default_via {
                 builder = builder.default_via(&via);
@@ -1443,8 +1450,7 @@ impl Lab {
             let core = self.inner.core.lock().unwrap();
             (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
         };
-        let server =
-            crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw, ix_gw_v6)?;
+        let server = crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns)?;
         // Point all devices' resolv.conf at the DNS server (v4 + v6).
         {
             let mut core = self.inner.core.lock().unwrap();
@@ -1486,7 +1492,7 @@ impl Lab {
     /// ```
     ///
     /// For per-interface directional control (egress vs ingress on a single
-    /// device interface), use [`Device::set_link_condition`] instead.
+    /// device interface), use [`Iface::set_condition`] instead.
     pub async fn set_link_condition(
         &self,
         a: NodeId,

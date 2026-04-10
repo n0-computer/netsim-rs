@@ -14,8 +14,7 @@ use ipnet::{Ipv4Net, Ipv6Net};
 use crate::{
     nft::nptv6_wan_prefix,
     wiring::{add_host, link_local_from_seed, seed2, seed3},
-    Firewall, IpSupport, Ipv6ProvisioningMode, LinkCondition, LinkDirection, Nat, NatConfig,
-    NatV6Mode,
+    Firewall, IpSupport, Ipv6ProvisioningMode, LinkCondition, Nat, NatConfig, NatV6Mode,
 };
 
 pub(crate) const RA_DEFAULT_ENABLED: bool = true;
@@ -148,25 +147,55 @@ pub(crate) struct DownlinkV6Gateways {
     pub link_local_v6: Option<Ipv6Addr>,
 }
 
-/// One network interface on a device, connected to a router's downstream switch.
+/// How a device interface is attached to the network.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum IfaceAttachment {
+    /// Connected to a router's downstream bridge via a veth pair.
+    Routed(NodeId),
+    /// Linux dummy device with no bridge attachment.
+    Dummy,
+}
+
+/// One network interface on a device.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceIfaceData {
     /// Interface name inside the device namespace (e.g. `"eth0"`).
     pub ifname: Arc<str>,
-    /// Switch this interface is attached to.
-    pub uplink: NodeId,
+    /// How this interface is attached to the network.
+    pub attachment: IfaceAttachment,
     /// Assigned IPv4 address.
     pub ip: Option<Ipv4Addr>,
     /// Assigned IPv6 address.
     pub ip_v6: Option<Ipv6Addr>,
     /// Assigned IPv6 link-local address.
     pub ll_v6: Option<Ipv6Addr>,
-    /// Optional link impairment applied via `tc netem`.
-    pub impair: Option<LinkCondition>,
-    /// Direction for applying the impairment.
-    pub impair_direction: LinkDirection,
+    /// Egress impairment (device-side veth or dummy device).
+    pub egress: Option<LinkCondition>,
+    /// Ingress impairment (bridge-side veth). Always `None` for dummy interfaces.
+    pub ingress: Option<LinkCondition>,
+    /// If `true`, the interface should be created in link-down state.
+    pub start_down: bool,
+    /// IPv4 prefix length (for dummy interfaces with explicit addr).
+    pub(crate) prefix_len: Option<u8>,
+    /// IPv6 prefix length (for dummy interfaces with explicit addr).
+    pub(crate) prefix_len_v6: Option<u8>,
     /// Unique index used to name the root-namespace veth ends.
     pub(crate) idx: u64,
+}
+
+impl DeviceIfaceData {
+    /// Returns the switch NodeId if this is a routed interface.
+    pub(crate) fn uplink(&self) -> Option<NodeId> {
+        match self.attachment {
+            IfaceAttachment::Routed(id) => Some(id),
+            IfaceAttachment::Dummy => None,
+        }
+    }
+
+    /// Returns true if this is a dummy (non-routed) interface.
+    pub(crate) fn is_dummy(&self) -> bool {
+        matches!(self.attachment, IfaceAttachment::Dummy)
+    }
 }
 
 /// A network endpoint with one or more interfaces.
@@ -363,8 +392,10 @@ pub(crate) struct IfaceBuild {
     pub(crate) gw_ll_v6: Option<Ipv6Addr>,
     pub(crate) dev_ll_v6: Option<Ipv6Addr>,
     pub(crate) prefix_len_v6: u8,
-    pub(crate) impair: Option<LinkCondition>,
-    pub(crate) impair_direction: LinkDirection,
+    pub(crate) egress: Option<LinkCondition>,
+    pub(crate) ingress: Option<LinkCondition>,
+    pub(crate) dummy: bool,
+    pub(crate) start_down: bool,
     pub(crate) ifname: Arc<str>,
     pub(crate) is_default: bool,
     pub(crate) idx: u64,
@@ -842,21 +873,86 @@ impl NetworkCore {
             .devices
             .get_mut(&device)
             .ok_or_else(|| anyhow!("unknown device id"))?;
+        if dev.interfaces.iter().any(|i| &*i.ifname == ifname) {
+            bail!("device '{}' already has interface '{}'", dev.name, ifname);
+        }
         // First interface becomes the default unless overridden later.
         if dev.default_via.is_empty() {
             dev.default_via = ifname.into();
         }
         dev.interfaces.push(DeviceIfaceData {
             ifname: ifname.into(),
-            uplink: downlink,
+            attachment: IfaceAttachment::Routed(downlink),
             ip: assigned,
             ip_v6: assigned_v6,
             ll_v6: assigned_v6.map(|_| link_local_from_seed(idx)),
-            impair,
-            impair_direction: LinkDirection::default(),
+            egress: impair,
+            ingress: None,
+            start_down: false,
+            prefix_len: None,
+            prefix_len_v6: None,
             idx,
         });
         Ok(assigned)
+    }
+
+    /// Adds an interface to a device from an [`IfaceConfig`](crate::IfaceConfig).
+    ///
+    /// Handles both routed (gateway present) and dummy (gateway absent)
+    /// interfaces. For routed interfaces, allocates IPs from the router's pool
+    /// unless overridden by the config.
+    pub(crate) fn add_device_iface_from_config(
+        &mut self,
+        device: NodeId,
+        ifname: &str,
+        config: crate::IfaceConfig,
+    ) -> Result<()> {
+        if let Some(router) = config.gateway {
+            // Routed interface: delegate to add_device_iface for pool allocation.
+            self.add_device_iface(device, ifname, router, config.egress)?;
+            // Apply fields that add_device_iface doesn't handle.
+            let dev = self.device_mut(device).expect("just inserted");
+            let iface = dev.iface_mut(ifname).expect("just inserted");
+            if let Some(addr) = config.addr {
+                iface.ip = Some(addr.addr());
+                iface.prefix_len = Some(addr.prefix_len());
+            }
+            if let Some(addr_v6) = config.addr_v6 {
+                iface.ip_v6 = Some(addr_v6.addr());
+                iface.prefix_len_v6 = Some(addr_v6.prefix_len());
+            }
+            iface.ingress = config.ingress;
+            iface.start_down = config.start_down;
+        } else {
+            // Dummy interface: no router, no pool allocation.
+            let idx = self.alloc_id();
+            let dev = self
+                .devices
+                .get_mut(&device)
+                .ok_or_else(|| anyhow!("unknown device id"))?;
+            if dev.interfaces.iter().any(|i| &*i.ifname == ifname) {
+                bail!("device '{}' already has interface '{}'", dev.name, ifname);
+            }
+            if dev.default_via.is_empty() {
+                dev.default_via = ifname.into();
+            }
+            let ip = config.addr.map(|n| n.addr());
+            let ip_v6 = config.addr_v6.map(|n| n.addr());
+            dev.interfaces.push(DeviceIfaceData {
+                ifname: ifname.into(),
+                attachment: IfaceAttachment::Dummy,
+                ip,
+                ip_v6,
+                ll_v6: None,
+                egress: config.egress,
+                ingress: None,
+                start_down: config.start_down,
+                prefix_len: config.addr.map(|n| n.prefix_len()),
+                prefix_len_v6: config.addr_v6.map(|n| n.prefix_len()),
+                idx,
+            });
+        }
+        Ok(())
     }
 
     /// Registers a new interface on a device and returns everything needed to wire it.
@@ -886,8 +982,9 @@ impl NetworkCore {
             .iter()
             .find(|i| &*i.ifname == ifname)
             .unwrap();
+        let uplink = iface.uplink().ok_or_else(|| anyhow!("switch missing"))?;
         let sw = self
-            .switch(iface.uplink)
+            .switch(uplink)
             .ok_or_else(|| anyhow!("switch missing"))?;
         let gw_router = sw
             .owner_router
@@ -910,8 +1007,10 @@ impl NetworkCore {
             gw_ll_v6,
             dev_ll_v6: iface.ll_v6,
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
-            impair,
-            impair_direction: LinkDirection::default(),
+            egress: impair,
+            ingress: None,
+            dummy: false,
+            start_down: false,
             ifname: ifname.into(),
             is_default: false,
             idx: iface.idx,
@@ -944,7 +1043,7 @@ impl NetworkCore {
             .find(|i| &*i.ifname == ifname)
             .ok_or_else(|| anyhow!("device '{}' has no interface '{}'", dev.name, ifname))?;
         let old_idx = iface.idx;
-        let impair = iface.impair;
+        let egress = iface.egress;
         let is_default = ifname == &*dev.default_via;
 
         let target_router = self
@@ -986,8 +1085,10 @@ impl NetworkCore {
             gw_ll_v6: target_router.active_downstream_ll_v6(),
             dev_ll_v6: new_ip_v6.map(|_| link_local_from_seed(old_idx)),
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
-            impair,
-            impair_direction: LinkDirection::default(),
+            egress,
+            ingress: None,
+            dummy: false,
+            start_down: false,
             ifname: ifname.into(),
             is_default,
             idx: old_idx,
@@ -1017,7 +1118,7 @@ impl NetworkCore {
             .device_mut(device)
             .ok_or_else(|| anyhow!("device disappeared"))?;
         if let Some(iface) = dev.interfaces.iter_mut().find(|i| &*i.ifname == ifname) {
-            iface.uplink = new_uplink;
+            iface.attachment = IfaceAttachment::Routed(new_uplink);
             iface.ip = new_ip;
             iface.ip_v6 = new_ip_v6;
             iface.ll_v6 = new_ip_v6.map(|_| link_local_from_seed(iface.idx));
@@ -1084,7 +1185,7 @@ impl NetworkCore {
             if mode != Ipv6ProvisioningMode::RaDriven {
                 continue;
             }
-            if iface.uplink == downlink && iface.ip_v6.is_some() {
+            if iface.uplink() == Some(downlink) && iface.ip_v6.is_some() {
                 out.push(DeviceDefaultV6RouteTarget {
                     ns: dev.ns.clone(),
                     ifname: iface.ifname.clone(),
@@ -1472,7 +1573,7 @@ impl NetworkCore {
         if let Some(sw_id) = router.downlink {
             for dev in self.devices.values() {
                 for iface in &dev.interfaces {
-                    if iface.uplink == sw_id {
+                    if iface.uplink() == Some(sw_id) {
                         bail!(
                             "cannot remove router '{}': device '{}' is still connected",
                             router.name,
@@ -1533,7 +1634,9 @@ impl NetworkCore {
         let old_ip = iface
             .ip
             .ok_or_else(|| anyhow!("interface '{}' has no IPv4 address", ifname))?;
-        let sw_id = iface.uplink;
+        let sw_id = iface
+            .uplink()
+            .ok_or_else(|| anyhow!("cannot renew IP on dummy interface '{}'", ifname))?;
         let prefix_len = self
             .switch(sw_id)
             .ok_or_else(|| anyhow!("switch for interface '{}' missing", ifname))?
@@ -1562,7 +1665,7 @@ impl NetworkCore {
                 let iface = dev
                     .interfaces
                     .iter()
-                    .find(|i| i.uplink == downlink_sw)
+                    .find(|i| i.uplink() == Some(downlink_sw))
                     .ok_or_else(|| {
                         anyhow!(
                             "device '{}' is not connected to router '{}'",

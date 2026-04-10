@@ -18,7 +18,7 @@ use crate::{
         apply_firewall, apply_icmp_frag_block, apply_impair_in, apply_nat_for_router, apply_nat_v6,
         nptv6_wan_prefix, run_nft_in,
     },
-    Ipv6DadMode, Ipv6ProvisioningMode, LinkDirection, NatV6Mode,
+    Ipv6DadMode, Ipv6ProvisioningMode, NatV6Mode,
 };
 
 // ─────────────────────────────────────────────
@@ -703,6 +703,39 @@ pub(crate) async fn setup_device_async(
     Ok(())
 }
 
+/// Wire a dummy interface inside a device namespace.
+#[instrument(name = "iface_dummy", skip_all, fields(iface = %build.ifname))]
+async fn wire_dummy_async(netns: &Arc<netns::NetnsManager>, build: &IfaceBuild) -> Result<()> {
+    debug!(ip = ?build.dev_ip, ip6 = ?build.dev_ip_v6, "iface_dummy: setup");
+    nl_run(netns, &build.dev_ns, {
+        let ifname = build.ifname.clone();
+        let dev_ip = build.dev_ip;
+        let prefix_len = build.prefix_len;
+        let dev_ip_v6 = build.dev_ip_v6;
+        let prefix_len_v6 = build.prefix_len_v6;
+        let start_down = build.start_down;
+        move |h: Netlink| async move {
+            h.set_link_up("lo").await?;
+            h.add_dummy(&ifname).await?;
+            if let Some(ip4) = dev_ip {
+                h.add_addr4(&ifname, ip4, prefix_len).await?;
+            }
+            if let Some(ip6) = dev_ip_v6 {
+                h.add_addr6(&ifname, ip6, prefix_len_v6).await?;
+            }
+            if !start_down {
+                h.set_link_up(&ifname).await?;
+            }
+            Ok(())
+        }
+    })
+    .await?;
+    if let Some(cond) = build.egress {
+        apply_impair_in(netns, &build.dev_ns, &build.ifname, cond).await;
+    }
+    Ok(())
+}
+
 /// Wire one device interface: veth pair, move, IP, route, impairment.
 #[instrument(name = "iface", skip_all, fields(iface = %dev.ifname))]
 pub(crate) async fn wire_iface_async(
@@ -711,6 +744,9 @@ pub(crate) async fn wire_iface_async(
     root_ns: &str,
     dev: IfaceBuild,
 ) -> Result<()> {
+    if dev.dummy {
+        return wire_dummy_async(netns, &dev).await;
+    }
     debug!(ip = ?dev.dev_ip, ip6 = ?dev.dev_ip_v6, gw = ?dev.gw_ip, gw6 = ?dev.gw_ip_v6, "iface: assigned addresses");
     let root_gw = format!("{}g{}", prefix, dev.idx);
     let root_dev = format!("{}e{}", prefix, dev.idx);
@@ -778,20 +814,19 @@ pub(crate) async fn wire_iface_async(
     })
     .await?;
 
-    if let Some(imp) = dev.impair {
-        match dev.impair_direction {
-            LinkDirection::Egress | LinkDirection::Both => {
-                apply_impair_in(netns, &dev.dev_ns, &dev.ifname, imp).await;
-            }
-            LinkDirection::Ingress => {}
-        }
-        match dev.impair_direction {
-            LinkDirection::Ingress | LinkDirection::Both => {
-                let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
-                apply_impair_in(netns, &dev.gw_ns, &gw_ifname, imp).await;
-            }
-            LinkDirection::Egress => {}
-        }
+    if let Some(cond) = dev.egress {
+        apply_impair_in(netns, &dev.dev_ns, &dev.ifname, cond).await;
+    }
+    if let Some(cond) = dev.ingress {
+        let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
+        apply_impair_in(netns, &dev.gw_ns, &gw_ifname, cond).await;
+    }
+    if dev.start_down {
+        nl_run(netns, &dev.dev_ns, {
+            let ifname = dev.ifname.clone();
+            move |h: Netlink| async move { h.set_link_down(&ifname).await }
+        })
+        .await?;
     }
     Ok(())
 }

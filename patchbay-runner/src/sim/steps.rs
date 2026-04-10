@@ -423,8 +423,13 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                     .name()
                     .to_string(),
             };
-            dev.set_link_condition(&ifname, condition, direction)
-                .await?;
+            let iface = dev
+                .iface(&ifname)
+                .ok_or_else(|| anyhow::anyhow!("interface '{}' not found", ifname))?;
+            match condition {
+                Some(c) => iface.set_condition(c, direction).await?,
+                None => iface.clear_condition(direction).await?,
+            }
         }
 
         // ── set-default-route ──────────────────────────────────────────────
@@ -443,7 +448,9 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 .lab
                 .device_by_name(device)
                 .ok_or_else(|| anyhow::anyhow!("unknown device '{}'", device))?
-                .link_down(interface)
+                .iface(interface)
+                .ok_or_else(|| anyhow::anyhow!("interface '{}' not found", interface))?
+                .link_down()
                 .await?;
         }
         Step::LinkUp { device, interface } => {
@@ -451,7 +458,9 @@ pub(crate) async fn execute_step(state: &mut SimState, step: &Step) -> Result<()
                 .lab
                 .device_by_name(device)
                 .ok_or_else(|| anyhow::anyhow!("unknown device '{}'", device))?
-                .link_up(interface)
+                .iface(interface)
+                .ok_or_else(|| anyhow::anyhow!("interface '{}' not found", interface))?
+                .link_up()
                 .await?;
         }
 

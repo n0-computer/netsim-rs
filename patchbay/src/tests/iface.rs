@@ -56,7 +56,7 @@ async fn add_remove_runtime() -> Result<()> {
     );
 
     // Remove the original interface.
-    dev.remove_iface("eth0").await?;
+    dev.iface("eth0").unwrap().remove().await?;
     assert_eq!(dev.interfaces().len(), 1);
     assert!(dev.iface("eth0").is_none(), "eth0 should be gone");
 
@@ -65,7 +65,7 @@ async fn add_remove_runtime() -> Result<()> {
     assert_eq!(obs2.ip(), IpAddr::V4(eth1_ip));
 
     // Cannot remove the last interface.
-    let err = dev.remove_iface("eth1").await;
+    let err = dev.iface("eth1").unwrap().remove().await;
     assert!(err.is_err(), "removing last interface should fail");
 
     // Duplicate name rejected.
@@ -84,7 +84,7 @@ async fn renew_ip() -> Result<()> {
     let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
 
     let old_ip = dev.ip().unwrap();
-    let new_ip = dev.renew_ip("eth0").await?;
+    let new_ip = dev.iface("eth0").unwrap().renew_ip().await?;
 
     assert_ne!(old_ip, new_ip, "renewed IP should differ from old");
     assert_eq!(dev.ip().unwrap(), new_ip, "handle should reflect new IP");
@@ -110,7 +110,10 @@ async fn add_secondary_ip() -> Result<()> {
     let cidr = dc.downstream_cidr().unwrap();
     let octets = cidr.addr().octets();
     let secondary = Ipv4Addr::new(octets[0], octets[1], octets[2], 200);
-    dev.add_ip("eth0", secondary, cidr.prefix_len()).await?;
+    dev.iface("eth0")
+        .unwrap()
+        .add_ip(secondary, cidr.prefix_len())
+        .await?;
 
     // Both addresses should be reachable.
     let relay = lab.add_device("relay").uplink(dc.id()).build().await?;
@@ -118,6 +121,179 @@ async fn add_secondary_ip() -> Result<()> {
     relay.run_sync(move || ping(&p))?;
     let s = secondary.to_string();
     relay.run_sync(move || ping(&s))?;
+
+    Ok(())
+}
+
+/// Build-time dummy interface has the configured address and no gateway.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn dummy_build_time() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let addr: Ipv4Net = "172.17.0.2/16".parse()?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("docker0", IfaceConfig::dummy().addr(addr))
+        .build()
+        .await?;
+
+    let docker0 = dev.iface("docker0").expect("docker0 should exist");
+    assert!(docker0.is_dummy());
+    assert!(!docker0.is_routed());
+    assert_eq!(docker0.ip(), Some(addr.addr()));
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert!(eth0.is_routed());
+    assert!(!eth0.is_dummy());
+
+    Ok(())
+}
+
+/// Runtime dummy interface with explicit address.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn dummy_runtime() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
+
+    let addr: Ipv4Net = "10.8.0.1/24".parse()?;
+    let tun = dev
+        .add_iface("tun0", IfaceConfig::dummy().addr(addr))
+        .await?;
+
+    assert!(tun.is_dummy());
+    assert_eq!(tun.ip(), Some(addr.addr()));
+    assert_eq!(dev.interfaces().len(), 2);
+
+    Ok(())
+}
+
+/// Bare dummy interface (no address) can be created.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn dummy_bare() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("bare0", IfaceConfig::dummy())
+        .build()
+        .await?;
+
+    let bare = dev.iface("bare0").expect("bare0 should exist");
+    assert!(bare.is_dummy());
+    assert!(bare.ip().is_none());
+
+    Ok(())
+}
+
+/// Build-time conditions are applied correctly.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn build_time_conditions() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface(
+            "eth0",
+            IfaceConfig::routed(dc.id()).condition(LinkCondition::Mobile4G, LinkDirection::Egress),
+        )
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert_eq!(eth0.egress(), Some(LinkCondition::Mobile4G));
+    assert!(eth0.ingress().is_none());
+
+    Ok(())
+}
+
+/// Asymmetric conditions: different egress and ingress.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn asymmetric_conditions() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface(
+            "eth0",
+            IfaceConfig::routed(dc.id())
+                .condition(LinkCondition::Mobile4G, LinkDirection::Egress)
+                .condition(LinkCondition::Mobile3G, LinkDirection::Ingress),
+        )
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 should exist");
+    assert_eq!(eth0.egress(), Some(LinkCondition::Mobile4G));
+    assert_eq!(eth0.ingress(), Some(LinkCondition::Mobile3G));
+
+    Ok(())
+}
+
+/// Replug and renew_ip return errors on dummy interfaces.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn dummy_guards() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("tun0", IfaceConfig::dummy().addr("10.8.0.1/24".parse()?))
+        .build()
+        .await?;
+
+    let tun = dev.iface("tun0").unwrap();
+
+    // Cannot replug a dummy interface.
+    let err = tun.replug(dc.id()).await;
+    assert!(err.is_err(), "replug on dummy should fail");
+
+    // Cannot renew IP on a dummy interface.
+    let err = tun.renew_ip().await;
+    assert!(err.is_err(), "renew_ip on dummy should fail");
+
+    // Cannot set ingress condition on a dummy interface.
+    let err = tun
+        .set_condition(LinkCondition::Mobile4G, LinkDirection::Ingress)
+        .await;
+    assert!(err.is_err(), "set_condition ingress on dummy should fail");
+
+    // Egress condition works on a dummy interface.
+    tun.set_condition(LinkCondition::Mobile4G, LinkDirection::Egress)
+        .await?;
+    assert_eq!(tun.egress(), Some(LinkCondition::Mobile4G));
+
+    Ok(())
+}
+
+/// Iface handle returns errors after the interface is removed.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn iface_handle_after_removal() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("eth1", dc.id())
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").unwrap();
+    eth0.remove().await?;
+
+    // The handle is now stale.
+    assert!(eth0.ip().is_none());
+    let err = eth0.link_down().await;
+    assert!(err.is_err(), "link_down on removed iface should fail");
 
     Ok(())
 }
@@ -148,7 +324,7 @@ async fn replug_to_different_subnet() -> Result<()> {
     assert_eq!(old_ip.octets()[0], 198, "initially in dc_a range");
 
     // Replug to dc_b.
-    dev.replug_iface("eth0", dc_b.id()).await?;
+    dev.iface("eth0").unwrap().replug(dc_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let new_ip = dev.ip().unwrap();
@@ -166,5 +342,97 @@ async fn replug_to_different_subnet() -> Result<()> {
     dev.run_sync(move || test_utils::udp_roundtrip(reflector))
         .context("udp roundtrip after replug")?;
 
+    Ok(())
+}
+
+/// Build-time down() creates an interface in link-down state.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn build_time_down() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", IfaceConfig::routed(dc.id()).down())
+        .build()
+        .await?;
+
+    // Interface should exist but link should be down.
+    let eth0 = dev.iface("eth0").expect("eth0 exists");
+    assert!(eth0.ip().is_some(), "eth0 should have an IP");
+
+    // Verify link is DOWN by checking `ip link show eth0` output.
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", "eth0"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = dev.spawn_command_sync(cmd)?;
+    let output = child.wait_with_output().context("ip link show")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("state DOWN"),
+        "interface should be in DOWN state, got: {stdout}"
+    );
+
+    // Bring it up and verify link comes up.
+    eth0.link_up().await?;
+
+    let mut cmd2 = std::process::Command::new("ip");
+    cmd2.args(["link", "show", "eth0"]);
+    cmd2.stdout(std::process::Stdio::piped());
+    cmd2.stderr(std::process::Stdio::piped());
+    let child2 = dev.spawn_command_sync(cmd2)?;
+    let output2 = child2.wait_with_output().context("ip link show after up")?;
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    assert!(
+        !stdout2.contains("state DOWN"),
+        "interface should no longer be DOWN after link_up, got: {stdout2}"
+    );
+
+    Ok(())
+}
+
+/// Build-time addr() on a routed interface overrides pool allocation.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn routed_explicit_addr() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+
+    let explicit_ip: Ipv4Net = "198.18.1.99/24".parse()?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", IfaceConfig::routed(dc.id()).addr(explicit_ip))
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 exists");
+    assert_eq!(
+        eth0.ip(),
+        Some(explicit_ip.addr()),
+        "should have the explicitly set IP, not a pool-allocated one"
+    );
+
+    Ok(())
+}
+
+/// Duplicate interface names at build time are rejected.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn duplicate_iface_name_rejected() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+
+    let result = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("eth0", dc.id())
+        .build()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "duplicate interface name should be rejected"
+    );
     Ok(())
 }

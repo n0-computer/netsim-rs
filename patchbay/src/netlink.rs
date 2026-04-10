@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use futures::stream::TryStreamExt;
-use rtnetlink::{Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder};
+use rtnetlink::{Handle, LinkBridge, LinkDummy, LinkUnspec, LinkVeth, RouteMessageBuilder};
 use tracing::trace;
 
 /// Wraps an rtnetlink `Handle` for namespace-scoped network operations.
@@ -68,6 +68,17 @@ impl Netlink {
         self.handle
             .link()
             .add(LinkVeth::new(a, b).build())
+            .execute()
+            .await?;
+        Ok(())
+    }
+
+    /// Creates a dummy network interface.
+    pub(crate) async fn add_dummy(&self, name: &str) -> Result<()> {
+        trace!(name = %name, "add dummy");
+        self.handle
+            .link()
+            .add(LinkDummy::new(name).build())
             .execute()
             .await?;
         Ok(())

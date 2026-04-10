@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     firewall::Firewall,
-    lab::{LinkCondition, LinkDirection},
+    lab::LinkCondition,
     nat::{IpSupport, Nat, NatV6Mode},
 };
 
@@ -157,10 +157,10 @@ pub enum LabEventKind {
         device: String,
         /// Interface name.
         iface: String,
-        /// New link condition (`None` = removed).
-        condition: Option<LinkCondition>,
-        /// Direction the impairment is applied.
-        direction: LinkDirection,
+        /// Egress condition (`None` = removed).
+        egress: Option<LinkCondition>,
+        /// Ingress condition (`None` = removed).
+        ingress: Option<LinkCondition>,
     },
     /// Router downlink condition changed (affects all downstream traffic).
     DownlinkConditionChanged {
@@ -274,8 +274,13 @@ pub struct IfaceSnapshot {
     pub ip_v6: Option<Ipv6Addr>,
     /// IPv6 link-local address.
     pub ll_v6: Option<Ipv6Addr>,
-    /// Link condition.
+    /// Egress link condition (device-side veth / dummy device).
+    ///
+    /// Named `link_condition` for backward compatibility with serialized state.
     pub link_condition: Option<LinkCondition>,
+    /// Ingress link condition (bridge-side veth). Always `None` for dummy interfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_condition: Option<LinkCondition>,
 }
 
 /// Traffic counters for one interface (from `/proc/net/dev`).
@@ -459,8 +464,9 @@ impl DeviceState {
             .interfaces
             .iter()
             .map(|iface| {
-                let router_name = core
-                    .switch(iface.uplink)
+                let router_name = iface
+                    .uplink()
+                    .and_then(|sw| core.switch(sw))
                     .and_then(|sw| sw.owner_router)
                     .and_then(|rid| core.router(rid))
                     .map(|r| r.name.to_string())
@@ -471,7 +477,8 @@ impl DeviceState {
                     ip: iface.ip,
                     ip_v6: iface.ip_v6,
                     ll_v6: iface.ll_v6,
-                    link_condition: iface.impair,
+                    link_condition: iface.egress,
+                    ingress_condition: iface.ingress,
                 }
             })
             .collect();
@@ -604,13 +611,14 @@ impl LabState {
             LabEventKind::LinkConditionChanged {
                 device,
                 iface,
-                condition,
-                direction: _,
+                egress,
+                ingress,
             } => {
                 if let Some(d) = self.devices.get_mut(device) {
                     for i in &mut d.interfaces {
                         if i.name == *iface {
-                            i.link_condition = *condition;
+                            i.link_condition = *egress;
+                            i.ingress_condition = *ingress;
                         }
                     }
                 }
@@ -823,6 +831,7 @@ mod tests {
                         ip_v6: None,
                         ll_v6: None,
                         link_condition: None,
+                        ingress_condition: None,
                     }],
                     counters: BTreeMap::new(),
                 },
@@ -916,6 +925,7 @@ mod tests {
                             ip_v6: None,
                             ll_v6: None,
                             link_condition: None,
+                            ingress_condition: None,
                         }],
                         counters: BTreeMap::new(),
                     },

@@ -18,7 +18,7 @@
 
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     sync::{Arc, RwLock},
 };
 
@@ -66,51 +66,40 @@ pub struct DnsServer {
 }
 
 impl DnsServer {
-    /// Starts the DNS server on the IX bridge inside the root namespace.
+    /// Starts the DNS server inside the root namespace.
     ///
-    /// Binds to both the IPv4 and IPv6 gateway addresses on port 53 so that
-    /// v4-only, v6-only, and dual-stack devices can all reach the server.
-    /// Sockets are bound synchronously; the serve loops run as async tasks.
-    pub(crate) fn start(
-        netns: &Arc<netns::NetnsManager>,
-        root_ns: &str,
-        ix_gw: Ipv4Addr,
-        ix_gw_v6: Ipv6Addr,
-    ) -> Result<Self> {
+    /// Binds a dual-stack socket on `[::]:53` inside the root namespace
+    /// that handles both IPv4 and IPv6 queries. Wildcard bind avoids DAD
+    /// timing issues with specific IPs. The socket is bound synchronously;
+    /// the serve loop runs as an async task.
+    pub(crate) fn start(netns: &Arc<netns::NetnsManager>, root_ns: &str) -> Result<Self> {
         let records = Arc::new(RwLock::new(RecordStore::new()));
         let shutdown = CancellationToken::new();
 
-        let addrs = [
-            SocketAddr::from((ix_gw, 53)),
-            SocketAddr::from((ix_gw_v6, 53)),
-        ];
-
-        // Bind std sockets inside the root namespace (sync).
-        let sockets: Vec<std::net::UdpSocket> = netns.run_closure_in(root_ns, move || {
-            addrs
-                .iter()
-                .map(|addr| {
-                    let sock = std::net::UdpSocket::bind(addr)
-                        .with_context(|| format!("bind dns server to {addr}"))?;
-                    sock.set_nonblocking(true)?;
-                    Ok(sock)
-                })
-                .collect()
+        // Bind a dual-stack socket on [::]:53 inside the root namespace.
+        // A single IPv6 socket with IPV6_V6ONLY disabled (Linux default)
+        // handles both IPv4 and IPv6 queries.
+        let socket: std::net::UdpSocket = netns.run_closure_in(root_ns, || {
+            let addr = SocketAddr::from((Ipv6Addr::UNSPECIFIED, 53));
+            let sock = std::net::UdpSocket::bind(addr)
+                .with_context(|| format!("bind dns server to {addr}"))?;
+            sock.set_nonblocking(true)?;
+            Ok(sock)
         })?;
 
-        // Spawn async serve loops on the root namespace's tokio runtime.
+        // Spawn the serve loop on the root namespace's tokio runtime.
         let rt = netns.rt_handle_for(root_ns)?;
-        for socket in sockets {
-            let addr = socket.local_addr().ok();
-            let records = records.clone();
-            let cancel = shutdown.clone();
-            rt.spawn(async move {
-                let socket = tokio::net::UdpSocket::from_std(socket)
-                    .expect("convert std UdpSocket to tokio");
-                cancel.run_until_cancelled(serve(records, socket)).await;
-            });
-            debug!(?addr, "dns server listening");
-        }
+        let addr = socket.local_addr().ok();
+        let serve_records = records.clone();
+        let cancel = shutdown.clone();
+        rt.spawn(async move {
+            let socket =
+                tokio::net::UdpSocket::from_std(socket).expect("convert std UdpSocket to tokio");
+            cancel
+                .run_until_cancelled(serve(serve_records, socket))
+                .await;
+        });
+        debug!(?addr, "dns server listening");
 
         Ok(Self { records, shutdown })
     }
