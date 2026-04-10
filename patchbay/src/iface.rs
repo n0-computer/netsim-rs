@@ -548,12 +548,22 @@ impl Iface {
                 .unwrap_or(self.lab.ipv6_provisioning_mode)
         };
 
-        let mut setup = self
-            .lab
-            .core
-            .lock()
-            .expect("poisoned")
-            .prepare_replug_iface(self.device, &self.ifname, to_router)?;
+        // Read old router name before wiring replaces the uplink.
+        let (mut setup, from_router_name) = {
+            let mut inner = self.lab.core.lock().expect("poisoned");
+            let s = inner.prepare_replug_iface(self.device, &self.ifname, to_router)?;
+            let dev = inner.device(self.device);
+            let old_uplink = dev
+                .and_then(|d| d.iface(&self.ifname))
+                .and_then(|i| i.uplink);
+            let name = old_uplink
+                .and_then(|sw| inner.switch(sw))
+                .and_then(|sw| sw.owner_router)
+                .and_then(|r| inner.router(r))
+                .map(|r| r.name.to_string())
+                .unwrap_or_default();
+            (s, name)
+        };
         if provisioning == Ipv6ProvisioningMode::RaDriven {
             setup.iface_build.gw_ip_v6 = None;
         }
@@ -572,21 +582,6 @@ impl Iface {
         let new_ip = setup.iface_build.dev_ip;
         let new_ip_v6 = setup.iface_build.dev_ip_v6;
         wiring::wire_iface_async(netns, &setup.prefix, &setup.root_ns, setup.iface_build).await?;
-
-        // Get old router name.
-        let from_router_name = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner.device(self.device);
-            let old_uplink = dev
-                .and_then(|d| d.iface(&self.ifname))
-                .and_then(|i| i.uplink);
-            old_uplink
-                .and_then(|sw| inner.switch(sw))
-                .and_then(|sw| sw.owner_router)
-                .and_then(|r| inner.router(r))
-                .map(|r| r.name.to_string())
-                .unwrap_or_default()
-        };
 
         self.lab
             .core
