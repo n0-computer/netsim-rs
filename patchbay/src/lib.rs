@@ -112,27 +112,30 @@
 //!
 //! [`LinkCondition`] presets model common last-mile networks via `tc netem`
 //! and `tc tbf`. Apply them at build time through the device builder or
-//! change them dynamically with [`Device::set_link_condition`].
+//! change them dynamically via the [`Iface`] handle.
 //!
 //! ```no_run
 //! # use patchbay::*;
 //! # async fn example(dev: Device) -> anyhow::Result<()> {
 //! // Switch from WiFi to a degraded 3G link at runtime.
-//! dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G), LinkDirection::Both)
+//! dev.iface("wlan0")
+//!     .unwrap()
+//!     .set_condition(LinkCondition::Mobile3G, LinkDirection::Both)
 //!     .await?;
 //!
 //! // Or use fully custom parameters.
-//! dev.set_link_condition(
-//!     "wlan0",
-//!     Some(LinkCondition::Manual(LinkLimits {
-//!         latency_ms: 200,
-//!         loss_pct: 5.0,
-//!         rate_kbit: 500,
-//!         ..Default::default()
-//!     })),
-//!     LinkDirection::Both,
-//! )
-//! .await?;
+//! dev.iface("wlan0")
+//!     .unwrap()
+//!     .set_condition(
+//!         LinkCondition::Manual(LinkLimits {
+//!             latency_ms: 200,
+//!             loss_pct: 5.0,
+//!             rate_kbit: 500,
+//!             ..Default::default()
+//!         }),
+//!         LinkDirection::Both,
+//!     )
+//!     .await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -170,10 +173,10 @@
 //! ```no_run
 //! # use patchbay::*;
 //! # async fn example(dev: Device, router: Router, other: Router) -> anyhow::Result<()> {
-//! dev.replug_iface("wlan0", other.id()).await?;
+//! dev.iface("wlan0").unwrap().replug(other.id()).await?;
 //! dev.set_default_route("eth0").await?;
-//! dev.link_down("wlan0").await?;
-//! dev.link_up("wlan0").await?;
+//! dev.iface("wlan0").unwrap().link_down().await?;
+//! dev.iface("wlan0").unwrap().link_up().await?;
 //! router.set_nat_mode(Nat::Corporate).await?;
 //! router.flush_nat_state().await?;
 //! # Ok(())

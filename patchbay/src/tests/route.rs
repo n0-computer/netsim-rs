@@ -160,7 +160,7 @@ async fn replug_iface_udp() -> Result<()> {
         .context("udp before switch_uplink")?;
 
     // Move eth0 from nat_a → nat_b.
-    dev.replug_iface("eth0", nat_b.id()).await?;
+    dev.iface("eth0").unwrap().replug(nat_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Connectivity through nat_b works.
@@ -198,7 +198,7 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
         "before switch: expected nat_a WAN IP"
     );
 
-    dev.replug_iface("eth0", nat_b.id()).await?;
+    dev.iface("eth0").unwrap().replug(nat_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let after = dev.run_sync(move || test_utils::udp_roundtrip(reflector))?;

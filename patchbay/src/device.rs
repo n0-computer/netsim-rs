@@ -15,7 +15,7 @@ use tracing::Instrument as _;
 use crate::{
     core::{self, IfaceBuild, NodeId},
     event::{DeviceState, IfaceSnapshot, LabEventKind},
-    lab::{Ipv6ProvisioningMode, Lab, LabInner, LinkCondition, LinkDirection},
+    lab::{Ipv6ProvisioningMode, Lab, LabInner},
     netlink::Netlink,
     nft::apply_or_remove_impair,
     wiring::{self, setup_device_async, DeviceSetupData},
@@ -257,24 +257,6 @@ impl Device {
 
     // ── Dynamic operations ──────────────────────────────────────────────
 
-    /// Brings an interface administratively down.
-    #[deprecated(note = "use dev.iface(name).unwrap().link_down().await")]
-    pub async fn link_down(&self, ifname: &str) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.link_down().await
-    }
-
-    /// Brings an interface administratively up.
-    #[deprecated(note = "use dev.iface(name).unwrap().link_up().await")]
-    pub async fn link_up(&self, ifname: &str) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.link_up().await
-    }
-
     /// Sets the active default route to a different interface.
     ///
     /// Replaces the kernel default route and re-applies any link impairment
@@ -339,25 +321,6 @@ impl Device {
             .lock()
             .unwrap()
             .set_device_default_via(self.id, to)?;
-        Ok(())
-    }
-
-    /// Applies or removes a link-layer impairment on the named interface.
-    #[deprecated(note = "use dev.iface(name).unwrap().set_condition() or .clear_condition()")]
-    pub async fn set_link_condition(
-        &self,
-        ifname: &str,
-        impair: Option<LinkCondition>,
-        direction: LinkDirection,
-    ) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        // Preserve old behavior: clear both directions first, then set.
-        handle.clear_condition(LinkDirection::Both).await?;
-        if let Some(cond) = impair {
-            handle.set_condition(cond, direction).await?;
-        }
         Ok(())
     }
 
@@ -633,42 +596,6 @@ impl Device {
             ifname.into(),
             Arc::clone(&self.lab),
         ))
-    }
-
-    /// Removes an interface from this device.
-    #[deprecated(note = "use dev.iface(name).unwrap().remove().await")]
-    pub async fn remove_iface(&self, ifname: &str) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.remove().await
-    }
-
-    /// Moves an interface to a different router's downstream network.
-    #[deprecated(note = "use dev.iface(name).unwrap().replug(router).await")]
-    pub async fn replug_iface(&self, ifname: &str, to_router: NodeId) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.replug(to_router).await
-    }
-
-    /// Simulates DHCP renewal: allocates a new IP from the current router's pool.
-    #[deprecated(note = "use dev.iface(name).unwrap().renew_ip().await")]
-    pub async fn renew_ip(&self, ifname: &str) -> Result<Ipv4Addr> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.renew_ip().await
-    }
-
-    /// Adds a secondary IPv4 address to an interface.
-    #[deprecated(note = "use dev.iface(name).unwrap().add_ip(ip, pfx).await")]
-    pub async fn add_ip(&self, ifname: &str, ip: Ipv4Addr, prefix_len: u8) -> Result<()> {
-        let handle = self
-            .iface(ifname)
-            .ok_or_else(|| anyhow!("interface '{}' not found", ifname))?;
-        handle.add_ip(ip, prefix_len).await
     }
 }
 

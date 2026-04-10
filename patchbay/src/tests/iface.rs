@@ -56,7 +56,7 @@ async fn add_remove_runtime() -> Result<()> {
     );
 
     // Remove the original interface.
-    dev.remove_iface("eth0").await?;
+    dev.iface("eth0").unwrap().remove().await?;
     assert_eq!(dev.interfaces().len(), 1);
     assert!(dev.iface("eth0").is_none(), "eth0 should be gone");
 
@@ -65,7 +65,7 @@ async fn add_remove_runtime() -> Result<()> {
     assert_eq!(obs2.ip(), IpAddr::V4(eth1_ip));
 
     // Cannot remove the last interface.
-    let err = dev.remove_iface("eth1").await;
+    let err = dev.iface("eth1").unwrap().remove().await;
     assert!(err.is_err(), "removing last interface should fail");
 
     // Duplicate name rejected.
@@ -84,7 +84,7 @@ async fn renew_ip() -> Result<()> {
     let dev = lab.add_device("dev").uplink(dc.id()).build().await?;
 
     let old_ip = dev.ip().unwrap();
-    let new_ip = dev.renew_ip("eth0").await?;
+    let new_ip = dev.iface("eth0").unwrap().renew_ip().await?;
 
     assert_ne!(old_ip, new_ip, "renewed IP should differ from old");
     assert_eq!(dev.ip().unwrap(), new_ip, "handle should reflect new IP");
@@ -110,7 +110,10 @@ async fn add_secondary_ip() -> Result<()> {
     let cidr = dc.downstream_cidr().unwrap();
     let octets = cidr.addr().octets();
     let secondary = Ipv4Addr::new(octets[0], octets[1], octets[2], 200);
-    dev.add_ip("eth0", secondary, cidr.prefix_len()).await?;
+    dev.iface("eth0")
+        .unwrap()
+        .add_ip(secondary, cidr.prefix_len())
+        .await?;
 
     // Both addresses should be reachable.
     let relay = lab.add_device("relay").uplink(dc.id()).build().await?;
@@ -324,7 +327,7 @@ async fn replug_to_different_subnet() -> Result<()> {
     assert_eq!(old_ip.octets()[0], 198, "initially in dc_a range");
 
     // Replug to dc_b.
-    dev.replug_iface("eth0", dc_b.id()).await?;
+    dev.iface("eth0").unwrap().replug(dc_b.id()).await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let new_ip = dev.ip().unwrap();

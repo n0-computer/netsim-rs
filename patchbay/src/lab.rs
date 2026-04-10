@@ -1493,7 +1493,7 @@ impl Lab {
     /// ```
     ///
     /// For per-interface directional control (egress vs ingress on a single
-    /// device interface), use [`Device::set_link_condition`] instead.
+    /// device interface), use [`Iface::set_condition`] instead.
     pub async fn set_link_condition(
         &self,
         a: NodeId,

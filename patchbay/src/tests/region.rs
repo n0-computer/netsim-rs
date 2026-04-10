@@ -127,15 +127,16 @@ async fn impair_stacks_with_latency() -> Result<()> {
         .build()
         .await?;
 
-    dev.set_link_condition(
-        "eth0",
-        Some(LinkCondition::Manual(LinkLimits {
-            latency_ms: 30,
-            ..Default::default()
-        })),
-        LinkDirection::Both,
-    )
-    .await?;
+    dev.iface("eth0")
+        .unwrap()
+        .set_condition(
+            LinkCondition::Manual(LinkLimits {
+                latency_ms: 30,
+                ..Default::default()
+            }),
+            LinkDirection::Both,
+        )
+        .await?;
 
     let us_ip = dc_us.uplink_ip().context("no uplink ip")?;
     let r_us = SocketAddr::new(IpAddr::V4(us_ip), 18_700);
