@@ -347,3 +347,95 @@ async fn replug_to_different_subnet() -> Result<()> {
 
     Ok(())
 }
+
+/// Build-time down() creates an interface in link-down state.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn build_time_down() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", IfaceConfig::routed(dc.id()).down())
+        .build()
+        .await?;
+
+    // Interface should exist but link should be down.
+    let eth0 = dev.iface("eth0").expect("eth0 exists");
+    assert!(eth0.ip().is_some(), "eth0 should have an IP");
+
+    // Verify link is DOWN by checking `ip link show eth0` output.
+    let mut cmd = std::process::Command::new("ip");
+    cmd.args(["link", "show", "eth0"]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    let child = dev.spawn_command_sync(cmd)?;
+    let output = child.wait_with_output().context("ip link show")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("state DOWN"),
+        "interface should be in DOWN state, got: {stdout}"
+    );
+
+    // Bring it up and verify link comes up.
+    eth0.link_up().await?;
+
+    let mut cmd2 = std::process::Command::new("ip");
+    cmd2.args(["link", "show", "eth0"]);
+    cmd2.stdout(std::process::Stdio::piped());
+    cmd2.stderr(std::process::Stdio::piped());
+    let child2 = dev.spawn_command_sync(cmd2)?;
+    let output2 = child2.wait_with_output().context("ip link show after up")?;
+    let stdout2 = String::from_utf8_lossy(&output2.stdout);
+    assert!(
+        !stdout2.contains("state DOWN"),
+        "interface should no longer be DOWN after link_up, got: {stdout2}"
+    );
+
+    Ok(())
+}
+
+/// Build-time addr() on a routed interface overrides pool allocation.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn routed_explicit_addr() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+
+    let explicit_ip: Ipv4Net = "198.18.1.99/24".parse()?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", IfaceConfig::routed(dc.id()).addr(explicit_ip))
+        .build()
+        .await?;
+
+    let eth0 = dev.iface("eth0").expect("eth0 exists");
+    assert_eq!(
+        eth0.ip(),
+        Some(explicit_ip.addr()),
+        "should have the explicitly set IP, not a pool-allocated one"
+    );
+
+    Ok(())
+}
+
+/// Duplicate interface names at build time are rejected.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn duplicate_iface_name_rejected() -> Result<()> {
+    let lab = Lab::new().await?;
+    let dc = lab.add_router("dc").build().await?;
+
+    let result = lab
+        .add_device("dev")
+        .iface("eth0", dc.id())
+        .iface("eth0", dc.id())
+        .build()
+        .await;
+
+    assert!(
+        result.is_err(),
+        "duplicate interface name should be rejected"
+    );
+    Ok(())
+}

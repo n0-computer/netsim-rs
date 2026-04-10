@@ -171,6 +171,8 @@ pub(crate) struct DeviceIfaceData {
     pub ingress: Option<LinkCondition>,
     /// `true` for isolated interfaces (Linux dummy device, no veth pair).
     pub isolated: bool,
+    /// If `true`, the interface should be created in link-down state.
+    pub start_down: bool,
     /// IPv4 prefix length (for isolated interfaces with explicit addr).
     pub(crate) prefix_len: Option<u8>,
     /// IPv6 prefix length (for isolated interfaces with explicit addr).
@@ -867,6 +869,7 @@ impl NetworkCore {
             egress: impair,
             ingress: None,
             isolated: false,
+            start_down: false,
             prefix_len: None,
             prefix_len_v6: None,
             idx,
@@ -888,12 +891,11 @@ impl NetworkCore {
         if let Some(router) = config.gateway {
             // Routed interface — delegate to add_device_iface for pool allocation.
             self.add_device_iface(device, ifname, router, config.egress)?;
-            // Apply ingress condition if specified.
-            if config.ingress.is_some() {
-                let dev = self.device_mut(device).expect("just inserted");
-                let iface = dev.iface_mut(ifname).expect("just inserted");
-                iface.ingress = config.ingress;
-            }
+            // Apply fields that add_device_iface doesn't handle.
+            let dev = self.device_mut(device).expect("just inserted");
+            let iface = dev.iface_mut(ifname).expect("just inserted");
+            iface.ingress = config.ingress;
+            iface.start_down = config.start_down;
         } else {
             // Isolated interface — no router, no pool allocation.
             let idx = self.alloc_id();
@@ -915,6 +917,7 @@ impl NetworkCore {
                 egress: config.egress,
                 ingress: None,
                 isolated: true,
+                start_down: config.start_down,
                 prefix_len: config.addr.map(|n| n.prefix_len()),
                 prefix_len_v6: config.addr_v6.map(|n| n.prefix_len()),
                 idx,
