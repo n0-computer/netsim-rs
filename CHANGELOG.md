@@ -1,6 +1,27 @@
 # Changelog
 
-## [0.3.0](https://github.com/n0-computer/n0-future/compare/v0.2.0..v0.3.0) - 2026-03-31
+## [0.4.0](https://github.com/n0-computer/n0-future/compare/patchbay-v0.3.0..v0.4.0) - 2026-04-10
+
+### ⛰️  Features
+
+- [**breaking**] Replace DNS overlay with in-process DNS server ([#13](https://github.com/n0-computer/n0-future/issues/13)) - ([699170f](https://github.com/n0-computer/n0-future/commit/699170f58efee64ffed010bf7e4c4cca8510e9d6))
+- [**breaking**] Unified interface API with IfaceConfig, Iface handle, and isolated interfaces ([#21](https://github.com/n0-computer/n0-future/issues/21)) - ([ccc77d9](https://github.com/n0-computer/n0-future/commit/ccc77d944e01d194ec3ed1dacb0ec09185ba8e10))
+
+### 🐛 Bug Fixes
+
+- Two safeguard issues from crate review ([#15](https://github.com/n0-computer/n0-future/issues/15)) - ([5c3cab9](https://github.com/n0-computer/n0-future/commit/5c3cab93f007ad8707ac62cb9398e184760df80c))
+- [**breaking**] Remove unused direction parameter from Lab::set_link_condition ([#18](https://github.com/n0-computer/n0-future/issues/18)) - ([4c2c0a2](https://github.com/n0-computer/n0-future/commit/4c2c0a2d5b8b0ea32deb7c67e81987d58c793155))
+
+### 🚜 Refactor
+
+- Split core.rs and handles.rs into focused modules ([#14](https://github.com/n0-computer/n0-future/issues/14)) - ([765e38b](https://github.com/n0-computer/n0-future/commit/765e38bb00b9dc46eb59d097b4e8dcf01ecb54db))
+- Use rtnetlink for region link break/restore ([#16](https://github.com/n0-computer/n0-future/issues/16)) - ([8983acd](https://github.com/n0-computer/n0-future/commit/8983acd73938f251ab8cfe1fc43c9f5957701ace))
+
+### ⚙️ Miscellaneous Tasks
+
+- Remove plans/ and REVIEW.md from repo ([#19](https://github.com/n0-computer/n0-future/issues/19)) - ([359ef31](https://github.com/n0-computer/n0-future/commit/359ef31dcd78428c391534f16ddef07030e2f827))
+
+## [patchbay-v0.3.0](https://github.com/n0-computer/n0-future/compare/v0.2.0..patchbay-v0.3.0) - 2026-03-31
 
 ### ⛰️  Features
 
@@ -9,6 +30,10 @@
 ### 🐛 Bug Fixes
 
 - Prepend https:// to view_url when Host header lacks scheme ([#11](https://github.com/n0-computer/n0-future/issues/11)) - ([dff4873](https://github.com/n0-computer/n0-future/commit/dff4873db89647354d401c70104cebbf971f4c5b))
+
+### ⚙️ Miscellaneous Tasks
+
+- Prepare patchbay v0.3.0 release - ([6ad9f77](https://github.com/n0-computer/n0-future/commit/6ad9f77e9051483050ba5b310e67b5d7d5c14d2e))
 
 ## [0.2.0](https://github.com/n0-computer/n0-future/compare/patchbay-v0.1.0..v0.2.0) - 2026-03-30
 
