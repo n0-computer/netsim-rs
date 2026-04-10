@@ -1,6 +1,14 @@
 [sim]
-name     = "iperf-1to1-public-baseline"
-topology = "1to1-public"
+name = "iperf-1to1-public-baseline"
+
+[[router]]
+name = "dc"
+
+[device.provider.eth0]
+gateway = "dc"
+
+[device.fetcher.eth0]
+gateway = "dc"
 
 [[step]]
 action      = "spawn"
@@ -15,10 +23,13 @@ id     = "iperf-baseline"
 device = "fetcher"
 parser = "json"
 cmd    = ["iperf3", "-c", "$NETSIM_IP_provider", "-t", "10", "-J"]
+
 [step.captures.bytes]
 pick = ".end.sum_received.bytes"
+
 [step.captures.duration_s]
 pick = ".end.sum_received.seconds"
+
 [step.results]
 duration   = "iperf-baseline.duration_s"
 down_bytes = "iperf-baseline.bytes"

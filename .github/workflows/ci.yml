@@ -78,7 +78,7 @@ jobs:
           cargo build --release -p patchbay-vm -p patchbay-runner --bin patchbay --target aarch64-unknown-linux-musl
           ./target/release/patchbay-vm --backend container run \
             --patchbay-version "path:target/aarch64-unknown-linux-musl/release/patchbay" \
-            ./iroh-integration/patchbay/sims/iperf-1to1-public.toml
+            ./patchbay-cli/tests/fixtures/iperf-1to1-public.toml
           ./target/release/patchbay-vm --backend container down
 
   e2e:
