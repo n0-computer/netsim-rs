@@ -925,6 +925,7 @@ mod tests {
                             ip_v6: None,
                             ll_v6: None,
                             link_condition: None,
+                            ingress_condition: None,
                         }],
                         counters: BTreeMap::new(),
                     },
