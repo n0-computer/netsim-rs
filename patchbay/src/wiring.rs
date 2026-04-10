@@ -818,10 +818,8 @@ pub(crate) async fn wire_iface_async(
         apply_impair_in(netns, &dev.dev_ns, &dev.ifname, cond).await;
     }
     if let Some(cond) = dev.ingress {
-        if !dev.dummy {
-            let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
-            apply_impair_in(netns, &dev.gw_ns, &gw_ifname, cond).await;
-        }
+        let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
+        apply_impair_in(netns, &dev.gw_ns, &gw_ifname, cond).await;
     }
     if dev.start_down {
         nl_run(netns, &dev.dev_ns, {

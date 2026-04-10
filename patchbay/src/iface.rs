@@ -228,6 +228,19 @@ impl Iface {
             .map(f)
     }
 
+    /// Returns the device namespace and operation lock after verifying the
+    /// device and interface still exist.
+    fn device_ns_and_op(&self) -> Result<(Arc<str>, Arc<tokio::sync::Mutex<()>>)> {
+        let inner = self.lab.core.lock().expect("poisoned");
+        let dev = inner
+            .device(self.device)
+            .ok_or_else(|| anyhow!("device removed"))?;
+        let _ = dev
+            .iface(&self.ifname)
+            .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
+        Ok((dev.ns.clone(), Arc::clone(&dev.op)))
+    }
+
     // ── Mutate: link conditions ──
 
     /// Sets a link condition on this interface for the given direction.
@@ -346,16 +359,7 @@ impl Iface {
     pub async fn link_down(&self) -> Result<()> {
         use crate::{netlink::Netlink, wiring};
 
-        let (ns, op) = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner
-                .device(self.device)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let _ = dev
-                .iface(&self.ifname)
-                .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
-            (dev.ns.clone(), Arc::clone(&dev.op))
-        };
+        let (ns, op) = self.device_ns_and_op()?;
         let _guard = op.lock().await;
         let ifname = self.ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
@@ -406,20 +410,19 @@ impl Iface {
 
         if is_default_via && !dummy {
             let uplink = uplink.expect("routed default-via interface has uplink");
-            let provisioning = {
+            let (provisioning, gw_ip, gw_v6, gw_ll_v6, ra_default_enabled) = {
                 let inner = self.lab.core.lock().expect("poisoned");
                 let dev = inner
                     .device(self.device)
                     .ok_or_else(|| anyhow!("device removed"))?;
-                dev.provisioning_mode
-                    .unwrap_or(self.lab.ipv6_provisioning_mode)
-            };
-            let (gw_ip, gw_v6, gw_ll_v6, ra_default_enabled) = {
-                let inner = self.lab.core.lock().expect("poisoned");
+                let prov = dev
+                    .provisioning_mode
+                    .unwrap_or(self.lab.ipv6_provisioning_mode);
                 let gw_ip = inner.router_downlink_gw_for_switch(uplink)?;
                 let gw_v6 = inner.router_downlink_gw6_for_switch(uplink)?;
                 let ra_default_enabled = inner.ra_default_enabled_for_switch(uplink)?;
                 (
+                    prov,
                     gw_ip,
                     gw_v6.global_v6,
                     gw_v6.link_local_v6,
@@ -460,16 +463,7 @@ impl Iface {
     pub async fn add_ip(&self, ip: std::net::Ipv4Addr, prefix_len: u8) -> Result<()> {
         use crate::{netlink::Netlink, wiring};
 
-        let (ns, op) = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner
-                .device(self.device)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            let _ = dev
-                .iface(&self.ifname)
-                .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
-            (dev.ns.clone(), Arc::clone(&dev.op))
-        };
+        let (ns, op) = self.device_ns_and_op()?;
         let _guard = op.lock().await;
         let ifname = self.ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
@@ -491,13 +485,7 @@ impl Iface {
             bail!("cannot renew IP on dummy interface '{}'", self.ifname);
         }
 
-        let op = {
-            let inner = self.lab.core.lock().expect("poisoned");
-            let dev = inner
-                .device(self.device)
-                .ok_or_else(|| anyhow!("device removed"))?;
-            Arc::clone(&dev.op)
-        };
+        let (_ns, op) = self.device_ns_and_op()?;
         let _guard = op.lock().await;
 
         let (ns, old_ip, new_ip, prefix_len) = self
