@@ -25,16 +25,16 @@ use crate::{
 /// pool unless overridden with [`addr`](Self::addr) or
 /// [`addr_v6`](Self::addr_v6).
 ///
-/// # Isolated interfaces
+/// # Dummy interfaces
 ///
-/// An isolated interface uses a Linux dummy device with no bridge
+/// A dummy interface uses a Linux dummy device with no bridge
 /// attachment. It has no gateway and no pool-allocated addresses.
 /// Use [`addr`](Self::addr) and/or [`addr_v6`](Self::addr_v6) to
 /// assign addresses explicitly.
 #[derive(Clone, Copy, Debug)]
 pub struct IfaceConfig {
     /// Router whose downstream bridge this interface connects to.
-    /// None for isolated interfaces.
+    /// `None` for dummy interfaces.
     pub(crate) gateway: Option<NodeId>,
     /// Explicit IPv4 address with prefix length.
     pub(crate) addr: Option<Ipv4Net>,
@@ -42,7 +42,7 @@ pub struct IfaceConfig {
     pub(crate) addr_v6: Option<Ipv6Net>,
     /// Initial egress impairment (device-side veth / dummy device).
     pub(crate) egress: Option<LinkCondition>,
-    /// Initial ingress impairment (bridge-side veth). Ignored for isolated.
+    /// Initial ingress impairment (bridge-side veth). Ignored for dummy interfaces.
     pub(crate) ingress: Option<LinkCondition>,
     /// If true, the interface is created in link-down state.
     pub(crate) start_down: bool,
@@ -65,11 +65,10 @@ impl IfaceConfig {
         }
     }
 
-    /// Isolated interface. Not connected to any bridge. Uses a Linux
-    /// dummy device internally. No addresses by default. Use
-    /// [`addr`](Self::addr) and/or [`addr_v6`](Self::addr_v6) to
-    /// assign addresses.
-    pub fn isolated() -> Self {
+    /// Dummy interface backed by a Linux dummy device, not connected to
+    /// any bridge. No addresses by default. Use [`addr`](Self::addr)
+    /// and/or [`addr_v6`](Self::addr_v6) to assign addresses.
+    pub fn dummy() -> Self {
         Self {
             gateway: None,
             addr: None,
@@ -81,7 +80,7 @@ impl IfaceConfig {
     }
 
     /// Sets an explicit IPv4 address with prefix length. On routed
-    /// interfaces, overrides pool allocation. On isolated interfaces,
+    /// interfaces, overrides pool allocation. On dummy interfaces,
     /// configures the address.
     pub fn addr(mut self, addr: Ipv4Net) -> Self {
         self.addr = Some(addr);
@@ -97,8 +96,8 @@ impl IfaceConfig {
     /// Sets a link condition for the given direction.
     ///
     /// `Egress` applies to the device-side veth (or dummy device for
-    /// isolated interfaces). `Ingress` applies to the bridge-side veth
-    /// (ignored for isolated interfaces). `Both` sets the same condition
+    /// dummy interfaces). `Ingress` applies to the bridge-side veth
+    /// (ignored for dummy interfaces). `Both` sets the same condition
     /// on both sides.
     ///
     /// Can be called multiple times. Each call replaces the condition for
@@ -209,14 +208,14 @@ impl Iface {
     ///
     /// Returns `false` on a stale handle (device or interface removed).
     pub fn is_routed(&self) -> bool {
-        self.with_iface(|i| !i.isolated).unwrap_or(false)
+        self.with_iface(|i| !i.dummy).unwrap_or(false)
     }
 
-    /// Returns `true` if this interface is isolated (dummy device, no bridge).
+    /// Returns `true` if this is a dummy interface (Linux dummy device, no bridge).
     ///
     /// Returns `false` on a stale handle (device or interface removed).
-    pub fn is_isolated(&self) -> bool {
-        self.with_iface(|i| i.isolated).unwrap_or(false)
+    pub fn is_dummy(&self) -> bool {
+        self.with_iface(|i| i.dummy).unwrap_or(false)
     }
 
     /// Locks the core, looks up the device and interface, and applies `f`.
@@ -233,7 +232,7 @@ impl Iface {
 
     /// Sets a link condition on this interface for the given direction.
     ///
-    /// For isolated interfaces, `Ingress` returns an error (no bridge-side
+    /// For dummy interfaces, `Ingress` returns an error (no bridge-side
     /// veth). `Both` sets egress only and silently skips ingress.
     pub async fn set_condition(
         &self,
@@ -245,7 +244,7 @@ impl Iface {
 
     /// Removes any link condition for the given direction.
     ///
-    /// For isolated interfaces, `Ingress` returns an error. `Both` clears
+    /// For dummy interfaces, `Ingress` returns an error. `Both` clears
     /// egress only and silently skips ingress.
     pub async fn clear_condition(&self, direction: LinkDirection) -> Result<()> {
         self.apply_condition(None, direction).await
@@ -275,15 +274,15 @@ impl Iface {
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
             let op = Arc::clone(&dev.op);
 
-            if iface.isolated && matches!(direction, LinkDirection::Ingress) {
+            if iface.dummy && matches!(direction, LinkDirection::Ingress) {
                 bail!(
-                    "cannot {verb} ingress condition on isolated interface '{}' \
+                    "cannot {verb} ingress condition on dummy interface '{}' \
                      (no bridge-side veth)",
                     self.ifname
                 );
             }
 
-            let gateway = if !iface.isolated {
+            let gateway = if !iface.dummy {
                 let uplink = iface.uplink.expect("routed interface has uplink");
                 let gw_router = inner
                     .switch(uplink)
@@ -306,7 +305,7 @@ impl Iface {
             apply_or_remove_impair(&self.lab.netns, &dev_ns, &self.ifname, condition).await;
         }
 
-        // Apply ingress (skip silently for isolated + Both).
+        // Apply ingress (skip silently for dummy + Both).
         if let Some((ref gw_ns, ref gw_ifname)) = gateway {
             if matches!(direction, LinkDirection::Ingress | LinkDirection::Both) {
                 apply_or_remove_impair(&self.lab.netns, gw_ns, gw_ifname, condition).await;
@@ -380,7 +379,7 @@ impl Iface {
             device::select_default_v6_gateway, netlink::Netlink, wiring, Ipv6ProvisioningMode,
         };
 
-        let (ns, uplink, is_default_via, isolated, op) = {
+        let (ns, uplink, is_default_via, dummy, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.device)
@@ -392,7 +391,7 @@ impl Iface {
                 dev.ns.clone(),
                 iface.uplink,
                 *dev.default_via == *self.ifname,
-                iface.isolated,
+                iface.dummy,
                 Arc::clone(&dev.op),
             )
         };
@@ -405,7 +404,7 @@ impl Iface {
         })
         .await?;
 
-        if is_default_via && !isolated {
+        if is_default_via && !dummy {
             let uplink = uplink.expect("routed default-via interface has uplink");
             let provisioning = {
                 let inner = self.lab.core.lock().expect("poisoned");
@@ -484,12 +483,12 @@ impl Iface {
     /// router's pool, replaces the old address, and returns the new
     /// address.
     ///
-    /// Returns an error on isolated interfaces (no pool to allocate from).
+    /// Returns an error on dummy interfaces (no pool to allocate from).
     pub async fn renew_ip(&self) -> Result<std::net::Ipv4Addr> {
         use crate::{netlink::Netlink, wiring};
 
-        if self.is_isolated() {
-            bail!("cannot renew IP on isolated interface '{}'", self.ifname);
+        if self.is_dummy() {
+            bail!("cannot renew IP on dummy interface '{}'", self.ifname);
         }
 
         let op = {
@@ -530,12 +529,12 @@ impl Iface {
 
     /// Moves this interface to a different router's downstream network.
     ///
-    /// Returns an error on isolated interfaces (nothing to replug to).
+    /// Returns an error on dummy interfaces (nothing to replug to).
     pub async fn replug(&self, to_router: NodeId) -> Result<()> {
         use crate::{netlink::Netlink, wiring, Ipv6ProvisioningMode};
 
-        if self.is_isolated() {
-            bail!("cannot replug isolated interface '{}'", self.ifname);
+        if self.is_dummy() {
+            bail!("cannot replug dummy interface '{}'", self.ifname);
         }
 
         let op = self

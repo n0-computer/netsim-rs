@@ -281,9 +281,9 @@ impl Device {
             let iface = dev
                 .iface(to)
                 .ok_or_else(|| anyhow!("interface '{}' not found", to))?;
-            let uplink = iface.uplink.ok_or_else(|| {
-                anyhow!("cannot set default route to isolated interface '{}'", to)
-            })?;
+            let uplink = iface
+                .uplink
+                .ok_or_else(|| anyhow!("cannot set default route to dummy interface '{}'", to))?;
             let gw_ip = inner.router_downlink_gw_for_switch(uplink)?;
             let gw_v6 = inner.router_downlink_gw6_for_switch(uplink)?;
             let ra_default_enabled = inner.ra_default_enabled_for_switch(uplink)?;
@@ -537,7 +537,7 @@ impl Device {
                 }
             }
         } else {
-            // Isolated interface path.
+            // Dummy interface path.
             self.lab
                 .core
                 .lock()
@@ -566,7 +566,7 @@ impl Device {
                     prefix_len_v6,
                     egress: iface.egress,
                     ingress: None,
-                    isolated: true,
+                    dummy: true,
                     start_down: config.start_down,
                     ifname: iface.ifname.clone(),
                     is_default: false,
@@ -656,7 +656,7 @@ impl DeviceBuilder {
     /// ```ignore
     /// builder.iface("eth0", router.id())
     /// builder.iface("eth0", IfaceConfig::routed(router.id()).condition(cond, dir))
-    /// builder.iface("tun0", IfaceConfig::isolated().addr("10.8.0.1/24".parse()?))
+    /// builder.iface("tun0", IfaceConfig::dummy().addr("10.8.0.1/24".parse()?))
     /// ```
     pub fn iface(mut self, ifname: &str, config: impl Into<crate::IfaceConfig>) -> Self {
         if self.result.is_ok() {
@@ -729,8 +729,8 @@ impl DeviceBuilder {
 
             let mut iface_data = Vec::new();
             for iface in &dev.interfaces {
-                if iface.isolated {
-                    // Isolated interface: dummy device, no gateway.
+                if iface.dummy {
+                    // Dummy interface: Linux dummy device, no gateway.
                     let prefix_len = iface.prefix_len.unwrap_or(24);
                     let prefix_len_v6 = iface.prefix_len_v6.unwrap_or(64);
                     iface_data.push(IfaceBuild {
@@ -747,7 +747,7 @@ impl DeviceBuilder {
                         prefix_len_v6,
                         egress: iface.egress,
                         ingress: None,
-                        isolated: true,
+                        dummy: true,
                         start_down: iface.start_down,
                         ifname: iface.ifname.clone(),
                         is_default: iface.ifname == dev.default_via,
@@ -808,7 +808,7 @@ impl DeviceBuilder {
                             .unwrap_or_else(|| sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64)),
                         egress: iface.egress,
                         ingress: iface.ingress,
-                        isolated: false,
+                        dummy: false,
                         start_down: iface.start_down,
                         ifname: iface.ifname.clone(),
                         is_default: iface.ifname == dev.default_via,

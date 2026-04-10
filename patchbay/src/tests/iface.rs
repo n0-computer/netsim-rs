@@ -125,67 +125,67 @@ async fn add_secondary_ip() -> Result<()> {
     Ok(())
 }
 
-/// Build-time isolated interface has the configured address and no gateway.
+/// Build-time dummy interface has the configured address and no gateway.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn isolated_build_time() -> Result<()> {
+async fn dummy_build_time() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let addr: Ipv4Net = "172.17.0.2/16".parse()?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", dc.id())
-        .iface("docker0", IfaceConfig::isolated().addr(addr))
+        .iface("docker0", IfaceConfig::dummy().addr(addr))
         .build()
         .await?;
 
     let docker0 = dev.iface("docker0").expect("docker0 should exist");
-    assert!(docker0.is_isolated());
+    assert!(docker0.is_dummy());
     assert!(!docker0.is_routed());
     assert_eq!(docker0.ip(), Some(addr.addr()));
 
     let eth0 = dev.iface("eth0").expect("eth0 should exist");
     assert!(eth0.is_routed());
-    assert!(!eth0.is_isolated());
+    assert!(!eth0.is_dummy());
 
     Ok(())
 }
 
-/// Runtime isolated interface with explicit address.
+/// Runtime dummy interface with explicit address.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn isolated_runtime() -> Result<()> {
+async fn dummy_runtime() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let dev = lab.add_device("dev").iface("eth0", dc.id()).build().await?;
 
     let addr: Ipv4Net = "10.8.0.1/24".parse()?;
     let tun = dev
-        .add_iface("tun0", IfaceConfig::isolated().addr(addr))
+        .add_iface("tun0", IfaceConfig::dummy().addr(addr))
         .await?;
 
-    assert!(tun.is_isolated());
+    assert!(tun.is_dummy());
     assert_eq!(tun.ip(), Some(addr.addr()));
     assert_eq!(dev.interfaces().len(), 2);
 
     Ok(())
 }
 
-/// Bare isolated interface (no address) can be created.
+/// Bare dummy interface (no address) can be created.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn isolated_bare() -> Result<()> {
+async fn dummy_bare() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", dc.id())
-        .iface("bare0", IfaceConfig::isolated())
+        .iface("bare0", IfaceConfig::dummy())
         .build()
         .await?;
 
     let bare = dev.iface("bare0").expect("bare0 should exist");
-    assert!(bare.is_isolated());
+    assert!(bare.is_dummy());
     assert!(bare.ip().is_none());
 
     Ok(())
@@ -237,39 +237,36 @@ async fn asymmetric_conditions() -> Result<()> {
     Ok(())
 }
 
-/// Replug and renew_ip return errors on isolated interfaces.
+/// Replug and renew_ip return errors on dummy interfaces.
 #[tokio::test(flavor = "current_thread")]
 #[traced_test]
-async fn isolated_guards() -> Result<()> {
+async fn dummy_guards() -> Result<()> {
     let lab = Lab::new().await?;
     let dc = lab.add_router("dc").build().await?;
     let dev = lab
         .add_device("dev")
         .iface("eth0", dc.id())
-        .iface("tun0", IfaceConfig::isolated().addr("10.8.0.1/24".parse()?))
+        .iface("tun0", IfaceConfig::dummy().addr("10.8.0.1/24".parse()?))
         .build()
         .await?;
 
     let tun = dev.iface("tun0").unwrap();
 
-    // Cannot replug isolated interface.
+    // Cannot replug a dummy interface.
     let err = tun.replug(dc.id()).await;
-    assert!(err.is_err(), "replug on isolated should fail");
+    assert!(err.is_err(), "replug on dummy should fail");
 
-    // Cannot renew IP on isolated interface.
+    // Cannot renew IP on a dummy interface.
     let err = tun.renew_ip().await;
-    assert!(err.is_err(), "renew_ip on isolated should fail");
+    assert!(err.is_err(), "renew_ip on dummy should fail");
 
-    // Cannot set ingress condition on isolated interface.
+    // Cannot set ingress condition on a dummy interface.
     let err = tun
         .set_condition(LinkCondition::Mobile4G, LinkDirection::Ingress)
         .await;
-    assert!(
-        err.is_err(),
-        "set_condition ingress on isolated should fail"
-    );
+    assert!(err.is_err(), "set_condition ingress on dummy should fail");
 
-    // Egress condition works on isolated interface.
+    // Egress condition works on a dummy interface.
     tun.set_condition(LinkCondition::Mobile4G, LinkDirection::Egress)
         .await?;
     assert_eq!(tun.egress(), Some(LinkCondition::Mobile4G));

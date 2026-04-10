@@ -151,13 +151,13 @@ pub(crate) struct DownlinkV6Gateways {
 ///
 /// For routed interfaces, `uplink` is `Some(switch_id)` and the interface
 /// is connected to a router's downstream bridge via a veth pair.
-/// For isolated interfaces, `uplink` is `None` and the interface uses a
+/// For dummy interfaces, `uplink` is `None` and the interface uses a
 /// Linux dummy device with no bridge attachment.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceIfaceData {
     /// Interface name inside the device namespace (e.g. `"eth0"`).
     pub ifname: Arc<str>,
-    /// Switch this interface is attached to. `None` for isolated interfaces.
+    /// Switch this interface is attached to. `None` for dummy interfaces.
     pub uplink: Option<NodeId>,
     /// Assigned IPv4 address.
     pub ip: Option<Ipv4Addr>,
@@ -167,15 +167,15 @@ pub(crate) struct DeviceIfaceData {
     pub ll_v6: Option<Ipv6Addr>,
     /// Egress impairment (device-side veth or dummy device).
     pub egress: Option<LinkCondition>,
-    /// Ingress impairment (bridge-side veth). Always `None` for isolated.
+    /// Ingress impairment (bridge-side veth). Always `None` for dummy interfaces.
     pub ingress: Option<LinkCondition>,
-    /// `true` for isolated interfaces (Linux dummy device, no veth pair).
-    pub isolated: bool,
+    /// `true` for dummy interfaces (Linux dummy device, no veth pair).
+    pub dummy: bool,
     /// If `true`, the interface should be created in link-down state.
     pub start_down: bool,
-    /// IPv4 prefix length (for isolated interfaces with explicit addr).
+    /// IPv4 prefix length (for dummy interfaces with explicit addr).
     pub(crate) prefix_len: Option<u8>,
-    /// IPv6 prefix length (for isolated interfaces with explicit addr).
+    /// IPv6 prefix length (for dummy interfaces with explicit addr).
     pub(crate) prefix_len_v6: Option<u8>,
     /// Unique index used to name the root-namespace veth ends.
     pub(crate) idx: u64,
@@ -377,7 +377,7 @@ pub(crate) struct IfaceBuild {
     pub(crate) prefix_len_v6: u8,
     pub(crate) egress: Option<LinkCondition>,
     pub(crate) ingress: Option<LinkCondition>,
-    pub(crate) isolated: bool,
+    pub(crate) dummy: bool,
     pub(crate) start_down: bool,
     pub(crate) ifname: Arc<str>,
     pub(crate) is_default: bool,
@@ -871,7 +871,7 @@ impl NetworkCore {
             ll_v6: assigned_v6.map(|_| link_local_from_seed(idx)),
             egress: impair,
             ingress: None,
-            isolated: false,
+            dummy: false,
             start_down: false,
             prefix_len: None,
             prefix_len_v6: None,
@@ -882,7 +882,7 @@ impl NetworkCore {
 
     /// Adds an interface to a device from an [`IfaceConfig`](crate::IfaceConfig).
     ///
-    /// Handles both routed (gateway present) and isolated (gateway absent)
+    /// Handles both routed (gateway present) and dummy (gateway absent)
     /// interfaces. For routed interfaces, allocates IPs from the router's pool
     /// unless overridden by the config.
     pub(crate) fn add_device_iface_from_config(
@@ -892,7 +892,7 @@ impl NetworkCore {
         config: crate::IfaceConfig,
     ) -> Result<()> {
         if let Some(router) = config.gateway {
-            // Routed interface — delegate to add_device_iface for pool allocation.
+            // Routed interface: delegate to add_device_iface for pool allocation.
             self.add_device_iface(device, ifname, router, config.egress)?;
             // Apply fields that add_device_iface doesn't handle.
             let dev = self.device_mut(device).expect("just inserted");
@@ -908,7 +908,7 @@ impl NetworkCore {
             iface.ingress = config.ingress;
             iface.start_down = config.start_down;
         } else {
-            // Isolated interface — no router, no pool allocation.
+            // Dummy interface: no router, no pool allocation.
             let idx = self.alloc_id();
             let dev = self
                 .devices
@@ -930,7 +930,7 @@ impl NetworkCore {
                 ll_v6: None,
                 egress: config.egress,
                 ingress: None,
-                isolated: true,
+                dummy: true,
                 start_down: config.start_down,
                 prefix_len: config.addr.map(|n| n.prefix_len()),
                 prefix_len_v6: config.addr_v6.map(|n| n.prefix_len()),
@@ -994,7 +994,7 @@ impl NetworkCore {
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
             egress: impair,
             ingress: None,
-            isolated: false,
+            dummy: false,
             start_down: false,
             ifname: ifname.into(),
             is_default: false,
@@ -1072,7 +1072,7 @@ impl NetworkCore {
             prefix_len_v6: sw.cidr_v6.map(|c| c.prefix_len()).unwrap_or(64),
             egress,
             ingress: None,
-            isolated: false,
+            dummy: false,
             start_down: false,
             ifname: ifname.into(),
             is_default,
@@ -1621,7 +1621,7 @@ impl NetworkCore {
             .ok_or_else(|| anyhow!("interface '{}' has no IPv4 address", ifname))?;
         let sw_id = iface
             .uplink
-            .ok_or_else(|| anyhow!("cannot renew IP on isolated interface '{}'", ifname))?;
+            .ok_or_else(|| anyhow!("cannot renew IP on dummy interface '{}'", ifname))?;
         let prefix_len = self
             .switch(sw_id)
             .ok_or_else(|| anyhow!("switch for interface '{}' missing", ifname))?

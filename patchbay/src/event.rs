@@ -278,7 +278,7 @@ pub struct IfaceSnapshot {
     ///
     /// Named `link_condition` for backward compatibility with serialized state.
     pub link_condition: Option<LinkCondition>,
-    /// Ingress link condition (bridge-side veth). Always `None` for isolated interfaces.
+    /// Ingress link condition (bridge-side veth). Always `None` for dummy interfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ingress_condition: Option<LinkCondition>,
 }

@@ -703,10 +703,10 @@ pub(crate) async fn setup_device_async(
     Ok(())
 }
 
-/// Wire an isolated (dummy) interface inside a device namespace.
-#[instrument(name = "iface_isolated", skip_all, fields(iface = %build.ifname))]
-async fn wire_isolated_async(netns: &Arc<netns::NetnsManager>, build: &IfaceBuild) -> Result<()> {
-    debug!(ip = ?build.dev_ip, ip6 = ?build.dev_ip_v6, "iface_isolated: setup");
+/// Wire a dummy interface inside a device namespace.
+#[instrument(name = "iface_dummy", skip_all, fields(iface = %build.ifname))]
+async fn wire_dummy_async(netns: &Arc<netns::NetnsManager>, build: &IfaceBuild) -> Result<()> {
+    debug!(ip = ?build.dev_ip, ip6 = ?build.dev_ip_v6, "iface_dummy: setup");
     nl_run(netns, &build.dev_ns, {
         let ifname = build.ifname.clone();
         let dev_ip = build.dev_ip;
@@ -744,8 +744,8 @@ pub(crate) async fn wire_iface_async(
     root_ns: &str,
     dev: IfaceBuild,
 ) -> Result<()> {
-    if dev.isolated {
-        return wire_isolated_async(netns, &dev).await;
+    if dev.dummy {
+        return wire_dummy_async(netns, &dev).await;
     }
     debug!(ip = ?dev.dev_ip, ip6 = ?dev.dev_ip_v6, gw = ?dev.gw_ip, gw6 = ?dev.gw_ip_v6, "iface: assigned addresses");
     let root_gw = format!("{}g{}", prefix, dev.idx);
@@ -818,7 +818,7 @@ pub(crate) async fn wire_iface_async(
         apply_impair_in(netns, &dev.dev_ns, &dev.ifname, cond).await;
     }
     if let Some(cond) = dev.ingress {
-        if !dev.isolated {
+        if !dev.dummy {
             let gw_ifname: Arc<str> = format!("v{}", dev.idx).into();
             apply_impair_in(netns, &dev.gw_ns, &gw_ifname, cond).await;
         }
