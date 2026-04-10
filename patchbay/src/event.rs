@@ -465,7 +465,7 @@ impl DeviceState {
             .iter()
             .map(|iface| {
                 let router_name = iface
-                    .uplink
+                    .uplink()
                     .and_then(|sw| core.switch(sw))
                     .and_then(|sw| sw.owner_router)
                     .and_then(|rid| core.router(rid))

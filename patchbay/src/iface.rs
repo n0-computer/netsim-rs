@@ -208,14 +208,14 @@ impl Iface {
     ///
     /// Returns `false` on a stale handle (device or interface removed).
     pub fn is_routed(&self) -> bool {
-        self.with_iface(|i| !i.dummy).unwrap_or(false)
+        self.with_iface(|i| !i.is_dummy()).unwrap_or(false)
     }
 
     /// Returns `true` if this is a dummy interface (Linux dummy device, no bridge).
     ///
     /// Returns `false` on a stale handle (device or interface removed).
     pub fn is_dummy(&self) -> bool {
-        self.with_iface(|i| i.dummy).unwrap_or(false)
+        self.with_iface(|i| i.is_dummy()).unwrap_or(false)
     }
 
     /// Locks the core, looks up the device and interface, and applies `f`.
@@ -274,7 +274,7 @@ impl Iface {
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
             let op = Arc::clone(&dev.op);
 
-            if iface.dummy && matches!(direction, LinkDirection::Ingress) {
+            if iface.is_dummy() && matches!(direction, LinkDirection::Ingress) {
                 bail!(
                     "cannot {verb} ingress condition on dummy interface '{}' \
                      (no bridge-side veth)",
@@ -282,8 +282,8 @@ impl Iface {
                 );
             }
 
-            let gateway = if !iface.dummy {
-                let uplink = iface.uplink.expect("routed interface has uplink");
+            let gateway = if !iface.is_dummy() {
+                let uplink = iface.uplink().expect("routed interface has uplink");
                 let gw_router = inner
                     .switch(uplink)
                     .and_then(|sw| sw.owner_router)
@@ -389,9 +389,9 @@ impl Iface {
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
             (
                 dev.ns.clone(),
-                iface.uplink,
+                iface.uplink(),
                 *dev.default_via == *self.ifname,
-                iface.dummy,
+                iface.is_dummy(),
                 Arc::clone(&dev.op),
             )
         };
@@ -559,7 +559,7 @@ impl Iface {
             let dev = inner.device(self.device);
             let old_uplink = dev
                 .and_then(|d| d.iface(&self.ifname))
-                .and_then(|i| i.uplink);
+                .and_then(|i| i.uplink());
             let name = old_uplink
                 .and_then(|sw| inner.switch(sw))
                 .and_then(|sw| sw.owner_router)

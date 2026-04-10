@@ -282,7 +282,7 @@ impl Device {
                 .iface(to)
                 .ok_or_else(|| anyhow!("interface '{}' not found", to))?;
             let uplink = iface
-                .uplink
+                .uplink()
                 .ok_or_else(|| anyhow!("cannot set default route to dummy interface '{}'", to))?;
             let gw_ip = inner.router_downlink_gw_for_switch(uplink)?;
             let gw_v6 = inner.router_downlink_gw6_for_switch(uplink)?;
@@ -585,7 +585,7 @@ impl Device {
             let dev = inner.device(self.id);
             let iface_data = dev.and_then(|d| d.iface(ifname));
             let router_name = iface_data
-                .and_then(|i| i.uplink)
+                .and_then(|i| i.uplink())
                 .and_then(|sw| inner.switch(sw))
                 .and_then(|sw| sw.owner_router)
                 .and_then(|rid| inner.router(rid))
@@ -729,7 +729,7 @@ impl DeviceBuilder {
 
             let mut iface_data = Vec::new();
             for iface in &dev.interfaces {
-                if iface.dummy {
+                if iface.is_dummy() {
                     // Dummy interface: Linux dummy device, no gateway.
                     let prefix_len = iface.prefix_len.unwrap_or(24);
                     let prefix_len_v6 = iface.prefix_len_v6.unwrap_or(64);
@@ -755,7 +755,7 @@ impl DeviceBuilder {
                     });
                 } else {
                     // Routed interface: veth pair, gateway, pool allocation.
-                    let uplink = iface.uplink.ok_or_else(|| {
+                    let uplink = iface.uplink().ok_or_else(|| {
                         anyhow!(
                             "device '{}' iface '{}' switch missing",
                             dev.name,

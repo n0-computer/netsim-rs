@@ -147,18 +147,22 @@ pub(crate) struct DownlinkV6Gateways {
     pub link_local_v6: Option<Ipv6Addr>,
 }
 
+/// How a device interface is attached to the network.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum IfaceAttachment {
+    /// Connected to a router's downstream bridge via a veth pair.
+    Routed(NodeId),
+    /// Linux dummy device with no bridge attachment.
+    Dummy,
+}
+
 /// One network interface on a device.
-///
-/// For routed interfaces, `uplink` is `Some(switch_id)` and the interface
-/// is connected to a router's downstream bridge via a veth pair.
-/// For dummy interfaces, `uplink` is `None` and the interface uses a
-/// Linux dummy device with no bridge attachment.
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceIfaceData {
     /// Interface name inside the device namespace (e.g. `"eth0"`).
     pub ifname: Arc<str>,
-    /// Switch this interface is attached to. `None` for dummy interfaces.
-    pub uplink: Option<NodeId>,
+    /// How this interface is attached to the network.
+    pub attachment: IfaceAttachment,
     /// Assigned IPv4 address.
     pub ip: Option<Ipv4Addr>,
     /// Assigned IPv6 address.
@@ -169,8 +173,6 @@ pub(crate) struct DeviceIfaceData {
     pub egress: Option<LinkCondition>,
     /// Ingress impairment (bridge-side veth). Always `None` for dummy interfaces.
     pub ingress: Option<LinkCondition>,
-    /// `true` for dummy interfaces (Linux dummy device, no veth pair).
-    pub dummy: bool,
     /// If `true`, the interface should be created in link-down state.
     pub start_down: bool,
     /// IPv4 prefix length (for dummy interfaces with explicit addr).
@@ -179,6 +181,21 @@ pub(crate) struct DeviceIfaceData {
     pub(crate) prefix_len_v6: Option<u8>,
     /// Unique index used to name the root-namespace veth ends.
     pub(crate) idx: u64,
+}
+
+impl DeviceIfaceData {
+    /// Returns the switch NodeId if this is a routed interface.
+    pub(crate) fn uplink(&self) -> Option<NodeId> {
+        match self.attachment {
+            IfaceAttachment::Routed(id) => Some(id),
+            IfaceAttachment::Dummy => None,
+        }
+    }
+
+    /// Returns true if this is a dummy (non-routed) interface.
+    pub(crate) fn is_dummy(&self) -> bool {
+        matches!(self.attachment, IfaceAttachment::Dummy)
+    }
 }
 
 /// A network endpoint with one or more interfaces.
@@ -865,13 +882,12 @@ impl NetworkCore {
         }
         dev.interfaces.push(DeviceIfaceData {
             ifname: ifname.into(),
-            uplink: Some(downlink),
+            attachment: IfaceAttachment::Routed(downlink),
             ip: assigned,
             ip_v6: assigned_v6,
             ll_v6: assigned_v6.map(|_| link_local_from_seed(idx)),
             egress: impair,
             ingress: None,
-            dummy: false,
             start_down: false,
             prefix_len: None,
             prefix_len_v6: None,
@@ -924,13 +940,12 @@ impl NetworkCore {
             let ip_v6 = config.addr_v6.map(|n| n.addr());
             dev.interfaces.push(DeviceIfaceData {
                 ifname: ifname.into(),
-                uplink: None,
+                attachment: IfaceAttachment::Dummy,
                 ip,
                 ip_v6,
                 ll_v6: None,
                 egress: config.egress,
                 ingress: None,
-                dummy: true,
                 start_down: config.start_down,
                 prefix_len: config.addr.map(|n| n.prefix_len()),
                 prefix_len_v6: config.addr_v6.map(|n| n.prefix_len()),
@@ -967,7 +982,7 @@ impl NetworkCore {
             .iter()
             .find(|i| &*i.ifname == ifname)
             .unwrap();
-        let uplink = iface.uplink.ok_or_else(|| anyhow!("switch missing"))?;
+        let uplink = iface.uplink().ok_or_else(|| anyhow!("switch missing"))?;
         let sw = self
             .switch(uplink)
             .ok_or_else(|| anyhow!("switch missing"))?;
@@ -1103,7 +1118,7 @@ impl NetworkCore {
             .device_mut(device)
             .ok_or_else(|| anyhow!("device disappeared"))?;
         if let Some(iface) = dev.interfaces.iter_mut().find(|i| &*i.ifname == ifname) {
-            iface.uplink = Some(new_uplink);
+            iface.attachment = IfaceAttachment::Routed(new_uplink);
             iface.ip = new_ip;
             iface.ip_v6 = new_ip_v6;
             iface.ll_v6 = new_ip_v6.map(|_| link_local_from_seed(iface.idx));
@@ -1170,7 +1185,7 @@ impl NetworkCore {
             if mode != Ipv6ProvisioningMode::RaDriven {
                 continue;
             }
-            if iface.uplink == Some(downlink) && iface.ip_v6.is_some() {
+            if iface.uplink() == Some(downlink) && iface.ip_v6.is_some() {
                 out.push(DeviceDefaultV6RouteTarget {
                     ns: dev.ns.clone(),
                     ifname: iface.ifname.clone(),
@@ -1558,7 +1573,7 @@ impl NetworkCore {
         if let Some(sw_id) = router.downlink {
             for dev in self.devices.values() {
                 for iface in &dev.interfaces {
-                    if iface.uplink == Some(sw_id) {
+                    if iface.uplink() == Some(sw_id) {
                         bail!(
                             "cannot remove router '{}': device '{}' is still connected",
                             router.name,
@@ -1620,7 +1635,7 @@ impl NetworkCore {
             .ip
             .ok_or_else(|| anyhow!("interface '{}' has no IPv4 address", ifname))?;
         let sw_id = iface
-            .uplink
+            .uplink()
             .ok_or_else(|| anyhow!("cannot renew IP on dummy interface '{}'", ifname))?;
         let prefix_len = self
             .switch(sw_id)
@@ -1650,7 +1665,7 @@ impl NetworkCore {
                 let iface = dev
                     .interfaces
                     .iter()
-                    .find(|i| i.uplink == Some(downlink_sw))
+                    .find(|i| i.uplink() == Some(downlink_sw))
                     .ok_or_else(|| {
                         anyhow!(
                             "device '{}' is not connected to router '{}'",
