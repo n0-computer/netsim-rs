@@ -1450,8 +1450,7 @@ impl Lab {
             let core = self.inner.core.lock().unwrap();
             (core.cfg.root_ns.clone(), core.cfg.ix_gw, core.cfg.ix_gw_v6)
         };
-        let server =
-            crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns, ix_gw, ix_gw_v6)?;
+        let server = crate::dns_server::DnsServer::start(&self.inner.netns, &root_ns)?;
         // Point all devices' resolv.conf at the DNS server (v4 + v6).
         {
             let mut core = self.inner.core.lock().unwrap();
