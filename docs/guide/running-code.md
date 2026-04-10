@@ -135,7 +135,7 @@ receives a new IP address from the new router's pool, and routes are
 updated automatically:
 
 ```rust
-dev.replug_iface("wlan0", other_router.id()).await?;
+dev.iface("wlan0").unwrap().replug(other_router.id()).await?;
 ```
 
 This models scenarios like roaming between WiFi access points or
@@ -156,10 +156,10 @@ Simulate link failures by administratively disabling an interface. While
 the interface is down, packets sent to or from it are dropped:
 
 ```rust
-dev.link_down("wlan0").await?;
+dev.iface("wlan0").unwrap().link_down().await?;
 // All traffic over wlan0 is now dropped.
 
-dev.link_up("wlan0").await?;
+dev.iface("wlan0").unwrap().link_up().await?;
 // The interface is back and traffic flows again.
 ```
 
@@ -172,18 +172,18 @@ network quality:
 use patchbay::{LinkCondition, LinkDirection, LinkLimits};
 
 // Switch to a 3G-like link.
-dev.set_link_condition("wlan0", Some(LinkCondition::Mobile3G), LinkDirection::Both).await?;
+dev.iface("wlan0").unwrap().set_condition(LinkCondition::Mobile3G, LinkDirection::Both).await?;
 
 // Apply custom impairment.
-dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
+dev.iface("wlan0").unwrap().set_condition(LinkCondition::Manual(LinkLimits {
     rate_kbit: 500,
     loss_pct: 15.0,
     latency_ms: 200,
     ..Default::default()
-})), LinkDirection::Both).await?;
+}), LinkDirection::Both).await?;
 
 // Remove all impairment and return to a clean link.
-dev.set_link_condition("wlan0", None, LinkDirection::Both).await?;
+dev.iface("wlan0").unwrap().clear_condition(LinkDirection::Both).await?;
 ```
 
 ### Changing NAT at runtime

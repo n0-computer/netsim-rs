@@ -46,10 +46,10 @@ let home = lab.add_router("home").nat(Nat::Home).build().await?;
 let device = lab.add_device("client").uplink(home.id()).build().await?;
 
 // Connect VPN: device moves to VPN router, gets new IP
-device.replug_iface("eth0", vpn_exit.id()).await?;
+device.iface("eth0").unwrap().replug(vpn_exit.id()).await?;
 
 // Disconnect VPN: device returns to home router
-device.replug_iface("eth0", home.id()).await?;
+device.iface("eth0").unwrap().replug(home.id()).await?;
 ```
 
 ### Split-tunnel VPN
@@ -80,9 +80,9 @@ device.set_default_route("eth0").await?;
 A kill switch drops all non-tunnel traffic immediately:
 
 ```rust
-device.link_down("eth0").await?;           // kill switch fires
-device.replug_iface("eth0", vpn_exit.id()).await?;  // tunnel established
-device.link_up("eth0").await?;
+device.iface("eth0").unwrap().link_down().await?;           // kill switch fires
+device.iface("eth0").unwrap().replug(vpn_exit.id()).await?;  // tunnel established
+device.iface("eth0").unwrap().link_up().await?;
 ```
 
 ### VPN MTU impact
@@ -189,14 +189,14 @@ let cell_router = lab.add_router("cell").nat(Nat::Cgnat).build().await?;
 let device = lab.add_device("phone")
     .iface("eth0", wifi_router.id())
     .build().await?;
-device.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+device.iface("eth0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
 
 // Simulate handoff with connectivity gap
-device.link_down("eth0").await?;
+device.iface("eth0").unwrap().link_down().await?;
 tokio::time::sleep(Duration::from_millis(500)).await;
-device.replug_iface("eth0", cell_router.id()).await?;
-device.set_link_condition("eth0", Some(LinkCondition::Mobile4G), LinkDirection::Both).await?;
-device.link_up("eth0").await?;
+device.iface("eth0").unwrap().replug(cell_router.id()).await?;
+device.iface("eth0").unwrap().set_condition(LinkCondition::Mobile4G, LinkDirection::Both).await?;
+device.iface("eth0").unwrap().link_up().await?;
 
 // Assert: application reconnects within X seconds
 ```
@@ -243,10 +243,10 @@ let router = lab.add_router("isp")
     .build().await?;
 
 let device = lab.add_device("client").uplink(router.id()).build().await?;
-device.set_link_condition("eth0", Some(LinkCondition::Manual(LinkLimits {
+device.iface("eth0").unwrap().set_condition(LinkCondition::Manual(LinkLimits {
     rate_kbit: 2_000,
     ..Default::default()
-})), LinkDirection::Both)?;
+}), LinkDirection::Both).await?;
 ```
 
 ---
@@ -306,7 +306,7 @@ let device = lab.add_device("victim").uplink(portal.id()).build().await?;
 // Assert: all connections fail/timeout
 
 // User "authenticates" - move to real router
-device.replug_iface("eth0", real_router.id()).await?;
+device.iface("eth0").unwrap().replug(real_router.id()).await?;
 
 // Assert: connections now succeed
 ```
@@ -321,8 +321,8 @@ reassignment.
 
 ```rust
 let old_ip = device.ip();
-let new_ip = device.renew_ip("eth0").await?;
-assert_ne!(old_ip, new_ip);
+let new_ip = device.iface("eth0").unwrap().renew_ip().await?;
+assert_ne!(old_ip, Some(new_ip));
 
 // Assert: application detects IP change and re-establishes connections
 ```
@@ -337,11 +337,11 @@ Network conditions worsen over time (moving away from WiFi AP, entering tunnel
 on cellular, weather affecting satellite).
 
 ```rust
-device.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+device.iface("eth0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", Some(LinkCondition::WifiBad), LinkDirection::Both).await?;
+device.iface("eth0").unwrap().set_condition(LinkCondition::WifiBad, LinkDirection::Both).await?;
 tokio::time::sleep(Duration::from_secs(5)).await;
-device.set_link_condition("eth0", None, LinkDirection::Both).await?;  // remove impairment
+device.iface("eth0").unwrap().clear_condition(LinkDirection::Both).await?;  // remove impairment
 ```
 
 ### Intermittent connectivity
@@ -350,9 +350,9 @@ Network flaps briefly, simulating tunnels, elevators, or brief signal loss.
 
 ```rust
 for _ in 0..3 {
-    device.link_down("eth0").await?;
+    device.iface("eth0").unwrap().link_down().await?;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    device.link_up("eth0").await?;
+    device.iface("eth0").unwrap().link_up().await?;
     tokio::time::sleep(Duration::from_secs(2)).await;
 }
 // Assert: application recovers after each flap
@@ -364,20 +364,20 @@ for _ in 0..3 {
 
 | Real-World Event | Simulator Primitive |
 |---|---|
-| VPN connects (full tunnel) | `device.replug_iface("eth0", vpn_router)` |
-| VPN disconnects | `device.replug_iface("eth0", original_router)` |
-| VPN kill switch | `link_down` then `replug_iface` |
+| VPN connects (full tunnel) | `dev.iface("eth0").unwrap().replug(vpn_router.id())` |
+| VPN disconnects | `dev.iface("eth0").unwrap().replug(original_router.id())` |
+| VPN kill switch | `iface.link_down()` then `iface.replug()` |
 | VPN split tunnel | Two interfaces on different routers + `set_default_route` |
-| WiFi to cellular | `replug_iface` + change `set_link_condition` |
-| Network goes down briefly | `link_down`, sleep, `link_up` |
+| WiFi to cellular | `iface.replug()` + `iface.set_condition()` |
+| Network goes down briefly | `iface.link_down()`, sleep, `iface.link_up()` |
 | Cone NAT | `Nat::Home` |
 | Symmetric NAT | `Nat::Corporate` |
 | Double NAT / CGNAT | Chain routers: `home.upstream(cgnat.id())` |
 | Corporate UDP block | `Firewall::Corporate` on router |
 | Captive portal | Router with no upstream |
-| DHCP renewal | `device.renew_ip("eth0")` |
-| Asymmetric bandwidth | `downlink_condition` on router + `set_link_condition` on device |
-| Degrading conditions | Sequential `set_link_condition` calls |
+| DHCP renewal | `dev.iface("eth0").unwrap().renew_ip()` |
+| Asymmetric bandwidth | `downlink_condition` on router + `iface.set_condition()` on device |
+| Degrading conditions | Sequential `iface.set_condition()` calls |
 | MTU reduction (VPN) | `.mtu(1420)` on router or device builder |
 | PMTU blackhole | `.block_icmp_frag_needed()` on router builder |
 | IPv6 dual-stack | `.ip_support(IpSupport::DualStack)` |

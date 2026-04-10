@@ -301,7 +301,7 @@ when no global prefix has been assigned.
 In patchbay, you can inspect link-local addresses through interface
 snapshots:
 
-- Device side: `DeviceIface::ll6()`
+- Device side: `Iface::ll6()`
 - Router side: `RouterIface::ll6()`
 - Router snapshots: `Router::iface(name)` and `Router::interfaces()`
 

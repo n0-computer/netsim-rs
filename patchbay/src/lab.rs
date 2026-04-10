@@ -394,7 +394,7 @@ pub struct Lab {
 ///
 /// # Example
 /// ```no_run
-/// # use patchbay::{Lab, LabOpts};
+/// # use patchbay::{Lab, LabOpts, OutDir};
 /// # #[tokio::main(flavor = "current_thread")]
 /// # async fn main() -> anyhow::Result<()> {
 /// let lab = Lab::with_opts(

@@ -39,7 +39,7 @@ let dev = lab
     .iface("eth0", home.id())
     .build()
     .await?;
-dev.set_link_condition("eth0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+dev.iface("eth0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
 
 // A server in the datacenter.
 let server = lab
@@ -229,7 +229,7 @@ let dev = lab.add_device("phone")
     .iface("eth0", dc.id())
     .default_via("wlan0")
     .build().await?;
-dev.set_link_condition("wlan0", Some(LinkCondition::Wifi), LinkDirection::Both).await?;
+dev.iface("wlan0").unwrap().set_condition(LinkCondition::Wifi, LinkDirection::Both).await?;
 ```
 
 ### Running code in namespaces
@@ -271,25 +271,25 @@ let handle = dev.spawn_thread(|| {
 ### Dynamic operations
 
 ```rust
-// Switch a device's uplink to a different router at runtime
-dev.replug_iface("wlan0", other_router.id()).await?;
+// Switch a device's uplink to a different router at runtime.
+dev.iface("wlan0").unwrap().replug(other_router.id()).await?;
 
-// Switch default route between interfaces
+// Switch default route between interfaces.
 dev.set_default_route("eth0").await?;
 
-// Link down / up
-dev.link_down("wlan0").await?;
-dev.link_up("wlan0").await?;
+// Link down / up.
+dev.iface("wlan0").unwrap().link_down().await?;
+dev.iface("wlan0").unwrap().link_up().await?;
 
-// Change link condition dynamically
-dev.set_link_condition("wlan0", Some(LinkCondition::Manual(LinkLimits {
+// Change link condition dynamically.
+dev.iface("wlan0").unwrap().set_condition(LinkCondition::Manual(LinkLimits {
     rate_kbit: 1000,
     loss_pct: 5.0,
     latency_ms: 100,
     ..Default::default()
-})), LinkDirection::Both).await?;
+}), LinkDirection::Both).await?;
 
-// Change NAT mode at runtime
+// Change NAT mode at runtime.
 router.set_nat_mode(Nat::Corporate).await?;
 router.flush_nat_state().await?;
 ```
@@ -304,8 +304,8 @@ node has been removed from the lab.
 
 For IPv6 diagnostics, use per-interface snapshots instead of only `ip6()`:
 
-- `DeviceIface::ip6()` for global/ULA address.
-- `DeviceIface::ll6()` for `fe80::/10` link-local address.
+- `Iface::ip6()` for global/ULA address.
+- `Iface::ll6()` for `fe80::/10` link-local address.
 - `RouterIface::ip6()` and `RouterIface::ll6()` for router-side interface state.
 
 ## TOML configuration
