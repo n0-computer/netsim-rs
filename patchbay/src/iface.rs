@@ -342,7 +342,7 @@ impl Iface {
     pub async fn link_down(&self) -> Result<()> {
         use crate::{netlink::Netlink, wiring};
 
-        let ns = {
+        let (ns, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.device)
@@ -350,8 +350,9 @@ impl Iface {
             let _ = dev
                 .iface(&self.ifname)
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
-            dev.ns.clone()
+            (dev.ns.clone(), Arc::clone(&dev.op))
         };
+        let _guard = op.lock().await;
         let ifname = self.ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.set_link_down(&ifname).await
@@ -374,7 +375,7 @@ impl Iface {
             device::select_default_v6_gateway, netlink::Netlink, wiring, Ipv6ProvisioningMode,
         };
 
-        let (ns, uplink, is_default_via, isolated) = {
+        let (ns, uplink, is_default_via, isolated, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.device)
@@ -387,8 +388,10 @@ impl Iface {
                 iface.uplink,
                 *dev.default_via == *self.ifname,
                 iface.isolated,
+                Arc::clone(&dev.op),
             )
         };
+        let _guard = op.lock().await;
 
         let ifname = self.ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, {
@@ -453,7 +456,7 @@ impl Iface {
     pub async fn add_ip(&self, ip: std::net::Ipv4Addr, prefix_len: u8) -> Result<()> {
         use crate::{netlink::Netlink, wiring};
 
-        let ns = {
+        let (ns, op) = {
             let inner = self.lab.core.lock().expect("poisoned");
             let dev = inner
                 .device(self.device)
@@ -461,8 +464,9 @@ impl Iface {
             let _ = dev
                 .iface(&self.ifname)
                 .ok_or_else(|| anyhow!("interface '{}' removed", self.ifname))?;
-            dev.ns.clone()
+            (dev.ns.clone(), Arc::clone(&dev.op))
         };
+        let _guard = op.lock().await;
         let ifname = self.ifname.to_string();
         wiring::nl_run(&self.lab.netns, &ns, move |nl: Netlink| async move {
             nl.add_addr4(&ifname, ip, prefix_len).await?;
@@ -482,6 +486,15 @@ impl Iface {
         if self.is_isolated() {
             bail!("cannot renew IP on isolated interface '{}'", self.ifname);
         }
+
+        let op = {
+            let inner = self.lab.core.lock().expect("poisoned");
+            let dev = inner
+                .device(self.device)
+                .ok_or_else(|| anyhow!("device removed"))?;
+            Arc::clone(&dev.op)
+        };
+        let _guard = op.lock().await;
 
         let (ns, old_ip, new_ip, prefix_len) = self
             .lab
