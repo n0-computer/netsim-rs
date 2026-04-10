@@ -856,6 +856,9 @@ impl NetworkCore {
             .devices
             .get_mut(&device)
             .ok_or_else(|| anyhow!("unknown device id"))?;
+        if dev.interfaces.iter().any(|i| &*i.ifname == ifname) {
+            bail!("device '{}' already has interface '{}'", dev.name, ifname);
+        }
         // First interface becomes the default unless overridden later.
         if dev.default_via.is_empty() {
             dev.default_via = ifname.into();
@@ -911,6 +914,9 @@ impl NetworkCore {
                 .devices
                 .get_mut(&device)
                 .ok_or_else(|| anyhow!("unknown device id"))?;
+            if dev.interfaces.iter().any(|i| &*i.ifname == ifname) {
+                bail!("device '{}' already has interface '{}'", dev.name, ifname);
+            }
             if dev.default_via.is_empty() {
                 dev.default_via = ifname.into();
             }
