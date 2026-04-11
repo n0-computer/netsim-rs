@@ -324,12 +324,23 @@ pub(crate) fn generate_lb_rules(balancers: &[ResolvedBalancer]) -> String {
         }
 
         // Distribution via numgen.
+        // The protocol match is required because the DNAT map includes a port
+        // (inet_service), and nftables needs L4 protocol context.
         let numgen = match balancer.algorithm {
             LbAlgorithm::RoundRobin => "numgen inc",
             LbAlgorithm::Random => "numgen random",
         };
+        let proto_prefix = match balancer.protocol {
+            LbProtocol::Tcp => "meta l4proto tcp ",
+            LbProtocol::Udp => "meta l4proto udp ",
+            LbProtocol::Both => "meta l4proto { tcp, udp } ",
+        };
         let backend_count = balancer.backends.len();
-        writeln!(rules, "        dnat to {numgen} mod {backend_count} map {{").unwrap();
+        writeln!(
+            rules,
+            "        {proto_prefix}dnat to {numgen} mod {backend_count} map {{"
+        )
+        .unwrap();
         for (index, backend) in balancer.backends.iter().enumerate() {
             let comma = if index + 1 < backend_count { "," } else { "" };
             writeln!(
@@ -354,6 +365,23 @@ pub(crate) fn generate_lb_rules(balancers: &[ResolvedBalancer]) -> String {
 
         writeln!(rules, "    }}").unwrap();
     }
+
+    // Postrouting masquerade chain.
+    // When the VIP and backends share a subnet, the backend would respond
+    // directly to the client (L2), bypassing the router's conntrack. The
+    // reverse DNAT never fires and the client sees a reply from the
+    // backend IP instead of the VIP. Masquerading DNAT'd traffic forces
+    // the backend to reply via the router so conntrack restores the VIP.
+    // `ct status dnat` matches only packets that were destination-NATted
+    // by a rule in this table, leaving other traffic untouched.
+    writeln!(rules, "    chain postrouting {{").unwrap();
+    writeln!(
+        rules,
+        "        type nat hook postrouting priority srcnat; policy accept;"
+    )
+    .unwrap();
+    writeln!(rules, "        ct status dnat masquerade").unwrap();
+    writeln!(rules, "    }}").unwrap();
 
     writeln!(rules, "}}").unwrap();
     rules
@@ -705,7 +733,7 @@ mod tests {
             protocol: LbProtocol::Tcp,
         }];
         let rules = generate_lb_rules(&balancers);
-        assert!(rules.contains("numgen inc mod 3"));
+        assert!(rules.contains("meta l4proto tcp dnat to numgen inc mod 3"));
         assert!(rules.contains("10.0.1.1 . 8080"));
         assert!(rules.contains("10.0.1.2 . 8080"));
         assert!(rules.contains("10.0.1.3 . 8080"));
@@ -738,7 +766,7 @@ mod tests {
         let rules = generate_lb_rules(&balancers);
         assert!(rules.contains("map sticky_affinity"));
         assert!(rules.contains("timeout 3600s"));
-        assert!(rules.contains("numgen random mod 2"));
+        assert!(rules.contains("meta l4proto tcp dnat to numgen random mod 2"));
         assert!(rules.contains("update @sticky_affinity"));
     }
 

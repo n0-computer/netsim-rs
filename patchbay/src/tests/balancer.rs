@@ -12,21 +12,31 @@ async fn spawn_ident_server(device: &Device, port: u16, ident: &str) -> Result<(
     let ident = ident.to_string();
     device
         .spawn(move |_| async move {
-            let listener = tokio::net::TcpListener::bind(bind).await?;
-            loop {
-                let Ok((mut stream, _peer)) = listener.accept().await else {
-                    break;
-                };
-                let msg = ident.clone();
-                tokio::spawn(async move {
-                    let _ = stream.write_all(msg.as_bytes()).await;
-                });
-            }
-            anyhow::Ok(())
+            let (ready_tx, ready_rx) = oneshot::channel::<Result<()>>();
+            tokio::spawn(async move {
+                match tokio::net::TcpListener::bind(bind).await {
+                    Ok(listener) => {
+                        let _ = ready_tx.send(Ok(()));
+                        loop {
+                            let Ok((mut stream, _peer)) = listener.accept().await else {
+                                break;
+                            };
+                            let msg = ident.clone();
+                            tokio::spawn(async move {
+                                let _ = stream.write_all(msg.as_bytes()).await;
+                            });
+                        }
+                    }
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(anyhow!("ident server bind {bind}: {err}")));
+                    }
+                }
+            });
+            ready_rx
+                .await
+                .map_err(|_| anyhow!("ident server dropped before ready"))?
         })?
         .await??;
-    // Small delay for the listener to be ready.
-    tokio::time::sleep(Duration::from_millis(100)).await;
     Ok(())
 }
 
@@ -288,7 +298,7 @@ async fn udp_balancing() -> Result<()> {
                 .context("udp recv timeout")??;
                 let reply = String::from_utf8_lossy(&buf[..len]).to_string();
                 let ident = reply.split(':').next().unwrap_or("").to_string();
-                Ok(ident)
+                anyhow::Ok(ident)
             })?
             .await??;
         seen.insert(ident);
