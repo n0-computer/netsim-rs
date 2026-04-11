@@ -434,6 +434,13 @@ pub(crate) async fn setup_router_async(
     };
     apply_firewall(netns, &router.ns, &router.cfg.firewall, fw_wan).await?;
 
+    // Log build-time balancer configs. Rules are deferred until the first
+    // runtime mutation (add_balancer / add_lb_backend) because backend
+    // devices may not have IPs assigned yet at router setup time.
+    if !router.balancers.is_empty() {
+        crate::balancer::log_build_time_balancers(router);
+    }
+
     // NAT64: create TUN device, routes, nft masquerade, and start translator.
     if router.cfg.nat_v6 == NatV6Mode::Nat64 {
         setup_nat64(netns, &router.ns, fw_wan, &data.cancel).await?;
