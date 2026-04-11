@@ -313,11 +313,14 @@ pub(crate) fn generate_lb_rules(balancers: &[ResolvedBalancer]) -> String {
     for balancer in balancers {
         writeln!(rules, "    chain {} {{", balancer.name).unwrap();
 
-        // Affinity lookup (before distribution).
+        // Affinity lookup (before distribution). If the client IP is in the
+        // affinity map the lookup returns the pinned backend and DNAT fires.
+        // If the client is not in the map the lookup fails silently and
+        // execution falls through to the numgen distribution rule below.
         if balancer.has_affinity() {
             writeln!(
                 rules,
-                "        ip saddr @{name}_affinity dnat to ip saddr map @{name}_affinity",
+                "        dnat to ip saddr map @{name}_affinity",
                 name = balancer.name,
             )
             .unwrap();
@@ -391,23 +394,17 @@ pub(crate) fn generate_lb_rules(balancers: &[ResolvedBalancer]) -> String {
 // Apply / setup helpers
 // ─────────────────────────────────────────────
 
-/// Applies load balancer nftables rules for a router during initial setup.
+/// Logs build-time balancer configs during router setup.
 ///
-/// Called from `wiring::setup_router_async` when the router has balancers
-/// configured at build time.
-pub(crate) async fn setup_balancers(
-    _netns: &crate::netns::NetnsManager,
-    router: &crate::core::RouterData,
-) -> Result<()> {
-    // At setup time, backends may not have IPs yet if they are built after
-    // the router. Build-time balancers with no backends are stored but rules
-    // are deferred until backends are added at runtime.
+/// Rules are not applied here because backend devices may not have IPs yet
+/// (they are typically built after the router). Rules are generated on the
+/// first runtime mutation (`add_balancer`, `add_lb_backend`, etc.).
+pub(crate) fn log_build_time_balancers(router: &crate::core::RouterData) {
     debug!(
         router = %router.name,
         count = router.balancers.len(),
-        "balancer: setup (build-time configs stored, rules applied on first backend add)"
+        "balancer: build-time configs stored, rules applied on first mutation"
     );
-    Ok(())
 }
 
 /// Resolves and applies all load balancer rules for a router.
@@ -438,18 +435,24 @@ async fn apply_all_lb_rules(
     let rules = generate_lb_rules(&resolved);
     debug!(ns = %router_ns, rules = %rules, "balancer: applying rules");
 
-    // Delete existing table (ignore error if it does not exist).
-    run_nft_in(&lab.netns, router_ns, "delete table ip lb")
+    // Atomically replace the table: prepend a delete so the entire
+    // operation is a single nft -f invocation with no gap.
+    let atomic_rules = format!("delete table ip lb\n{rules}");
+    // First attempt: atomic replace (table exists).
+    if run_nft_in(&lab.netns, router_ns, &atomic_rules)
         .await
-        .ok();
-    run_nft_in(&lab.netns, router_ns, &rules).await?;
+        .is_err()
+    {
+        // Table did not exist yet; create without the delete prefix.
+        run_nft_in(&lab.netns, router_ns, &rules).await?;
+    }
 
     // Ensure VIP addresses are on the bridge.
+    let bridge: Arc<str> = bridge.into();
     for balancer in &resolved {
         let vip = balancer.vip;
-        let bridge: Arc<str> = bridge.into();
+        let bridge = bridge.clone();
         nl_run(&lab.netns, router_ns, {
-            let bridge = bridge.clone();
             move |nl: crate::netlink::Netlink| async move {
                 // add_addr4 is idempotent; if the address exists it returns Ok.
                 nl.add_addr4(&bridge, vip, 32).await.ok();
@@ -666,16 +669,20 @@ impl crate::router::Router {
                         &port.to_string(),
                     ])
                     .status()
-                    .await
-                    .context("spawn conntrack -D")?;
-                // conntrack -D returns non-zero if no entries matched, which is fine.
-                debug!(
-                    vip = %vip,
-                    port = %port,
-                    proto = %proto,
-                    success = status.success(),
-                    "balancer: conntrack flush"
-                );
+                    .await;
+                // conntrack may not be installed or may find no matching entries.
+                // Both are fine. Log and continue.
+                match status {
+                    Ok(s) => debug!(
+                        vip = %vip, port = %port, proto = %proto,
+                        success = s.success(),
+                        "balancer: conntrack flush"
+                    ),
+                    Err(e) => debug!(
+                        error = %e,
+                        "balancer: conntrack not available, skipping flush"
+                    ),
+                }
             }
             Ok(())
         };
@@ -766,6 +773,10 @@ mod tests {
         let rules = generate_lb_rules(&balancers);
         assert!(rules.contains("map sticky_affinity"));
         assert!(rules.contains("timeout 3600s"));
+        assert!(
+            rules.contains("dnat to ip saddr map @sticky_affinity"),
+            "affinity lookup rule missing"
+        );
         assert!(rules.contains("meta l4proto tcp dnat to numgen random mod 2"));
         assert!(rules.contains("update @sticky_affinity"));
     }
