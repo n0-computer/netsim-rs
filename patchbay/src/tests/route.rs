@@ -215,6 +215,44 @@ async fn replug_iface_reflexive_ip() -> Result<()> {
     Ok(())
 }
 
+/// Concurrent mutations on the same device are serialized by the per-device op lock.
+///
+/// This test fires `set_link_condition` and `replug_iface` concurrently on the
+/// same device. Without the op lock, the interleaved netlink operations could
+/// cause TOCTOU races (e.g., replug deletes the veth while set_link_condition
+/// tries to configure tc on it). With the lock, both operations complete
+/// without error.
+#[tokio::test(flavor = "current_thread")]
+#[traced_test]
+async fn concurrent_mutations_serialized() -> Result<()> {
+    check_caps()?;
+    let lab = Lab::new().await?;
+    let _dc = lab.add_router("dc").build().await?;
+    let nat_a = lab.add_router("nat-a").nat(Nat::Home).build().await?;
+    let nat_b = lab.add_router("nat-b").nat(Nat::Home).build().await?;
+    let dev = lab
+        .add_device("dev")
+        .iface("eth0", nat_a.id())
+        .iface("eth1", nat_b.id())
+        .default_via("eth0")
+        .build()
+        .await?;
+
+    // Fire both ops concurrently on the same device.
+    // The op lock ensures they run serially even though we launch them together.
+    let dev2 = dev.clone();
+    let (r1, r2) = tokio::join!(
+        dev.set_link_condition("eth0", Some(LinkCondition::Mobile4G), LinkDirection::Egress),
+        dev2.replug_iface("eth1", nat_a.id()),
+    );
+    r1.context("set_link_condition failed")?;
+    r2.context("replug_iface failed")?;
+
+    // Both ops completed — device is still functional.
+    assert!(dev.ip().is_some(), "device should still have an IP");
+    Ok(())
+}
+
 /// /proc/net/route inside a device namespace must reflect the namespace's
 /// routing table, not the host's. Without a private /proc mount, netwatch
 /// reads the host's default route interface (e.g. enp7s0) instead of eth0,
