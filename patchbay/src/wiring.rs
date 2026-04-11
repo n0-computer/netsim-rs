@@ -434,6 +434,11 @@ pub(crate) async fn setup_router_async(
     };
     apply_firewall(netns, &router.ns, &router.cfg.firewall, fw_wan).await?;
 
+    // Apply load balancer rules if any balancers are configured at build time.
+    if !router.balancers.is_empty() {
+        crate::balancer::setup_balancers(netns, router).await?;
+    }
+
     // NAT64: create TUN device, routes, nft masquerade, and start translator.
     if router.cfg.nat_v6 == NatV6Mode::Nat64 {
         setup_nat64(netns, &router.ns, fw_wan, &data.cancel).await?;

@@ -888,6 +888,7 @@ pub struct RouterBuilder {
     pub(crate) ra_enabled: bool,
     pub(crate) ra_interval_secs: u64,
     pub(crate) ra_lifetime_secs: u64,
+    pub(crate) balancers: Vec<crate::balancer::BalancerConfig>,
     pub(crate) result: Result<()>,
 }
 
@@ -917,6 +918,7 @@ impl RouterBuilder {
             ra_enabled: RA_DEFAULT_ENABLED,
             ra_interval_secs: RA_DEFAULT_INTERVAL_SECS,
             ra_lifetime_secs: RA_DEFAULT_LIFETIME_SECS,
+            balancers: Vec::new(),
             result: Err(err),
         }
     }
@@ -1128,6 +1130,7 @@ impl RouterBuilder {
                 r.ra_runtime.set_enabled(self.ra_enabled);
                 r.ra_runtime.set_interval_secs(self.ra_interval_secs);
                 r.ra_runtime.set_lifetime_secs(self.ra_lifetime_secs);
+                r.balancers = self.balancers.clone();
             }
             let has_v4 = self.ip_support.has_v4();
             let has_v6 = self.ip_support.has_v6();

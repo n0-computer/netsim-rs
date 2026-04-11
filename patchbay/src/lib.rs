@@ -197,6 +197,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 
+/// L4 load balancer: VIP + nftables DNAT distribution across backend devices.
+pub mod balancer;
 /// TOML configuration structures used by [`Lab::load`].
 pub mod config;
 /// Shared filename constants for the run output directory.
@@ -235,6 +237,7 @@ pub mod util;
 pub(crate) mod wiring;
 pub(crate) mod writer;
 
+pub use balancer::{BalancerConfig, LbAlgorithm, LbProtocol, SessionAffinity};
 pub use device::{Device, DeviceBuilder};
 pub use firewall::PortPolicy;
 pub use iface::{Iface, IfaceConfig};

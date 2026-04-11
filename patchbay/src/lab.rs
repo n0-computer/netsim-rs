@@ -923,6 +923,7 @@ impl Lab {
             ra_enabled: RA_DEFAULT_ENABLED,
             ra_interval_secs: RA_DEFAULT_INTERVAL_SECS,
             ra_lifetime_secs: RA_DEFAULT_LIFETIME_SECS,
+            balancers: Vec::new(),
             result: Ok(()),
         }
     }
