@@ -81,17 +81,7 @@ async fn round_robin_distribution() -> Result<()> {
     spawn_ident_server(&web2, 8080, "web2").await?;
     spawn_ident_server(&web3, 8080, "web3").await?;
 
-    // Add a round-robin balancer with VIP from the router's downstream subnet.
-    let vip: Ipv4Addr = dc
-        .downstream_gw()
-        .context("no downstream gw")?
-        .to_string()
-        .replace(|c: char| c.is_ascii_digit(), "")
-        .parse()
-        .ok()
-        .unwrap_or("198.18.0.100".parse().unwrap());
-
-    // Use an IP in the same subnet but not in use.
+    // Use an IP in the same subnet but not in use as the VIP.
     let downstream_cidr = dc.downstream_cidr().context("no downstream cidr")?;
     let vip: Ipv4Addr = {
         let base = u32::from(downstream_cidr.addr());
@@ -239,33 +229,34 @@ async fn udp_balancing() -> Result<()> {
     let dns1_ip = dns1.ip().context("no ip")?;
     let dns2_ip = dns2.ip().context("no ip")?;
 
-    // Start UDP echo servers.
+    // Start UDP echo servers that reply with their identity.
     let dns1_bind = SocketAddr::new(IpAddr::V4(dns1_ip), 5353);
     let dns2_bind = SocketAddr::new(IpAddr::V4(dns2_ip), 5353);
     dns1.spawn(move |_| async move {
-        let sock = UdpSocket::bind(dns1_bind).await?;
+        let sock = UdpSocket::bind(dns1_bind).await.unwrap();
         let mut buf = [0u8; 256];
         loop {
-            let (len, peer) = sock.recv_from(&mut buf).await?;
-            // Reply with "dns1" prepended.
+            let Ok((len, peer)) = sock.recv_from(&mut buf).await else {
+                break;
+            };
             let mut reply = b"dns1:".to_vec();
             reply.extend_from_slice(&buf[..len]);
-            sock.send_to(&reply, peer).await?;
+            let _ = sock.send_to(&reply, peer).await;
         }
-    })?
-    .await??;
+    })?;
     dns2.spawn(move |_| async move {
-        let sock = UdpSocket::bind(dns2_bind).await?;
+        let sock = UdpSocket::bind(dns2_bind).await.unwrap();
         let mut buf = [0u8; 256];
         loop {
-            let (len, peer) = sock.recv_from(&mut buf).await?;
+            let Ok((len, peer)) = sock.recv_from(&mut buf).await else {
+                break;
+            };
             let mut reply = b"dns2:".to_vec();
             reply.extend_from_slice(&buf[..len]);
-            sock.send_to(&reply, peer).await?;
+            let _ = sock.send_to(&reply, peer).await;
         }
-    })?
-    .await??;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    })?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let downstream_cidr = dc.downstream_cidr().context("no downstream cidr")?;
     let vip = Ipv4Addr::from(u32::from(downstream_cidr.addr()) + 100);
